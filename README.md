@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="src-tauri/icons/icon.png" alt="Nothing" width="120" height="120" />
+
 # Nothing
 
 **PDF 속 개인정보를, 아무것도 남기지 않고.**

@@ -47,6 +47,9 @@
       "../data/kr_regions.json": "masking_runtime/data/kr_regions.json",
       "../data/kr_regions.seed.json": "masking_runtime/data/kr_regions.seed.json",
       "../masking_runtime/bin": "masking_runtime/bin",
+      "../LICENSE": "licenses/LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "../LICENSE-APACHE-2.0.txt": "licenses/LICENSE-APACHE-2.0.txt",
       "../requirements.txt": "masking_runtime/requirements.txt",
       "../scripts/apply_manual_boxes.py": "masking_runtime/tauri_frontend/scripts/apply_manual_boxes.py",
       "../scripts/run_masking_pipeline.py": "masking_runtime/tauri_frontend/scripts/run_masking_pipeline.py"

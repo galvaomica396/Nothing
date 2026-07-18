@@ -83,6 +83,11 @@ jobs:
           $installerName = "Nothing-4.6.3-windows-x64-setup.exe"
           $portableZipName = "Nothing-4.6.3-windows-x64-portable.zip"
           $manifestName = "Nothing-4.6.3-windows-x64-manifest.json"
+          $licenseFiles = @(
+            "LICENSE",
+            "THIRD_PARTY_NOTICES.md",
+            "LICENSE-APACHE-2.0.txt"
+          )
           Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
@@ -108,6 +113,12 @@ jobs:
             }
           }
           if ($resourceRoot -eq "") { throw "missing Tauri masking_runtime resources" }
+          foreach ($licenseFile in $licenseFiles) {
+            $resourceLicensePath = Join-Path $resourceRoot "licenses\$licenseFile"
+            if (!(Test-Path $resourceLicensePath)) {
+              throw "Tauri resources missing license file: licenses\$licenseFile"
+            }
+          }
 
           $bundleRoot = Join-Path $releaseRoot "bundle"
           if (Test-Path $bundleRoot) {
@@ -119,10 +130,18 @@ jobs:
             $installerExe = (Get-ChildItem -Path $nsisRoot -Filter "*.exe" -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
           }
           if (!$installerExe -or !(Test-Path $installerExe)) { throw "missing Tauri NSIS installer under bundle/nsis" }
+          $installerListing = (& 7z l -ba $installerExe | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "unable to inspect Tauri NSIS installer" }
+          foreach ($licenseFile in $licenseFiles) {
+            if ($installerListing -notmatch [regex]::Escape($licenseFile)) {
+              throw "Windows installer missing bundled license file: $licenseFile"
+            }
+          }
 
           Copy-Item $appExe "$portableDir/$portableExeName" -Force
           Copy-Item $installerExe "$outDir/$installerName" -Force
           Copy-Item (Join-Path $resourceRoot "masking_runtime") "$portableDir/masking_runtime" -Recurse -Force
+          Copy-Item (Join-Path $resourceRoot "licenses") "$portableDir/licenses" -Recurse -Force
 
           $requiredPortableFiles = @(
             $portableExeName,
@@ -136,6 +155,9 @@ jobs:
             "masking_runtime\privacy_spans.py",
             "masking_runtime\privacy_transformers.py",
             "masking_runtime\requirements.txt",
+            "licenses\LICENSE",
+            "licenses\THIRD_PARTY_NOTICES.md",
+            "licenses\LICENSE-APACHE-2.0.txt",
             "masking_runtime\tauri_frontend\scripts\run_masking_pipeline.py",
             "masking_runtime\tauri_frontend\scripts\apply_manual_boxes.py"
           )
@@ -147,6 +169,13 @@ jobs:
 
           $portableZipPath = Join-Path $outDir $portableZipName
           Compress-Archive -Path "$portableDir/*" -DestinationPath $portableZipPath -Force
+          $portableZipListing = (& 7z l -ba $portableZipPath | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "unable to inspect Windows portable zip" }
+          foreach ($licenseFile in $licenseFiles) {
+            if ($portableZipListing -notmatch [regex]::Escape($licenseFile)) {
+              throw "Windows portable zip missing license file: $licenseFile"
+            }
+          }
 
           $portableRoot = (Resolve-Path $portableDir).Path
           $portableFiles = Get-ChildItem -Path $portableDir -File -Recurse | Sort-Object FullName
@@ -177,6 +206,7 @@ jobs:
               }
             )
             required_portable_files = $requiredPortableFiles
+            installer_license_files = @($licenseFiles | ForEach-Object { "licenses/$_" })
             portable_files = @($portableFiles | ForEach-Object {
               [ordered]@{
                 path = $_.FullName.Substring($portableRoot.Length + 1).Replace("\", "/")
@@ -270,6 +300,34 @@ jobs:
           if (!(Test-Path $manifestPath)) { throw "missing downloaded Windows manifest: $manifestPath" }
 
           Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+          $requiredLicenseFiles = @(
+            "licenses\LICENSE",
+            "licenses\THIRD_PARTY_NOTICES.md",
+            "licenses\LICENSE-APACHE-2.0.txt"
+          )
+          foreach ($required in $requiredLicenseFiles) {
+            if (!(Test-Path (Join-Path $extractDir $required))) {
+              throw "downloaded Windows portable zip missing license file: $required"
+            }
+          }
+          $installerListing = (& 7z l -ba $installerPath | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "unable to inspect downloaded Windows installer" }
+          foreach ($required in $requiredLicenseFiles) {
+            $licenseFile = Split-Path $required -Leaf
+            if ($installerListing -notmatch [regex]::Escape($licenseFile)) {
+              throw "downloaded Windows installer missing license file: $licenseFile"
+            }
+          }
+          $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+          foreach ($required in $requiredLicenseFiles) {
+            $manifestPathValue = $required.Replace("\", "/")
+            if ($manifest.required_portable_files -notcontains $required) {
+              throw "downloaded Windows manifest missing portable license file: $required"
+            }
+            if ($manifest.installer_license_files -notcontains $manifestPathValue) {
+              throw "downloaded Windows manifest missing installer license file: $manifestPathValue"
+            }
+          }
           ./scripts/e2e_windows_desktop_smoke.ps1 -ReleaseDir $extractDir -InstallerPath $installerPath
 
       - name: Upload Windows release asset artifact

@@ -119,6 +119,9 @@ jobs:
             "Contents/Resources/masking_runtime/privacy_spans.py"
             "Contents/Resources/masking_runtime/privacy_transformers.py"
             "Contents/Resources/masking_runtime/requirements.txt"
+            "Contents/Resources/licenses/LICENSE"
+            "Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
+            "Contents/Resources/licenses/LICENSE-APACHE-2.0.txt"
             "Contents/Resources/masking_runtime/tauri_frontend/scripts/run_masking_pipeline.py"
             "Contents/Resources/masking_runtime/tauri_frontend/scripts/apply_manual_boxes.py"
           )
@@ -130,6 +133,14 @@ jobs:
           done
           app_zip_path="$out_dir/$app_zip_name"
           ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$app_zip_path"
+          zip_listing="$(unzip -Z1 "$app_zip_path")"
+          app_name="$(basename "$app_bundle")"
+          for required in "${required_app_files[@]}"; do
+            if ! grep -Fxq "$app_name/$required" <<< "$zip_listing"; then
+              echo "macOS app zip missing required file: $required" >&2
+              exit 1
+            fi
+          done
           python - <<'PY' "$app_bundle" "$app_zip_path" "$out_dir/$manifest_name"
           import hashlib
           import json
@@ -164,6 +175,9 @@ jobs:
               "Contents/Resources/masking_runtime/privacy_spans.py",
               "Contents/Resources/masking_runtime/privacy_transformers.py",
               "Contents/Resources/masking_runtime/requirements.txt",
+              "Contents/Resources/licenses/LICENSE",
+              "Contents/Resources/licenses/THIRD_PARTY_NOTICES.md",
+              "Contents/Resources/licenses/LICENSE-APACHE-2.0.txt",
               "Contents/Resources/masking_runtime/tauri_frontend/scripts/run_masking_pipeline.py",
               "Contents/Resources/masking_runtime/tauri_frontend/scripts/apply_manual_boxes.py",
           ]
@@ -249,6 +263,17 @@ jobs:
             --dir "$roundtrip_root" \
             --clobber
           unzip -q "$roundtrip_root/Nothing-4.6.3-macos-arm64-app.zip" -d "$extract_dir"
+          required_license_files=(
+            "Contents/Resources/licenses/LICENSE"
+            "Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
+            "Contents/Resources/licenses/LICENSE-APACHE-2.0.txt"
+          )
+          for required in "${required_license_files[@]}"; do
+            if [[ ! -f "$extract_dir/Nothing.app/$required" ]]; then
+              echo "downloaded macOS app zip missing license file: $required" >&2
+              exit 1
+            fi
+          done
           python scripts/e2e_tauri_local_smoke.py --app-path "$extract_dir/Nothing.app" --seconds 5 --out "$roundtrip_root/macos-release-roundtrip-smoke.json"
 
       - name: Upload macOS release asset artifact

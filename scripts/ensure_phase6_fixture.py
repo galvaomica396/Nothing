@@ -12,7 +12,6 @@ import fitz
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE_PATH: Final = REPO_ROOT / "tests" / "fixtures" / "phase6_non_sensitive.pdf"
-# SYNTHETIC TEST DATA ONLY: values below are reserved dummy fixtures, not personal records.
 RAW_DUMMY_VALUES: Final = (
     "010-0000-0000",
     "4000-0000-0000-0000",

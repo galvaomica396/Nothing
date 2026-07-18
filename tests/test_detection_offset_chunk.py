@@ -13,6 +13,7 @@ import fitz
 import document_masker_ocr_gui as masker
 from masking_context import build_document_context, find_masking_context
 from privacy_detection import detection_candidates_from_matches
+from privacy_false_positive import PERSON_NAME_BACKUP_BLOCKLIST
 from privacy_spans import DetectionSpan, detection_spans_from_matches, locate_value
 
 
@@ -249,6 +250,25 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
                 self.assertEqual(1, len(tagged))
                 self.assertEqual(text.index("홍길동"), tagged[0].start)
 
+    def test_approval_name_filter_preserves_boundary_offsets_and_drops_only_false_positive(self) -> None:
+        text = "가" * 3985 + "\n안전관리과장 안전\n장애인복지과장 김철수\n" + "나" * 100
+
+        for chunk_size in (4000, 128, 32):
+            with self.subTest(chunk_size=chunk_size):
+                masked, counts, matches, _meta = masker.process_masking_queue(
+                    text,
+                    {"profile": "official", "chunk_size": chunk_size},
+                )
+                approval_matches = [match for match in matches if match.tag == "APPROVAL_LINE"]
+
+                self.assertIn("안전관리과장 안전", masked)
+                self.assertNotIn("김철수", masked)
+                self.assertEqual(1, counts.get("APPROVAL_LINE"))
+                self.assertEqual(1, len(approval_matches))
+                self.assertEqual("김철수", approval_matches[0].text)
+                self.assertEqual(text.index("김철수"), approval_matches[0].start)
+                self.assertEqual(text.index("김철수") + len("김철수"), approval_matches[0].end)
+
     def test_partial_name_at_boundary_is_replaced_by_one_full_occurrence(self) -> None:
         text = "가" * 3993 + " 성명: 홍길동 이후텍스트"
 
@@ -263,6 +283,67 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
         self.assertEqual(1, masked.count("[NAME]"))
         self.assertEqual(1, len(names))
         self.assertEqual((text.index("홍길동"), text.index("홍길동") + 3), (names[0].start, names[0].end))
+
+    def test_role_value_chunk_arbitration_rejects_every_partial_backup_term(self) -> None:
+        contexts = (
+            ("single", "건축과장 {value}", 0),
+            ("dense", "건축과장 {value} / 팀장 장영실", 1),
+        )
+        for chunk_size in (4000, 128, 32):
+            for value in sorted(PERSON_NAME_BACKUP_BLOCKLIST):
+                for split_at in range(1, len(value)):
+                    for context_name, template, expected_count in contexts:
+                        suffix = template.format(value=value)
+                        boundary_in_suffix = suffix.index(value) + split_at
+                        text = "가" * (chunk_size - boundary_in_suffix) + suffix
+                        with self.subTest(
+                            chunk_size=chunk_size,
+                            value=value,
+                            split_at=split_at,
+                            context=context_name,
+                        ):
+                            masked, counts, matches, _meta = masker.process_masking_queue(
+                                text,
+                                {"profile": "official", "chunk_size": chunk_size},
+                            )
+                            approval_matches = [match for match in matches if match.tag == "APPROVAL_LINE"]
+
+                            self.assertIn(value, masked)
+                            self.assertEqual(expected_count, counts.get("APPROVAL_LINE", 0))
+                            self.assertEqual(expected_count, len(approval_matches))
+                            self.assertTrue(all(match.text == "장영실" for match in approval_matches))
+
+    def test_role_value_chunk_arbitration_reconstructs_split_names_once(self) -> None:
+        contexts = (
+            ("single", "건축과장 {value}", 1),
+            ("dense", "과장 {value} / 팀장 박민수 / 주무관 이영희", 3),
+        )
+        for chunk_size in (4000, 128, 32):
+            for value in ("김철수", "장영실"):
+                for split_at in range(1, len(value)):
+                    for context_name, template, expected_count in contexts:
+                        suffix = template.format(value=value)
+                        boundary_in_suffix = suffix.index(value) + split_at
+                        text = "가" * (chunk_size - boundary_in_suffix) + suffix
+                        with self.subTest(
+                            chunk_size=chunk_size,
+                            value=value,
+                            split_at=split_at,
+                            context=context_name,
+                        ):
+                            masked, counts, matches, _meta = masker.process_masking_queue(
+                                text,
+                                {"profile": "official", "chunk_size": chunk_size},
+                            )
+                            approval_matches = [match for match in matches if match.tag == "APPROVAL_LINE"]
+                            value_matches = [match for match in approval_matches if match.text == value]
+
+                            self.assertNotIn(value, masked)
+                            self.assertEqual(expected_count, counts.get("APPROVAL_LINE"))
+                            self.assertEqual(expected_count, len(approval_matches))
+                            self.assertEqual(1, len(value_matches))
+                            self.assertEqual(text.index(value), value_matches[0].start)
+                            self.assertEqual(text.index(value) + len(value), value_matches[0].end)
 
     def test_overlap_dedup_keeps_distinct_occurrences(self) -> None:
         one_boundary = "가" * 3994 + PHONE_VALUE + "나" * 100

@@ -3,13 +3,13 @@
 // 확정된 정책(사용자 지시): **최종 저장은 항상 사용자 재량이다.** 검증(잔존 감지·
 // 품질 게이트·복원 재검증)은 내부에서 계속 수행·기록되지만 결과는 "권고"로만
 // 노출된다. 이전의 "하드 차단 3종 우회 불가" 정책은 폐기됐다. 마스킹본이 존재하면
-// 저장 버튼은 항상 활성이고, 권고형 경고가 있으면 저장 직전 확인 다이얼로그가 1회
-// 뜬다("무시하고 그대로 저장"/"취소하고 검토하기"). 경고가 없으면 다이얼로그 없이 곧바로 저장된다.
+// 저장 버튼은 항상 활성이고, 경고 유무와 관계없이 저장 직전 확인 다이얼로그가 1회
+// 뜬다("무시하고 그대로 저장"/"취소하고 검토하기").
 //
 // 이 스크립트는 구성 가능한 Tauri IPC mock 위에서 전체 흐름(PDF → 기본 마스킹 →
 // 저장)을 구동하며, 리포트 조합별로 다음을 단언한다:
-//   - 경고가 없으면 다이얼로그 없이 바로 저장되고 finalize 가 호출된다.
-//   - 경고가 있으면 저장 클릭 시 다이얼로그가 열리고(그 시점 finalize 미호출),
+//   - 경고가 없으면 준비 완료 상태의 다이얼로그를 확인한 뒤 finalize 가 호출된다.
+//   - 경고가 있으면 저장 클릭 시 권고 상태로 열리고(그 시점 finalize 미호출),
 //     경고 목록에 정확한 권고 문구가 표출되며, "무시하고 그대로 저장" 시 finalize 가
 //     호출되어 저장이 완료된다.
 //   - "취소하고 검토하기" 시 finalize 는 호출되지 않고 저장되지 않는다.
@@ -86,9 +86,9 @@ function reviewItems(count) {
 
 const SCENARIOS = [
   {
-    // 경고 0건 → 다이얼로그 없이 곧바로 저장된다.
+    // 경고 0건 → 준비 완료 다이얼로그 확인 뒤 저장된다.
     id: "clean-pass",
-    label: "자동 검증 통과 (경고 0건) — 다이얼로그 없이 바로 저장",
+    label: "자동 검증 통과 (경고 0건) — 준비 완료 확인 후 저장",
     productChecks: { quality_gate_passed: true, needs_manual_review: false },
     redaction: { status: "ok", verification: { residual_hits: 0 }, missing_targets_count: 0 },
     reviewItemCount: 0,
@@ -137,7 +137,7 @@ const SCENARIOS = [
     expect: { warns: true, warnings: [WARN.residual(3)], cancel: true, saves: false },
   },
   {
-    // 리포트 내부화 고정: 저장이 성공(경고 0건, 바로 저장)해도 finalize 는
+    // 리포트 내부화 고정: 저장이 성공(경고 0건)해도 finalize 는
     // copyReport:false 로 호출되어 safe_report 가 사용자 폴더에 미복사됨을 단언한다.
     id: "report-never-copied",
     label: "리포트 내부화 — 저장 성공 시에도 safe_report 는 사용자 폴더에 미복사",
@@ -603,15 +603,8 @@ async function finalSaveDialogState(page) {
   });
 }
 
-async function dialogIsOpen(page) {
-  return page.evaluate(() => {
-    const dialog = document.querySelector("#final-save-dialog");
-    return Boolean(dialog) && !dialog.classList.contains("is-hidden");
-  });
-}
-
-// 저장 버튼을 클릭하고, "다이얼로그가 열리거나(경고)" 또는 "종결 상태 문구가
-// 렌더될 때까지(경고 없음/전제 미충족)" 결정적으로 기다린다.
+// 저장 버튼을 클릭하고, 경고 유무와 관계없이 확인 다이얼로그가 열리거나
+// 전제 미충족 상태 문구가 렌더될 때까지 결정적으로 기다린다.
 async function clickSaveAndSettle(page) {
   const disabled = await page.locator("#btn-save").isDisabled();
   if (disabled) return { clicked: false };
@@ -633,6 +626,12 @@ async function confirmDialogSave(page) {
   await page.locator("#btn-dialog-save-all").click();
   const status = await waitForStatus(page, /최종 저장 완료|최종 저장 실패|파일은 저장되었으나/, 40_000);
   return { saved: status.includes("완료"), status };
+}
+
+async function clickAndConfirmSave(page) {
+  const result = await clickSaveAndSettle(page);
+  if (result.clicked) await confirmDialogSave(page);
+  return result;
 }
 
 async function cancelDialogSave(page) {
@@ -659,6 +658,12 @@ async function dragOnPdf(page, fromFrac, toFrac) {
   await page.mouse.move(end.x, end.y, { steps: 6 });
   await page.mouse.up();
   await page.waitForTimeout(120);
+}
+
+async function selectCanvasTool(page, toolId) {
+  const tool = page.locator(`#${toolId}`);
+  if (!(await tool.isVisible())) await page.locator("#canvas-tool-menu-trigger").click();
+  await tool.click();
 }
 
 async function totalBoxCount(page) {
@@ -694,8 +699,8 @@ function saveDialogCount(invokeLog) {
 // ---------------------------------------------------------------------------
 // Manual-correction save scenarios (v4.2.0 advisory model). After applying a
 // manual correction:
-//   · mask-only add   → no revalidation needed, no warnings → direct save.
-//   · restore add (passed) → revalidation auto-runs, clean report adopted → save.
+//   · mask-only add   → no revalidation needed, no warnings → ready confirmation.
+//   · restore add (passed) → revalidation auto-runs, clean report adopted → confirmation.
 //   · restore add (failed) → 재검증 실패해도 하드 차단하지 않는다: 경고 5(복원
 //     재노출 가능)와 함께 확인 다이얼로그가 뜨고, "그대로 저장" 으로 저장할 수 있다.
 // saveVia distinguishes the two ways an apply reaches the save flow:
@@ -706,7 +711,7 @@ function saveDialogCount(invokeLog) {
 const MANUAL_SCENARIOS = [
   {
     id: "manual-mask-only-keeps-gate",
-    label: "수동 마스킹 박스만 추가 → 반영 후 저장: 경고 없음, 다이얼로그 없이 저장 성공",
+    label: "수동 마스킹 박스만 추가 → 반영 후 저장: 준비 완료 확인 후 저장 성공",
     tool: "mask",
     manualOutcome: "passed",
     saveVia: "button-apply",
@@ -714,7 +719,7 @@ const MANUAL_SCENARIOS = [
   },
   {
     id: "manual-mask-only-autoapply-saves",
-    label: "수동 마스킹 박스만 추가 → 반영 없이 저장: 자동 반영 경로로 바로 저장 성공",
+    label: "수동 마스킹 박스만 추가 → 반영 없이 저장: 자동 반영 뒤 확인 후 저장 성공",
     tool: "mask",
     manualOutcome: "passed",
     saveVia: "auto-apply",
@@ -771,7 +776,7 @@ async function runManualScenario(browser, scenario) {
     const saveOpenBefore = await saveButtonState(page);
     check("save-enabled-when-masked", saveOpenBefore.disabled === false, `title=${saveOpenBefore.title}`);
 
-    await page.locator(`#btn-canvas-tool-${scenario.tool}`).click();
+    await selectCanvasTool(page, `btn-canvas-tool-${scenario.tool}`);
     await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
     check("manual-box-drawn", (await totalBoxCount(page)) === 1, "one manual box created");
 
@@ -812,9 +817,12 @@ async function runManualScenario(browser, scenario) {
       const confirm = await confirmDialogSave(page);
       check("saved-after-confirm", confirm.saved === scenario.expect.saves, `saved=${confirm.saved} expected=${scenario.expect.saves} status=${confirm.status}`);
     } else {
-      check("no-warning-dialog", (await dialogIsOpen(page)) === false, "dialog stayed closed");
-      const status = await page.locator("#status").innerText();
-      check("saved-directly", /최종 저장 완료/.test(status) === scenario.expect.saves, `status=${status}`);
+      const dialog = await finalSaveDialogState(page);
+      check("ready-dialog-opened", dialog.open === true, `open=${dialog.open}`);
+      check("ready-dialog-has-no-warnings", dialog.warnings.length === 0 && dialog.badge === "저장 준비 완료", JSON.stringify(dialog));
+      check("finalize-not-called-before-confirm", finalizeCount(invokeLog) === finalizeBeforeSave, `count=${finalizeCount(invokeLog)}`);
+      const confirm = await confirmDialogSave(page);
+      check("saved-after-ready-confirm", confirm.saved === scenario.expect.saves, `saved=${confirm.saved} expected=${scenario.expect.saves} status=${confirm.status}`);
     }
 
     // finalize(=사용자 확정 저장)는 저장이 실제로 완료된 경우에만 호출되어야 한다.
@@ -855,10 +863,14 @@ async function runScenario(browser, scenario) {
     const saveBefore = await saveButtonState(page);
     check("save-enabled-when-masked", saveBefore.disabled === false, `disabled=${saveBefore.disabled} title=${saveBefore.title}`);
 
-    // 저장 클릭: 경고가 있으면 다이얼로그가 열리고, 없으면 바로 저장이 종결된다.
+    // 저장 클릭: 경고 유무와 관계없이 확인 다이얼로그가 열린다.
     let clickRes;
     if (doubleSaveProbe) {
       await page.locator("#btn-save").click();
+      await page.locator("#final-save-dialog").waitFor({ state: "visible", timeout: 8_000 });
+      const readyDialog = await finalSaveDialogState(page);
+      check("ready-dialog-opened", readyDialog.open === true && readyDialog.badge === "저장 준비 완료", JSON.stringify(readyDialog));
+      await page.locator("#btn-dialog-save-all").click();
       await waitForInvoke(invokeLog, "finalize_manual_output_to_selected_path");
       const disabledDuringSave = await page.evaluate(() => ({
         primary: document.querySelector("#btn-save")?.disabled === true,
@@ -911,11 +923,16 @@ async function runScenario(browser, scenario) {
         const confirm = await confirmDialogSave(page);
         check("saved-after-confirm", confirm.saved === scenario.expect.saves, `saved=${confirm.saved} expected=${scenario.expect.saves} status=${confirm.status}`);
       }
+    } else if (!doubleSaveProbe) {
+      const dialog = await finalSaveDialogState(page);
+      check("ready-dialog-opened", dialog.open === true, `open=${dialog.open}`);
+      check("ready-dialog-has-no-warnings", dialog.warnings.length === 0 && dialog.badge === "저장 준비 완료", JSON.stringify(dialog));
+      check("finalize-not-called-before-confirm", finalizeCount(invokeLog) === 0, `count=${finalizeCount(invokeLog)}`);
+      const confirm = await confirmDialogSave(page);
+      check("saved-after-ready-confirm", confirm.saved === scenario.expect.saves, `saved=${confirm.saved} expected=${scenario.expect.saves} status=${confirm.status}`);
     } else {
-      // 경고 0건: 다이얼로그 없이 곧바로 저장된다.
-      check("no-warning-dialog", (await dialogIsOpen(page)) === false, "dialog stayed closed");
       const status = await page.locator("#status").innerText();
-      check("saved-directly", /최종 저장 완료/.test(status) === scenario.expect.saves, `status=${status}`);
+      check("saved-after-ready-confirm", /최종 저장 완료/.test(status) === scenario.expect.saves, `status=${status}`);
     }
 
     // 불변식: finalize 는 저장이 실제로 완료된 경우에만 호출된다(경고+취소 시 미호출).
@@ -992,7 +1009,7 @@ async function runManualClearRaceScenario(browser) {
     await page.goto(url, { waitUntil: "networkidle" });
     await page.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
     await pickPdfAndMask(page);
-    await page.locator("#btn-canvas-tool-mask").click();
+    await selectCanvasTool(page, "btn-canvas-tool-mask");
     await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
     await page.locator("#btn-canvas-apply").click();
     await waitForInvoke(invokeLog, "apply_manual_boxes");
@@ -1033,11 +1050,11 @@ async function runPostSaveContinuationScenario(browser, mode) {
     await page.goto(url, { waitUntil: "networkidle" });
     await page.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
     await pickPdfAndMask(page);
-    await page.locator("#btn-canvas-tool-mask").click();
+    await selectCanvasTool(page, "btn-canvas-tool-mask");
     await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
     await page.locator("#btn-canvas-apply").click();
     await waitForApplyComplete(page, firstMock.invokeLog);
-    await clickSaveAndSettle(page);
+    await clickAndConfirmSave(page);
     const firstFinalize = firstMock.finalizeCalls[0];
     const firstSubmittedPreview = path.resolve(firstFinalize?.previewPdf || "");
     const firstFinal = mockState.finalizedPaths[0];
@@ -1067,7 +1084,7 @@ async function runPostSaveContinuationScenario(browser, mode) {
       continuationFinalizes = detachedMock.finalizeCalls;
     }
 
-    await continuationPage.locator("#btn-canvas-tool-restore").click();
+    await selectCanvasTool(continuationPage, "btn-canvas-tool-restore");
     await dragOnPdf(continuationPage, { x: 0.22, y: 0.24 }, { x: 0.55, y: 0.38 });
     await continuationPage.locator("#btn-canvas-apply").click();
     await waitForApplyComplete(continuationPage, continuationLog);
@@ -1090,7 +1107,7 @@ async function runPostSaveContinuationScenario(browser, mode) {
       JSON.stringify(mockState.applyOperations),
     );
 
-    await clickSaveAndSettle(continuationPage);
+    await clickAndConfirmSave(continuationPage);
     const secondFinalize = continuationFinalizes.at(-1);
     const secondSubmittedPreview = path.resolve(secondFinalize?.previewPdf || "");
     const secondFinal = mockState.finalizedPaths[1];
@@ -1125,11 +1142,11 @@ async function runDetachedNoFallbackFailureScenario(browser) {
     await page.goto(url, { waitUntil: "networkidle" });
     await page.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
     await pickPdfAndMask(page);
-    await page.locator("#btn-canvas-tool-mask").click();
+    await selectCanvasTool(page, "btn-canvas-tool-mask");
     await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
     await page.locator("#btn-canvas-apply").click();
     await waitForApplyComplete(page, invokeLog);
-    await clickSaveAndSettle(page);
+    await clickAndConfirmSave(page);
     const firstFinal = mockState.finalizedPaths[0];
 
     mockState.failCanvasTokenPending = true;
@@ -1160,11 +1177,11 @@ async function runFinalLoadFailureScenario(browser) {
     await page.goto(url, { waitUntil: "networkidle" });
     await page.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
     await pickPdfAndMask(page);
-    await page.locator("#btn-canvas-tool-mask").click();
+    await selectCanvasTool(page, "btn-canvas-tool-mask");
     await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
     await page.locator("#btn-canvas-apply").click();
     await waitForApplyComplete(page, invokeLog);
-    await clickSaveAndSettle(page);
+    await clickAndConfirmSave(page);
     const status = await page.locator("#status").innerText();
     const statusDetail = await page.locator("#status-detail").innerText();
     const controls = await page.evaluate(() => ({

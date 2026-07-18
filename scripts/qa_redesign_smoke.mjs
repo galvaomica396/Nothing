@@ -46,7 +46,7 @@ const batchViewports = [
   evidenceViewports[1],
   evidenceViewports[2],
 ];
-const evidenceDir = path.join(repoRoot, "build", "redesign-evidence");
+const evidenceDir = path.resolve(args.get("--evidence-dir") ?? path.join(repoRoot, "build", "redesign-evidence"));
 const fixturePath = path.join(repoRoot, "tests", "fixtures", "phase6_non_sensitive.pdf");
 
 // Known, expected error signatures from running the Tauri frontend in a plain
@@ -227,9 +227,55 @@ async function assertSettingsGeometry(page, selector, label) {
 async function assertSaveDialogGeometry(page, label) {
   const dialog = await computedGeometry(page.locator("#final-save-dialog .ux-modal"));
   const primary = await computedGeometry(page.locator("#btn-dialog-save-all"));
-  assertApprox(dialog.width, 480, `${label}/save-width`);
+  const expectedWidth = Math.min(480, (page.viewportSize()?.width ?? 480) * 0.9);
+  assertApprox(dialog.width, expectedWidth, `${label}/save-width`);
   assertApprox(dialog.borderRadius, 16, `${label}/save-radius`);
   if (primary.borderRadius < 999) throw new Error(`${label}/save-pill: expected pill radius, got ${primary.borderRadius}px`);
+  const layout = await page.locator("#final-save-dialog .ux-modal").evaluate((modal) => {
+    const visible = (element) => element instanceof HTMLElement && getComputedStyle(element).display !== "none";
+    const rect = (element) => {
+      const box = element.getBoundingClientRect();
+      return { top: box.top, right: box.right, bottom: box.bottom, left: box.left };
+    };
+    const header = modal.querySelector(".ux-modal-head");
+    const advisory = modal.querySelector(".dm-savewarn__summary");
+    const ready = modal.querySelector("#final-save-dialog-state");
+    const footer = modal.querySelector(".ux-modal-actions");
+    const content = visible(advisory) ? advisory : ready;
+    const descriptionStyle = getComputedStyle(modal.querySelector(".ux-modal-head p"));
+    const advisoryStyle = getComputedStyle(advisory);
+    const footerStyle = getComputedStyle(footer);
+    return {
+      header: rect(header),
+      content: rect(content),
+      footer: rect(footer),
+      advisoryVisible: visible(advisory),
+      readyVisible: visible(ready),
+      clientWidth: modal.clientWidth,
+      scrollWidth: modal.scrollWidth,
+      descriptionWordBreak: descriptionStyle.wordBreak,
+      descriptionOverflowWrap: descriptionStyle.overflowWrap,
+      descriptionLineHeight: Number.parseFloat(descriptionStyle.lineHeight),
+      descriptionFontSize: Number.parseFloat(descriptionStyle.fontSize),
+      advisoryWordBreak: advisoryStyle.wordBreak,
+      advisoryOverflowWrap: advisoryStyle.overflowWrap,
+      footerFlexWrap: footerStyle.flexWrap,
+    };
+  });
+  if (layout.header.bottom > layout.content.top + 0.5 || layout.content.bottom > layout.footer.top + 0.5) {
+    throw new Error(`${label}/save-overlap: vertical regions overlap ${JSON.stringify(layout)}`);
+  }
+  if (layout.scrollWidth > layout.clientWidth) throw new Error(`${label}/save-overflow: ${JSON.stringify(layout)}`);
+  if (layout.descriptionWordBreak !== "keep-all" || layout.descriptionOverflowWrap !== "break-word") {
+    throw new Error(`${label}/save-wrap: description wrapping is unsafe ${JSON.stringify(layout)}`);
+  }
+  if (layout.advisoryWordBreak !== "keep-all" || layout.advisoryOverflowWrap !== "break-word") {
+    throw new Error(`${label}/save-wrap: advisory wrapping is unsafe ${JSON.stringify(layout)}`);
+  }
+  if (layout.descriptionLineHeight / layout.descriptionFontSize < 1.45) {
+    throw new Error(`${label}/save-line-height: expected at least 1.5 ${JSON.stringify(layout)}`);
+  }
+  if (layout.footerFlexWrap !== "wrap") throw new Error(`${label}/save-footer: buttons cannot wrap`);
 }
 
 async function assertPdfCanvasNeutral(page, label) {
@@ -239,6 +285,17 @@ async function assertPdfCanvasNeutral(page, label) {
       throw new Error(`${label}/${selector}: theme altered PDF canvas CSS ${JSON.stringify(geometry)}`);
     }
   }
+}
+
+async function dragMaskBox(page) {
+  const box = await page.locator("#pdf-canvas-result").boundingBox();
+  if (!box) throw new Error("manual-dirty: PDF canvas has no bounding box");
+  const start = { x: box.x + box.width * 0.14, y: box.y + box.height * 0.14 };
+  const end = { x: box.x + box.width * 0.48, y: box.y + box.height * 0.28 };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 8 });
+  await page.mouse.up();
 }
 
 async function captureState(page, theme, state, viewports, screenshots, beforeCapture) {
@@ -287,6 +344,9 @@ async function runThemeVisualAudit(browser, theme, screenshots, errors) {
       }
     });
     await assertWorkspaceGeometry(page, `${theme}/workspace-empty`);
+    if (await page.locator("#canvas-tool-menu").isVisible()) throw new Error(`${theme}/workspace-empty: tool menu trigger must stay hidden`);
+    if (!(await page.locator("#inspector-empty-guide").isVisible())) throw new Error(`${theme}/workspace-empty: inspector guide is not visible`);
+    if (await page.locator("#btn-canvas-tool-mask").count() !== 1) throw new Error(`${theme}/workspace-empty: hidden tool DOM was removed`);
 
     await activateScreen(page, "masking-settings");
     const maskingSettingsScroll = page.locator("#masking-settings-screen .dm-settings-scroll");
@@ -313,13 +373,71 @@ async function runThemeVisualAudit(browser, theme, screenshots, errors) {
     });
     await assertWorkspaceGeometry(page, `${theme}/workspace-loaded`);
     await assertPdfCanvasNeutral(page, `${theme}/workspace-loaded`);
+    if (await page.locator(".dm-canvas__batch").isVisible()) throw new Error(`${theme}/workspace-loaded: empty batch disclosure is visible`);
     const pdfFingerprint = await page.locator("#pdf-canvas-orig").evaluate((canvas) => canvas.toDataURL());
+
+    const toolSegment = page.locator("#canvas-tool-menu");
+    if (!(await toolSegment.isVisible())) throw new Error(`${theme}/tool-segment: not visible after loading a PDF`);
+    const toolButtons = toolSegment.locator("button[data-canvas-tool]");
+    if (await toolButtons.count() !== 5) throw new Error(`${theme}/tool-segment: expected five correction tools`);
+    for (const tool of await toolButtons.all()) {
+      if (!(await tool.isVisible())) throw new Error(`${theme}/tool-segment: a correction tool is hidden`);
+    }
+    const maskTool = page.locator("#btn-canvas-tool-mask");
+    const restoreTool = page.locator("#btn-canvas-tool-restore");
+    await maskTool.focus();
+    await page.keyboard.press("ArrowRight");
+    if (!(await restoreTool.evaluate((element) => element === document.activeElement))) {
+      throw new Error(`${theme}/tool-segment: ArrowRight did not move focus to the next tool`);
+    }
+    await page.locator("#btn-canvas-tool-select").click();
+    if ((await page.locator("#btn-canvas-tool-select").getAttribute("aria-pressed")) !== "true") {
+      throw new Error(`${theme}/tool-segment: selected tool did not become active`);
+    }
+    await captureState(page, theme, "toolbar-segment-active", evidenceViewports, screenshots);
+    await maskTool.click();
+    if ((await maskTool.getAttribute("aria-pressed")) !== "true") {
+      throw new Error(`${theme}/tool-segment: mask tool did not reactivate`);
+    }
+
+    const viewMenu = page.locator("#canvas-view-menu");
+    await page.locator("#canvas-view-menu-trigger").click();
+    if (!(await viewMenu.evaluate((element) => element.open))) throw new Error(`${theme}/view-menu: did not open`);
+    await captureState(page, theme, "view-dropdown-open", evidenceViewports, screenshots);
+    await page.keyboard.press("Escape");
+    if (await viewMenu.evaluate((element) => element.open)) throw new Error(`${theme}/view-menu: Escape did not close`);
+    if (!(await page.locator("#canvas-view-menu-trigger").evaluate((element) => element === document.activeElement))) {
+      throw new Error(`${theme}/view-menu: Escape did not restore trigger focus`);
+    }
+    await page.keyboard.press("ArrowDown");
+    if (!(await page.locator("#toggle-original-compare").evaluate((element) => element === document.activeElement))) {
+      throw new Error(`${theme}/view-menu: ArrowDown did not focus compare toggle`);
+    }
+    await page.keyboard.press("Space");
+    if (!(await page.locator("#toggle-original-compare").isChecked())) throw new Error(`${theme}/view-menu: Space did not toggle compare on`);
+    await page.keyboard.press("Space");
+    if (await page.locator("#toggle-original-compare").isChecked()) throw new Error(`${theme}/view-menu: Space did not toggle compare off`);
+    if ((await page.locator("#toggle-original-compare").getAttribute("aria-checked")) !== "false") {
+      throw new Error(`${theme}/view-menu: checked and aria-checked diverged`);
+    }
+    await page.keyboard.press("Escape");
+    if (await viewMenu.evaluate((element) => element.open)) throw new Error(`${theme}/view-menu: keyboard path did not close`);
 
     await page.locator("#btn-run-masking").click();
     await page.waitForFunction(() => (
       window.__QA_INVOKES__.filter((entry) => entry.cmd === "run_masking_pipeline").length === 1
       && document.querySelector("#btn-run-masking")?.disabled === false
     ), { timeout: 15_000 });
+    if (!(await page.locator("#final-state-card").isVisible())) throw new Error(`${theme}/inspector: review accordion stayed hidden after masking`);
+    if (!(await page.locator("#final-state-card").evaluate((element) => element.open))) throw new Error(`${theme}/inspector: review accordion is not open by default`);
+    if (await page.locator("#canvas-box-accordion").evaluate((element) => element.open)) throw new Error(`${theme}/inspector: box accordion is not closed by default`);
+    await captureState(page, theme, "inspector-accordion", evidenceViewports, screenshots);
+
+    await dragMaskBox(page);
+    await page.waitForFunction(() => document.querySelectorAll("#canvas-box-list button").length >= 1, { timeout: 8_000 });
+    if (!(await page.locator("#btn-canvas-apply").isVisible())) throw new Error(`${theme}/manual-dirty: apply action was not disclosed`);
+    if (!(await page.locator("#canvas-box-accordion").evaluate((element) => element.open))) throw new Error(`${theme}/manual-dirty: selected box did not expand its accordion`);
+    await captureState(page, theme, "manual-dirty", evidenceViewports, screenshots);
 
     // The responsive capture loop can leave an inner workspace scroller below
     // the sticky toolbar. Dispatch through the bound DOM action here; batch
@@ -340,8 +458,34 @@ async function runThemeVisualAudit(browser, theme, screenshots, errors) {
     if (await page.locator("#final-save-warning-list .dm-savewarn__item").count() < 1) {
       throw new Error(`${theme}/save-warning: expected at least one advisory item`);
     }
-    await captureState(page, theme, "save-warning", evidenceViewports, screenshots);
-    await assertSaveDialogGeometry(page, `${theme}/save-warning`);
+    await captureState(page, theme, "save-warning", evidenceViewports, screenshots, async (viewport) => {
+      await assertSaveDialogGeometry(page, `${theme}/${viewport.name}/save-warning`);
+    });
+    if (!(await page.locator("#final-save-dialog .dm-savewarn__summary").isVisible())) {
+      throw new Error(`${theme}/save-warning: advisory card is hidden`);
+    }
+    if (await page.locator("#final-save-dialog-state").isVisible()) {
+      throw new Error(`${theme}/save-warning: detailed count badge should be delegated to the inspector`);
+    }
+    await page.locator("#btn-dialog-cancel-save").click();
+    await activateScreen(page, "masking-settings");
+    await page.locator("#settings-export-masked-text").uncheck();
+    await page.locator("#btn-masking-settings-apply").click();
+    await activateScreen(page, "documents");
+    await page.locator("#btn-save").evaluate((element) => element.click());
+    await page.locator("#final-save-dialog").waitFor({ state: "visible", timeout: 8_000 });
+    if (await page.locator("#final-save-warning-list .dm-savewarn__item").count() !== 0) {
+      throw new Error(`${theme}/save-ready: controller retained advisory items after clearing warnings`);
+    }
+    if (await page.locator("#final-save-dialog .dm-savewarn__summary").isVisible()) {
+      throw new Error(`${theme}/save-ready: advisory card should be hidden without warnings`);
+    }
+    if (!(await page.locator("#final-save-dialog-state").isVisible())) {
+      throw new Error(`${theme}/save-ready: ready message is hidden`);
+    }
+    await captureState(page, theme, "save-ready", evidenceViewports, screenshots, async (viewport) => {
+      await assertSaveDialogGeometry(page, `${theme}/${viewport.name}/save-ready`);
+    });
     await page.locator("#btn-dialog-cancel-save").click();
     return pdfFingerprint;
   } finally {

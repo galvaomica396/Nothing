@@ -165,7 +165,7 @@ export function createFinalizationController(deps: FinalizationDeps): Finalizati
 
   function renderFinalSaveDialogSummary(): void {
     const warnings = currentFinalSaveWarnings();
-    deps.finalSaveDialogStateEl.textContent = warnings.length > 0 ? `확인 권장 ${warnings.length}건` : "확인할 사항 없음";
+    deps.finalSaveDialogStateEl.textContent = warnings.length > 0 ? `확인 권장 ${warnings.length}건` : "저장 준비 완료";
     deps.finalSaveDialogStateEl.classList.toggle("status-chip-ok", warnings.length === 0);
     deps.finalSaveDialogStateEl.classList.toggle("status-chip-warn", warnings.length > 0);
     deps.finalSaveWarningListEl.replaceChildren();
@@ -214,6 +214,7 @@ export function createFinalizationController(deps: FinalizationDeps): Finalizati
     const busy = state.maskingRunning || state.batchRunning || state.savingInFlight;
     const savedSessionReady = state.documentProvenance.continuation?.state === "ready"
       && state.boxes.length === 0;
+    const hasPendingManualEdits = state.boxes.length > 0 && !savedSessionReady;
     const runLabel = deps.btnRunMasking.querySelector<HTMLElement>('[data-role="run-label"]');
     deps.btnRunMasking.disabled = !readiness.canRunBaseMasking || busy;
     deps.btnRunMasking.dataset.running = String(state.maskingRunning);
@@ -222,8 +223,11 @@ export function createFinalizationController(deps: FinalizationDeps): Finalizati
     deps.btnCanvasApply.disabled = !readiness.canApplyManualPreview || busy;
     deps.btnSave.disabled = !canFinalSave || busy;
     deps.btnCanvasFinalSave.disabled = !canFinalSave || busy;
+    deps.btnCanvasApply.classList.toggle("is-disclosed", hasPendingManualEdits);
     deps.btnCanvasApply.classList.toggle("is-hidden", savedSessionReady);
-    deps.btnCanvasApply.nextElementSibling?.classList.toggle("is-hidden", savedSessionReady);
+    deps.btnCanvasApply.setAttribute("aria-hidden", String(!hasPendingManualEdits));
+    deps.btnCanvasApply.tabIndex = hasPendingManualEdits ? 0 : -1;
+    deps.btnCanvasApply.nextElementSibling?.classList.toggle("is-disclosed", hasPendingManualEdits);
     deps.btnCanvasFinalSave.classList.toggle("is-hidden", savedSessionReady);
     deps.btnNewDocument.classList.toggle("is-hidden", !savedSessionReady);
     deps.btnNewDocument.disabled = busy;
@@ -261,7 +265,7 @@ export function createFinalizationController(deps: FinalizationDeps): Finalizati
         deps.setStatus("저장할 마스킹본이 없습니다. 먼저 기본 마스킹을 실행하세요.");
         return;
       }
-      if (!warningsConfirmed && currentFinalSaveWarnings().length > 0) {
+      if (!warningsConfirmed) {
         openFinalSaveDialog();
         return;
       }

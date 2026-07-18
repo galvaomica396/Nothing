@@ -163,8 +163,6 @@ class FrontendButtonContractTests(unittest.TestCase):
         # v4.2.0 저장 흐름 회귀 가드:
         #  (a) 삭제된 저장/검토 관련 DOM ID 6종이 마크업·컨트롤러 어디에도 없어야 한다.
         #  (b) "저장할 수 없습니다" 등 강제 차단 문구가 사용자 대면 마크업에 없어야 한다.
-        #  (c) saveFinalOutput 이 warningsConfirmed 재진입 구조를 갖고, 경고가 있으면
-        #      확인 다이얼로그를 열고 return 하며, "그대로 저장"이 확인 플래그로 재호출한다.
         markup = frontend_markup()
         script = frontend_script()
 
@@ -187,7 +185,9 @@ class FrontendButtonContractTests(unittest.TestCase):
         # 권고형 표현·버튼 배치 계약.
         self.assertIn('id="final-save-warning-list"', markup)
         self.assertIn('id="btn-dialog-cancel-save"', markup)
-        self.assertIn("저장 전 확인 (권고사항)", markup)
+        self.assertIn('title="저장 전 확인"', markup)
+        self.assertIn("추가 확인이 필요한 항목이 있습니다", markup)
+        self.assertIn("저장 준비 완료", markup)
         self.assertIn("취소하고 검토하기", markup)
         self.assertIn("무시하고 그대로 저장", markup)
         self.assertIn('className="dm-savewarn__summary"', markup)
@@ -198,7 +198,7 @@ class FrontendButtonContractTests(unittest.TestCase):
 
         # (c) saveFinalOutput 의 warningsConfirmed 재진입 구조.
         self.assertIn("async function saveFinalOutput({ warningsConfirmed = false }", script)
-        self.assertIn("if (!warningsConfirmed && currentFinalSaveWarnings().length > 0) {", script)
+        self.assertIn("if (!warningsConfirmed) {", script)
         self.assertIn("openFinalSaveDialog();", script)
         self.assertIn("void saveFinalOutput({ warningsConfirmed: true });", script)
         self.assertIn("if (state.savingInFlight) return;", script)

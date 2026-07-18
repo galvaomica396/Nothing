@@ -148,6 +148,131 @@ class C2SurnameWhitelistDoesNotBlockLabeledNames(unittest.TestCase):
                 self.assertGreaterEqual(counts.get(tag, 0), 1, f"{text!r} -> {counts}")
 
 
+class ApprovalNamePrecisionMatrix(unittest.TestCase):
+    def test_backup_blocklist_stays_small_and_exact(self):
+        self.assertEqual(48, len(fp.PERSON_NAME_BACKUP_BLOCKLIST))
+        for value in ("장미", "안정민", "장영실", "안현"):
+            self.assertNotIn(value, fp.PERSON_NAME_BACKUP_BLOCKLIST)
+
+    def test_context_filter_rejects_public_document_domain_words(self):
+        cases = [
+            ("담당 안전", "안전"),
+            ("건축과장 장애인", "장애인"),
+            ("안전관리과장 안전", "안전"),
+            ("공사 안전", "안전"),
+            ("○○과 점검", "점검"),
+            ("안전관리과장 안전점검", "안전점검"),
+            ("장애인자립지원과장 장애인자", "장애인자"),
+        ]
+        for text, value in cases:
+            with self.subTest(text=text):
+                start = text.index(value)
+                self.assertFalse(fp.is_likely_person_name(value, text, start, start + len(value)))
+
+    def test_context_filter_keeps_labeled_and_approval_names(self):
+        cases = [
+            ("성명: 홍길동", "홍길동"),
+            ("민원인: 김철수", "김철수"),
+            ("신청인 이영희", "이영희"),
+            ("주무관 홍길동", "홍길동"),
+            ("장애인자립지원과장 김철수", "김철수"),
+            ("장애인복지과장 김철수", "김철수"),
+            ("건축과장 이영희", "이영희"),
+            ("안전관리과장 박민수", "박민수"),
+            ("과장\n김철수", "김철수"),
+            ("주무관 장미", "장미"),
+            ("주무관 안정민", "안정민"),
+            ("주무관 장영실", "장영실"),
+            ("주무관 안현", "안현"),
+        ]
+        for text, value in cases:
+            with self.subTest(text=text):
+                start = text.index(value)
+                self.assertTrue(fp.is_likely_person_name(value, text, start, start + len(value)))
+
+        dense = "과장 가온 / 팀장 다온 / 주무관 라온"
+        for value in ("가온", "다온", "라온"):
+            with self.subTest(dense_value=value):
+                start = dense.index(value)
+                self.assertTrue(fp.is_likely_person_name(value, dense, start, start + len(value)))
+
+    def test_role_adjacent_domain_words_remain_unmasked(self):
+        samples = [
+            "담당 안전",
+            "건축과장 장애인",
+            "안전관리과장 안전",
+            "장애인자립지원과",
+            "공사 안전",
+            "○○과 점검",
+            "복지 지원",
+            "과장\n안전",
+            "과장 안전 팀장 관리",
+            "안전관리과장 안전점검",
+            "장애인자립지원과장 장애인자",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                masked, counts, matches = masker.mask_text(sample, profile="official")
+                self.assertEqual(sample, masked)
+                self.assertEqual({}, counts)
+                self.assertEqual([], matches)
+
+    def test_authoritative_labels_and_real_approvers_remain_masked(self):
+        cases = [
+            ("성명: 홍길동", "NAME", "홍길동"),
+            ("민원인: 김철수", "NAME", "김철수"),
+            ("신청인 이영희", "NAME", "이영희"),
+            ("주무관 홍길동", "APPROVAL_LINE", "홍길동"),
+            ("장애인자립지원과장 김철수", "APPROVAL_LINE", "김철수"),
+            ("장애인복지과장 김철수", "APPROVAL_LINE", "김철수"),
+            ("건축과장 이영희", "APPROVAL_LINE", "이영희"),
+            ("안전관리과장 박민수", "APPROVAL_LINE", "박민수"),
+            ("주무관 장미", "APPROVAL_LINE", "장미"),
+            ("주무관 안정민", "APPROVAL_LINE", "안정민"),
+            ("주무관 장영실", "APPROVAL_LINE", "장영실"),
+            ("주무관 안현", "APPROVAL_LINE", "안현"),
+            ("과장\n김철수", "APPROVAL_LINE", "김철수"),
+            ("성명: 지원", "NAME", "지원"),
+        ]
+        for sample, tag, value in cases:
+            with self.subTest(sample=sample):
+                masked, counts, matches = masker.mask_text(sample, profile="official")
+                self.assertIn(f"[{tag}]", masked)
+                self.assertEqual(1, counts.get(tag))
+                occurrence = next(match for match in matches if match.tag == tag)
+                self.assertEqual(value, occurrence.text)
+                self.assertEqual(value, sample[occurrence.start:occurrence.end])
+
+        sample = "과장 김철수 팀장 이영희"
+        masked, counts, matches = masker.mask_text(sample, profile="official")
+        self.assertEqual("과장 [APPROVAL_LINE] 팀장 [APPROVAL_LINE]", masked)
+        self.assertEqual(2, counts.get("APPROVAL_LINE"))
+        approval_matches = [match for match in matches if match.tag == "APPROVAL_LINE"]
+        self.assertEqual(["김철수", "이영희"], [match.text for match in approval_matches])
+        self.assertEqual(
+            ["김철수", "이영희"],
+            [sample[match.start:match.end] for match in approval_matches],
+        )
+
+        dense = "과장 홍길동 / 팀장 김철수 / 주무관 이영희"
+        masked, counts, matches = masker.mask_text(dense, profile="official")
+        self.assertEqual(3, counts.get("APPROVAL_LINE"))
+        self.assertEqual(3, masked.count("[APPROVAL_LINE]"))
+        self.assertEqual(
+            ["홍길동", "김철수", "이영희"],
+            [match.text for match in matches if match.tag == "APPROVAL_LINE"],
+        )
+
+        mixed = "건축8급 김철수 / 시설7급 안전"
+        masked, counts, matches = masker.mask_text(mixed, profile="official")
+        self.assertEqual("건축8급 [APPROVAL_LINE] / 시설7급 안전", masked)
+        self.assertEqual(1, counts.get("APPROVAL_LINE"))
+        self.assertEqual(
+            ["김철수"],
+            [match.text for match in matches if match.tag == "APPROVAL_LINE"],
+        )
+
+
 class C3LabeledJibunAddress(unittest.TestCase):
     """C-3: 라벨된 지번 주소(단일 동 + 지번) 탐지."""
 

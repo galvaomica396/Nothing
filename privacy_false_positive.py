@@ -51,6 +51,27 @@ NON_COURT_SUPPORT_SUFFIXES: Final = (
 )
 COURT_CONTEXT_PAT: Final = re.compile(r"(?:법\s*원|재\s*판\s*소|재\s*판\s*부|\[COURT\])")
 COURT_CONTEXT_RADIUS: Final = 40
+PERSON_NAME_BACKUP_BLOCKLIST: Final = frozenset(
+    {
+        "안전", "장애인", "점검", "관리", "지원", "담당", "업무", "확인", "검토", "처리", "완료",
+        "접수", "신고", "허가", "계획", "사업", "운영", "규정", "조례", "행정", "민원", "시설",
+        "건축", "토목", "환경", "보건", "위생", "교통", "예산", "회계", "총무", "기획", "감사",
+        "복지", "교육", "공사", "준공", "착공", "승인", "결재", "반려", "보완", "시행", "공람",
+        "상신", "계약", "결과", "자료",
+    }
+)
+PERSON_LABEL_CONTEXT_PAT: Final = re.compile(
+    r"(?:이름|성명|민원인|신청인|보호자|대표자|제출인)\s*(?:[:：]\s*|\s+)$"
+)
+APPROVAL_ROLE_TOKEN_PAT: Final = re.compile(
+    r"(?:주무관|사무관|서기관|부이사관|이사관|관리관|서기보?|주사보?|팀장|과장|국장|실장|센터장|"
+    r"담당자?|계장|부시장|시장|부구청장|구청장|인턴|사원|주임|선임|책임|수석|연구원|대리|"
+    r"차장|부장|본부장|사업부장|파트장|매니저|이사|상무|전무|부사장|사장|대표(?:이사)?|"
+    r"CEO|CTO|CFO|COO|[1-9Bb]\s*[급긍금])",
+    re.IGNORECASE,
+)
+PERSON_CONTEXT_RADIUS: Final = 96
+PERSON_ORG_SUFFIXES: Final = ("센터", "공단", "공사", "과", "팀", "국", "실", "부", "처", "청", "원", "소")
 
 
 def compact_korean_value(value: str) -> str:
@@ -82,6 +103,42 @@ def is_likely_person_name_value(value: str) -> bool:
         and has_likely_korean_surname(compact)
         and not is_common_non_person_value(compact)
     )
+
+
+def _is_person_false_positive_value(value: str) -> bool:
+    compact = compact_korean_value(value)
+    return compact in PERSON_NAME_BACKUP_BLOCKLIST
+
+
+def _has_dense_approval_role_context(text: str, start: int, end: int) -> bool:
+    window = text[max(0, start - PERSON_CONTEXT_RADIUS):min(len(text), end + PERSON_CONTEXT_RADIUS)]
+    roles = {compact_korean_value(match.group(0)).casefold() for match in APPROVAL_ROLE_TOKEN_PAT.finditer(window)}
+    return len(roles) >= 2
+
+
+def _has_person_name_shape(value: str, text: str, end: int) -> bool:
+    compact = compact_korean_value(value)
+    if any(text[end:].startswith(suffix) for suffix in PERSON_ORG_SUFFIXES):
+        return False
+    if compact[:2] in KOREAN_COMPOUND_SURNAMES:
+        return len(compact) in (3, 4)
+    return compact[0] in KOREAN_SINGLE_SURNAME_CHARS and len(compact) in (2, 3)
+
+
+def is_likely_person_name(value: str, text: str, start: int, end: int) -> bool:
+    compact = compact_korean_value(value)
+    if not re.fullmatch(r"[가-힣]{2,4}", compact):
+        return False
+    if start < 0 or end <= start or end > len(text):
+        return False
+    before = text[max(0, start - PERSON_CONTEXT_RADIUS):start]
+    if PERSON_LABEL_CONTEXT_PAT.search(before):
+        return True
+    if is_common_non_person_value(compact) or _is_person_false_positive_value(compact):
+        return False
+    if _has_dense_approval_role_context(text, start, end):
+        return True
+    return _has_person_name_shape(compact, text, end)
 
 
 def is_labeled_person_name_value(value: str) -> bool:

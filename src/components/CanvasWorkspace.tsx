@@ -1,5 +1,64 @@
 import { Modal } from "./ui/Modal";
 import { SymbolIcon } from "./ui/SymbolIcon";
+import type { FocusEvent, KeyboardEvent, SyntheticEvent } from "react";
+
+function closeDisclosure(details: HTMLDetailsElement, restoreFocus = false): void {
+  details.open = false;
+  if (restoreFocus) details.querySelector<HTMLElement>("summary")?.focus();
+}
+
+function handleDisclosureKeyDown(event: KeyboardEvent<HTMLDetailsElement>): void {
+  const details = event.currentTarget;
+  if (event.key === "Escape" && details.open) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeDisclosure(details, true);
+    return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const items = [...details.querySelectorAll<HTMLElement>('[role="menuitemradio"], [role="menuitemcheckbox"]')]
+    .filter((item) => !item.matches(":disabled"));
+  if (items.length === 0) return;
+  event.preventDefault();
+  details.open = true;
+  const current = items.findIndex((item) => item === event.target || item.contains(event.target as Node));
+  const next = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? items.length - 1
+      : event.key === "ArrowUp"
+        ? (current <= 0 ? items.length - 1 : current - 1)
+        : (current + 1) % items.length;
+  items[next]?.focus();
+}
+
+function handleToolSegmentKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-canvas-tool]")]
+    .filter((item) => !item.disabled);
+  if (items.length === 0) return;
+  event.preventDefault();
+  const current = items.findIndex((item) => item === event.target || item.contains(event.target as Node));
+  const next = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? items.length - 1
+      : event.key === "ArrowLeft"
+        ? (current <= 0 ? items.length - 1 : current - 1)
+        : (current + 1) % items.length;
+  items[next]?.focus();
+}
+
+function handleDisclosureBlur(event: FocusEvent<HTMLDetailsElement>): void {
+  const next = event.relatedTarget;
+  if (next instanceof Node && event.currentTarget.contains(next)) return;
+  closeDisclosure(event.currentTarget);
+}
+
+function syncAccordionExpanded(event: SyntheticEvent<HTMLDetailsElement>): void {
+  const details = event.currentTarget;
+  details.querySelector<HTMLElement>("summary")?.setAttribute("aria-expanded", String(details.open));
+}
 
 // v4 P2 (REDESIGN_V4_DARK §1): 문서 관제 화면과 수동 보정(캔버스) 화면을 하나의
 // "문서" 화면으로 통합했다. 이 화면이 data-screen-panel="documents"를 가져가고
@@ -25,15 +84,25 @@ export function CanvasWorkspace() {
         </div>
 
         {/* ── 상단 도구 바: 보정 도구 · 키워드 · 보기 · 반영/저장 ── */}
-        <div className="dm-canvas__toolbar" aria-label="문서 도구">
-          <div className="dm-canvas__tool-group dm-canvas__tool-group--edit" aria-label="보정 도구">
-            <div className="dm-seg dm-canvas__palette canvas-editor-palette" role="toolbar" aria-label="편집 도구">
-              <button id="btn-canvas-tool-mask" className="tool-button is-active" type="button" data-canvas-tool="mask" aria-pressed="true" title="가릴 영역을 드래그하면 검은 박스로 덮습니다."><SymbolIcon name="draw" /><span>마스킹</span></button>
-              <button id="btn-canvas-tool-restore" className="tool-button" type="button" data-canvas-tool="restore" aria-pressed="false" title="가려진 영역을 드래그하면 다시 보이게 되돌립니다."><SymbolIcon name="ink_eraser" /><span>복원</span></button>
-              <button id="btn-canvas-tool-select" className="tool-button" type="button" data-canvas-tool="select" aria-pressed="false" title="박스를 클릭해 유형을 바꾸거나 삭제합니다."><SymbolIcon name="ads_click" /><span>선택</span></button>
-              <button id="btn-canvas-tool-delete" className="tool-button" type="button" data-canvas-tool="delete" aria-pressed="false" title="클릭한 박스를 바로 지웁니다."><SymbolIcon name="delete" /><span>삭제</span></button>
-              <button id="btn-canvas-tool-pan" className="tool-button" type="button" data-canvas-tool="pan" aria-pressed="false" title="드래그해서 문서 보기를 옮깁니다."><SymbolIcon name="open_with" /><span>이동</span></button>
-            </div>
+          <div className="dm-canvas__toolbar" aria-label="문서 도구">
+            <div className="dm-canvas__tool-group dm-canvas__tool-group--edit" aria-label="보정 도구">
+              <div
+                id="canvas-tool-menu"
+                className="dm-seg dm-canvas__palette dm-canvas__tool-segment canvas-editor-palette"
+                role="toolbar"
+                aria-label="보정 도구"
+                aria-orientation="horizontal"
+                onKeyDown={handleToolSegmentKeyDown}
+              >
+                <span id="canvas-tool-menu-trigger" className="dm-visually-hidden" aria-hidden="true">
+                  현재 도구 <span id="canvas-active-tool-label">마스킹</span>
+                </span>
+                <button id="btn-canvas-tool-mask" className="tool-button is-active" type="button" data-canvas-tool="mask" aria-label="마스킹" aria-checked="true" aria-pressed="true" title="가릴 영역을 드래그하면 검은 박스로 덮습니다."><SymbolIcon name="draw" /><span className="dm-visually-hidden">마스킹</span></button>
+                <button id="btn-canvas-tool-restore" className="tool-button" type="button" data-canvas-tool="restore" aria-label="복원" aria-checked="false" aria-pressed="false" title="가려진 영역을 드래그하면 다시 보이게 되돌립니다."><SymbolIcon name="ink_eraser" /><span className="dm-visually-hidden">복원</span></button>
+                <button id="btn-canvas-tool-select" className="tool-button" type="button" data-canvas-tool="select" aria-label="선택" aria-checked="false" aria-pressed="false" title="박스를 클릭해 유형을 바꾸거나 삭제합니다."><SymbolIcon name="ads_click" /><span className="dm-visually-hidden">선택</span></button>
+                <button id="btn-canvas-tool-delete" className="tool-button" type="button" data-canvas-tool="delete" aria-label="삭제" aria-checked="false" aria-pressed="false" title="클릭한 박스를 바로 지웁니다."><SymbolIcon name="delete" /><span className="dm-visually-hidden">삭제</span></button>
+                <button id="btn-canvas-tool-pan" className="tool-button" type="button" data-canvas-tool="pan" aria-label="이동" aria-checked="false" aria-pressed="false" title="드래그해서 문서 보기를 옮깁니다."><SymbolIcon name="open_with" /><span className="dm-visually-hidden">이동</span></button>
+              </div>
           </div>
 
           <div className="dm-canvas__tool-group dm-canvas__tool-group--keyword" aria-label="키워드">
@@ -41,17 +110,30 @@ export function CanvasWorkspace() {
           </div>
 
           <div className="dm-canvas__tool-group dm-canvas__tool-group--view" aria-label="보기">
-            <label className="dm-canvas__view-toggle"><input id="toggle-original-compare" type="checkbox" /><span>원문 대조</span></label>
             <div className="dm-canvas__zoom">
               <button id="btn-canvas-zoom-out" className="dm-btn dm-btn--ghost dm-icon-btn" type="button" aria-label="축소"><SymbolIcon name="zoom_out" /></button>
               <span id="zoom-info" className="dm-canvas__zoom-value">120%</span>
               <button id="btn-canvas-zoom-in" className="dm-btn dm-btn--ghost dm-icon-btn" type="button" aria-label="확대"><SymbolIcon name="zoom_in" /></button>
             </div>
+            <details
+              id="canvas-view-menu"
+              className="dm-canvas__disclosure"
+              onKeyDown={handleDisclosureKeyDown}
+              onBlur={handleDisclosureBlur}
+            >
+              <summary id="canvas-view-menu-trigger" className="dm-btn dm-btn--ghost dm-canvas__disclosure-trigger" aria-haspopup="menu">
+                <span>보기</span>
+                <SymbolIcon name="arrow_drop_down" aria-hidden="true" />
+              </summary>
+              <div className="dm-canvas__disclosure-panel dm-canvas__view-menu" role="menu">
+                <label className="dm-canvas__view-toggle"><input id="toggle-original-compare" type="checkbox" role="menuitemcheckbox" aria-checked="false" onChange={(event) => event.currentTarget.setAttribute("aria-checked", String(event.currentTarget.checked))} /><span>원문 대조</span></label>
+              </div>
+            </details>
           </div>
 
 
           {/* 배치(여러 PDF)는 보조 액션 — 접힘 패널로 수납. 선택·실행은 상단 바(헤더)와 공유. */}
-          <details className="dm-canvas__tool-group dm-canvas__batch" aria-label="여러 문서 일괄 처리">
+          <details className="dm-canvas__batch dm-canvas__tool-group" aria-label="여러 문서 일괄 처리" hidden>
             <summary className="dm-canvas__batch-summary">
               <SymbolIcon name="library_add" />
               <span>여러 PDF</span>
@@ -115,7 +197,7 @@ export function CanvasWorkspace() {
               <span className="dm-canvas__hero-desc">공문 PDF를 열면 개인정보를 가린 미리보기가 만들어지고, 이 화면에서 직접 보정할 수 있습니다.</span>
               <div className="dm-canvas__hero-actions">
                 <button id="btn-canvas-load-pdf" className="dm-btn dm-btn--primary dm-canvas__hero-cta" type="button"><SymbolIcon name="folder_open" /><span>PDF 열기</span></button>
-                <button id="btn-canvas-hero-batch" className="dm-btn dm-btn--ghost" type="button" data-command-proxy="btn-pick-batch"><SymbolIcon name="library_add" /><span>여러 PDF</span></button>
+                <button id="btn-canvas-hero-batch" className="dm-btn dm-btn--ghost dm-visually-hidden" type="button" data-command-proxy="btn-pick-batch"><SymbolIcon name="library_add" /><span>여러 PDF</span></button>
               </div>
             </div>
 
@@ -198,47 +280,64 @@ export function CanvasWorkspace() {
             </header>
 
             <div className="dm-inspector__scroll">
-              <section className="dm-inspector__card dm-detect" id="final-state-card" data-state="idle">
-                <span className="dm-section-label" id="obsidian-detection-heading">검토 필요 항목</span>
-                <section id="obsidian-detection-list" className="dm-detect__list">
-                  <div>
-                    <i className="dot-primary"></i>
-                    <strong>마스킹 실행 후 표시됩니다</strong>
-                    <em>0건</em>
-                  </div>
-                </section>
-                <footer className="dm-detect__state">
-                  <strong id="final-state-title">대기 중</strong>
-                  <b id="final-state-detail">문서를 열고 마스킹을 실행하세요.</b>
-                </footer>
-              </section>
+              <div id="inspector-empty-guide" className="dm-inspector__empty-guide">
+                <SymbolIcon name="fact_check" />
+                <strong>문서를 열면 검토 항목이 여기에 표시됩니다</strong>
+                <span>마스킹 실행 후 필요한 내용만 단계별로 펼쳐 보세요.</span>
+              </div>
 
-              <section className="dm-card dm-canvas__panel" aria-label="현재 페이지 박스">
-                <div className="dm-card__header">
+              <details className="dm-inspector__card dm-inspector__accordion dm-detect" id="final-state-card" data-state="idle" open onToggle={syncAccordionExpanded}>
+                <summary className="dm-inspector__accordion-summary" aria-expanded="true" aria-controls="inspector-review-content">
+                  <span className="dm-section-label" id="obsidian-detection-heading">검토 필요 항목</span>
+                  <SymbolIcon name="arrow_drop_down" aria-hidden="true" />
+                </summary>
+                <div id="inspector-review-content" className="dm-inspector__accordion-content">
+                  <section id="obsidian-detection-list" className="dm-detect__list">
+                    <div>
+                      <i className="dot-primary"></i>
+                      <strong>마스킹 실행 후 표시됩니다</strong>
+                      <em>0건</em>
+                    </div>
+                  </section>
+                  <footer className="dm-detect__state">
+                    <strong id="final-state-title">대기 중</strong>
+                    <b id="final-state-detail">문서를 열고 마스킹을 실행하세요.</b>
+                  </footer>
+                </div>
+              </details>
+
+              <details id="canvas-box-accordion" className="dm-card dm-canvas__panel dm-inspector__accordion" aria-label="현재 페이지 박스" onToggle={syncAccordionExpanded}>
+                <summary className="dm-inspector__accordion-summary" aria-expanded="false" aria-controls="canvas-box-accordion-content">
                   <span className="dm-card__title">현재 페이지 박스</span>
-                </div>
-                <div id="canvas-box-properties" className="dm-canvas__props is-empty">
-                  <dl className="dm-canvas__prop-grid dm-visually-hidden">
-                    <div><dt>페이지</dt><dd id="canvas-box-property-page">-</dd></div>
-                    <div><dt>유형</dt><dd id="canvas-box-property-type">-</dd></div>
-                    {/* 좌표·크기(px)는 사용자가 알 필요 없는 내부 수치 — DOM 유지, 화면에서 숨김 */}
-                    <div><dt>좌표</dt><dd id="canvas-box-property-coordinates">-</dd></div>
-                    <div><dt>크기</dt><dd id="canvas-box-property-size">-</dd></div>
-                  </dl>
-                  <div className="dm-canvas__prop-actions">
-                    <button id="btn-canvas-box-convert-mask" className="dm-btn" type="button">마스킹으로 전환</button>
-                    <button id="btn-canvas-box-convert-restore" className="dm-btn" type="button">복원으로 전환</button>
-                    <button id="btn-canvas-box-delete" className="dm-btn dm-btn--danger" type="button">선택 삭제</button>
+                  <SymbolIcon name="arrow_drop_down" aria-hidden="true" />
+                </summary>
+                <div id="canvas-box-accordion-content" className="dm-inspector__accordion-content">
+                  <div id="canvas-box-properties" className="dm-canvas__props is-empty">
+                    <dl className="dm-canvas__prop-grid dm-visually-hidden">
+                      <div><dt>페이지</dt><dd id="canvas-box-property-page">-</dd></div>
+                      <div><dt>유형</dt><dd id="canvas-box-property-type">-</dd></div>
+                      {/* 좌표·크기(px)는 사용자가 알 필요 없는 내부 수치 — DOM 유지, 화면에서 숨김 */}
+                      <div><dt>좌표</dt><dd id="canvas-box-property-coordinates">-</dd></div>
+                      <div><dt>크기</dt><dd id="canvas-box-property-size">-</dd></div>
+                    </dl>
+                    <div className="dm-canvas__prop-actions">
+                      <button id="btn-canvas-box-convert-mask" className="dm-btn" type="button">마스킹으로 전환</button>
+                      <button id="btn-canvas-box-convert-restore" className="dm-btn" type="button">복원으로 전환</button>
+                      <button id="btn-canvas-box-delete" className="dm-btn dm-btn--danger" type="button">선택 삭제</button>
+                    </div>
+                  </div>
+                  <div id="canvas-box-list" className="dm-canvas__box-list">
+                    <div className="canvas-box-empty dm-empty-state">현재 페이지에 박스가 없습니다.</div>
                   </div>
                 </div>
-                <div id="canvas-box-list" className="dm-canvas__box-list">
-                  <div className="canvas-box-empty dm-empty-state">현재 페이지에 박스가 없습니다.</div>
-                </div>
-              </section>
+              </details>
 
-              <section className="dm-inspector__card dm-savesummary" aria-label="저장 요약">
-                <span className="dm-section-label">저장 요약</span>
-                <div className="dm-savesummary__grid">
+              <details id="save-summary-accordion" className="dm-inspector__card dm-savesummary dm-inspector__accordion" aria-label="저장 요약" open onToggle={syncAccordionExpanded}>
+                <summary className="dm-inspector__accordion-summary" aria-expanded="true" aria-controls="save-summary-accordion-content">
+                  <span className="dm-section-label">저장 요약</span>
+                  <SymbolIcon name="arrow_drop_down" aria-hidden="true" />
+                </summary>
+                <div id="save-summary-accordion-content" className="dm-savesummary__grid dm-inspector__accordion-content">
                   <div className="dm-kv"><span>마스킹 박스</span><strong id="review-summary-mask-count">0개</strong></div>
                   <div className="dm-kv"><span>복원 박스</span><strong id="review-summary-restore-count">0개</strong></div>
                   <div className="dm-kv"><span>키워드</span><strong id="review-summary-keyword-count">0개</strong></div>
@@ -259,7 +358,7 @@ export function CanvasWorkspace() {
                     <span>등록된 키워드 없음</span>
                   </div>
                 </div>
-              </section>
+              </details>
 
               {/* 저장 게이트 사유 한 줄 — 스크롤 영역 하단에 두어 고정 액션 푸터가
                   저장 버튼까지 잘리지 않도록 한다. */}
@@ -296,7 +395,6 @@ export function CanvasWorkspace() {
           <button id="btn-manual-apply" type="button">미리보기 반영</button>
           <button id="btn-mask-canvas" type="button" aria-label="PDF 작업창 열기" title="PDF 작업창 열기">PDF 작업창 열기</button>
           <button id="btn-open-canvas-window" type="button">현재 창 작업공간 열기</button>
-          <strong id="canvas-active-tool-label">마스킹 박스</strong>
         </section>
 
         <Modal
@@ -346,10 +444,9 @@ export function CanvasWorkspace() {
         <Modal
           id="final-save-dialog"
           titleId="final-save-dialog-title"
-          title="저장 전 확인 (권고사항)"
-          description="문서 저장을 진행할 수 있습니다. 다만 검증 시스템이 일부 영역에 대한 재검토를 권장하고 있습니다."
+          title="저장 전 확인"
+          description="문서를 바로 저장할 수 있습니다. 필요하면 우측 패널에서 한 번 더 확인하세요."
           closeButtonId="btn-close-final-save-dialog"
-          wide
           footer={(
             <>
               <button id="btn-dialog-cancel-save" className="dm-btn dm-btn--ghost" type="button">취소하고 검토하기</button>
@@ -357,20 +454,18 @@ export function CanvasWorkspace() {
             </>
           )}
         >
+          <span id="final-save-dialog-state" className="dm-badge status-chip status-chip-ok">저장 준비 완료</span>
           <div className="dm-savewarn__summary" role="note">
-            <span className="dm-savewarn__summary-icon" aria-hidden="true">!</span>
+            <SymbolIcon name="error" className="dm-savewarn__summary-icon" aria-hidden="true" />
             <div>
               <strong>추가 확인이 필요한 항목이 있습니다</strong>
-              <span>권고 사항을 검토하거나, 확인 후 그대로 저장할 수 있습니다.</span>
-              <span id="final-save-dialog-state" className="dm-badge status-chip status-chip-warn">확인할 사항 없음</span>
+              <span data-role="final-save-advisory-copy">우측 패널에서 권고 항목을 확인하거나 바로 저장할 수 있습니다.</span>
               <ul id="final-save-warning-list" className="dm-savewarn" aria-label="저장 전 확인 권장 사항">
                 <li className="dm-savewarn__empty">권고할 사항이 없습니다. 그대로 저장할 수 있습니다.</li>
               </ul>
             </div>
           </div>
-          <p className="dm-savewarn__location-note">
-            권고 사항을 확인하고 계속하면 저장 위치와 파일명을 OS 저장 창에서 선택합니다.
-          </p>
+          <p className="dm-savewarn__location-note" hidden>저장 위치와 파일명은 다음 단계에서 선택합니다.</p>
         </Modal>
       </section>
       <div id="canvas-mode-status" className="canvas-status-proxy dm-visually-hidden">작업창 대기</div>

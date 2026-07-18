@@ -3691,7 +3691,7 @@ dependencies = [
 
 [[package]]
 name = "tauri_frontend"
-version = "4.6.1"
+version = "4.6.3"
 dependencies = [
  "rfd",
  "serde",

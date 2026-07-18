@@ -597,6 +597,7 @@ function setCompareMode(mode: CompareMode) {
 }
 
 function updateOriginalCompareVisibility() {
+  toggleOriginalCompareEl.setAttribute("aria-checked", String(toggleOriginalCompareEl.checked));
   originalComparePanelEl.classList.toggle("is-hidden", !toggleOriginalCompareEl.checked);
 }
 

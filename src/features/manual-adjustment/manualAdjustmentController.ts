@@ -185,6 +185,7 @@ export function createManualAdjustmentController(deps: ManualAdjustmentDeps): Ma
 
   function renderCanvasBoxProperties(): void {
     const box = selectedCanvasBox();
+    const canvasBoxAccordionEl = deps.canvasBoxPropertiesEl.closest<HTMLDetailsElement>("#canvas-box-accordion");
     deps.canvasBoxPropertiesEl.classList.toggle("is-empty", !box);
     deps.btnCanvasBoxDelete.disabled = editsLocked() || !box;
     deps.btnCanvasBoxConvertMask.disabled = editsLocked() || !box || box.mode === "mask";
@@ -195,6 +196,10 @@ export function createManualAdjustmentController(deps: ManualAdjustmentDeps): Ma
       deps.canvasBoxPropertyCoordinatesEl.textContent = "-";
       deps.canvasBoxPropertySizeEl.textContent = "-";
       return;
+    }
+    if (canvasBoxAccordionEl) {
+      canvasBoxAccordionEl.open = true;
+      canvasBoxAccordionEl.querySelector<HTMLElement>("summary")?.setAttribute("aria-expanded", "true");
     }
     const width = Math.abs(box.x1 - box.x0);
     const height = Math.abs(box.y1 - box.y0);
@@ -257,7 +262,7 @@ export function createManualAdjustmentController(deps: ManualAdjustmentDeps): Ma
       activeTool = state.mode;
       deps.setActiveCanvasToolState(activeTool);
     }
-    const activeLabel = activeTool === "select" ? "선택" : activeTool === "pan" ? "이동" : activeTool === "delete" ? "삭제" : boxModeLabel(activeTool);
+    const activeLabel = activeTool === "select" ? "선택" : activeTool === "pan" ? "이동" : activeTool === "delete" ? "삭제" : activeTool === "mask" ? "마스킹" : "복원";
     deps.canvasActiveToolLabelEl.textContent = activeLabel;
     deps.overlay.dataset.tool = activeTool;
     for (const button of deps.canvasEditorToolButtons) {
@@ -265,6 +270,7 @@ export function createManualAdjustmentController(deps: ManualAdjustmentDeps): Ma
       const isActive = tool === activeTool;
       const needsEditablePdf = tool !== "select" && tool !== "pan";
       button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-checked", String(isActive));
       button.setAttribute("aria-pressed", String(isActive));
       button.disabled = needsEditablePdf && (editsLocked() || (!canEdit && !deps.isStandaloneCanvasWindow));
       button.title = button.disabled ? editReason : activeLabel;

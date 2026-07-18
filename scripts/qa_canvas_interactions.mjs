@@ -117,6 +117,12 @@ async function dragOnPdf(page, fromFrac, toFrac) {
   await page.waitForTimeout(120);
 }
 
+async function selectCanvasTool(page, toolId) {
+  const tool = page.locator(`#${toolId}`);
+  if (!(await tool.isVisible())) await page.locator("#canvas-tool-menu-trigger").click();
+  await tool.click();
+}
+
 // Drag horizontally within the *visible* scroll-viewport rect (not the PDF rect,
 // which at max zoom extends beyond the viewport and can put a fraction off-screen).
 // The overlay fills the whole visible viewport when the PDF overflows, so any
@@ -207,7 +213,7 @@ async function runSurface(page, { label, standalone }) {
   check(geometry.topElementId === "overlay-canvas-result", `overlay is topmost element over PDF center (got '${geometry.topElementId}')`);
 
   // --- Masking box drag ---
-  await page.locator("#btn-canvas-tool-mask").click();
+  await selectCanvasTool(page, "btn-canvas-tool-mask");
   check(await page.locator("#btn-canvas-tool-mask").getAttribute("aria-pressed") === "true", "mask tool is active");
   await dragOnPdf(page, { x: 0.12, y: 0.10 }, { x: 0.55, y: 0.28 });
   check((await totalBoxCount(page)) === 1, "mask drag created 1 box (#box-info 전체 1개)");
@@ -222,7 +228,7 @@ async function runSurface(page, { label, standalone }) {
   }
 
   // --- Restore box drag ---
-  await page.locator("#btn-canvas-tool-restore").click();
+  await selectCanvasTool(page, "btn-canvas-tool-restore");
   check(await page.locator("#btn-canvas-tool-restore").getAttribute("aria-pressed") === "true", "restore tool is active");
   await dragOnPdf(page, { x: 0.15, y: 0.45 }, { x: 0.60, y: 0.66 });
   check((await totalBoxCount(page)) === 2, "restore drag created a 2nd box (#box-info 전체 2개)");
@@ -241,7 +247,7 @@ async function runSurface(page, { label, standalone }) {
 
   // Nothing selected yet (drawing the restore box left it selected — deselect by
   // clicking empty canvas with the select tool, then assert the empty panel).
-  await page.locator("#btn-canvas-tool-select").click();
+  await selectCanvasTool(page, "btn-canvas-tool-select");
   check(await page.locator("#btn-canvas-tool-select").getAttribute("aria-pressed") === "true", "select tool activates");
   await clickOnPdf(page, { x: 0.88, y: 0.95 }); // empty corner, no box there
   check(await selectedBoxIndex(page) === "-", "clicking empty canvas with select tool clears selection (properties panel empty)");
@@ -266,7 +272,7 @@ async function runSurface(page, { label, standalone }) {
   check((await page.locator("#canvas-box-property-type").textContent()) === "복원 박스", "select tool: clicking the restore box switches selection to it (복원 박스)");
 
   // --- Delete tool: click a box on the canvas to remove it ---
-  await page.locator("#btn-canvas-tool-delete").click();
+  await selectCanvasTool(page, "btn-canvas-tool-delete");
   check(await page.locator("#btn-canvas-tool-delete").getAttribute("aria-pressed") === "true", "delete tool stays active (persistent click-to-delete tool)");
   const beforeDelete = await totalBoxCount(page);
   await clickOnPdf(page, { x: 0.33, y: 0.19 }); // click the mask box to delete it
@@ -281,7 +287,7 @@ async function runSurface(page, { label, standalone }) {
   check((await totalBoxCount(page)) === beforeNoop, "delete tool: clicking empty canvas removes nothing");
 
   // --- "선택 삭제" button path still works (select a box, then delete-selected) ---
-  await page.locator("#btn-canvas-tool-select").click();
+  await selectCanvasTool(page, "btn-canvas-tool-select");
   await clickOnPdf(page, { x: 0.37, y: 0.55 }); // select remaining restore box
   const beforeBtnDelete = await totalBoxCount(page);
   check(await page.locator("#btn-canvas-delete-box").isEnabled(), "선택 삭제 button is enabled once a box is selected");
@@ -294,7 +300,7 @@ async function runSurface(page, { label, standalone }) {
   // --- Pan tool: dragging scrolls the view ---
   // The QA fixture is a small page; zoom to max so it overflows the scroll
   // container and the pan tool has room to move (each click is +0.1, clamped 2.5).
-  await page.locator("#btn-canvas-tool-mask").click();
+  await selectCanvasTool(page, "btn-canvas-tool-mask");
   await dragOnPdf(page, { x: 0.20, y: 0.20 }, { x: 0.60, y: 0.40 }); // ensure a box exists to render
   for (let zoom = 0; zoom < 14; zoom += 1) {
     const zoomIn = page.locator("#btn-canvas-zoom-in");
@@ -307,7 +313,7 @@ async function runSurface(page, { label, standalone }) {
     await page.waitForTimeout(60); // let the async zoom re-render settle
   }
   await page.waitForTimeout(200);
-  await page.locator("#btn-canvas-tool-pan").click();
+  await selectCanvasTool(page, "btn-canvas-tool-pan");
   check(await page.locator("#btn-canvas-tool-pan").getAttribute("aria-pressed") === "true", "pan tool activates");
   const scrollBefore = await page.evaluate(() => {
     const el = document.querySelector("#canvas-wrap-result").closest(".dm-canvas__scroll");

@@ -152,6 +152,8 @@ export function createDocumentBatchController(deps: DocumentBatchDeps): Document
 
   function renderBatchQueue(): void {
     const summary = summarizeBatchItems(state.batchItems);
+    const batchDisclosure = deps.batchQueueEl.closest<HTMLDetailsElement>(".dm-canvas__batch");
+    if (batchDisclosure) batchDisclosure.hidden = summary.total === 0;
     deps.batchSummaryEl.textContent = `${summary.total}개 · 대기 ${summary.pending} · 완료 ${summary.done}`;
     deps.btnRunBatch.hidden = summary.pending === 0;
     deps.btnRunBatch.disabled = summary.pending === 0 || state.batchRunning || state.maskingRunning;

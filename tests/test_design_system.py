@@ -542,6 +542,12 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn('.dm-savegate__readiness[data-state="ready"]', docs)
         self.assertNotIn(".dm-output-preview", settings)
         self.assertIn(".dm-savewarn__location-note", docs)
+        self.assertIn("width: 480px;", docs)
+        self.assertIn("max-width: 90vw;", docs)
+        self.assertIn("word-break: keep-all;", docs)
+        self.assertIn("overflow-wrap: break-word;", docs)
+        self.assertIn("flex-wrap: wrap;", docs)
+        self.assertIn(".dm-canvas__tool-segment", docs)
         # v4 P3: 모바일 독 삭제(오버플로 메뉴 후신도 폐지). 좁은 폭에서 통합 문서
         # 화면은 인스펙터를 스테이지 아래로 세로 스택해 유계를 유지한다.
         self.assertNotIn(".mobile-action-dock", shell)
@@ -622,6 +628,17 @@ class DesignSystemTests(unittest.TestCase):
         # Apply is gated by a readiness banner, distinct from tool selection.
         self.assertIn(".dm-canvas__readiness", css)
         self.assertIn(".canvas-editor-palette", css)
+
+    def test_canvas_progressive_disclosure_uses_minimal_spacing_and_dom_preserving_hides(self):
+        css = style_css("screen-canvas.css")
+
+        self.assertIn(".dm-canvas__disclosure", css)
+        self.assertIn(".dm-canvas__disclosure-panel", css)
+        self.assertIn(".dm-canvas__commit-step.is-disclosed", css)
+        self.assertIn("#inspector-empty-guide", css)
+        self.assertIn(".dm-inspector__accordion", css)
+        self.assertIn("padding-block-start: var(--dm-space-6);", css)
+        self.assertIn("padding-inline: var(--dm-space-6);", css)
 
     def test_final_save_readiness_is_visible_in_main_and_canvas_surfaces(self):
         html = frontend_markup()

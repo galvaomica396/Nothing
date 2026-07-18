@@ -83,6 +83,7 @@ from privacy_false_positive import (
     is_likely_court_value,
     is_likely_doc_meta_value,
     is_likely_law_firm_value,
+    is_likely_person_name,
     is_labeled_person_name_value,
     is_likely_person_name_value,
 )
@@ -241,7 +242,6 @@ from masking_rules import (
     _review_tag,
     _safe_rect_bbox,
     _spaced_digits,
-    _sub_approval_table_line,
     _sub_case_title_line,
     _sub_keep_label,
     _sub_keep_label_when,
@@ -256,7 +256,7 @@ from masking_rules import (
     tracked_masking_offsets,
 )
 
-APP_VERSION = "v4.6.1"
+APP_VERSION = "v4.6.3"
 
 PROFILE_DISPLAY_TO_VALUE = {
     "공공문서": "official",
@@ -497,6 +497,66 @@ def _overlapping_occurrence_index(matches: list[RedactionMatch], candidate: Reda
     return None
 
 
+def _defer_partial_name_matches(
+    source_text: str,
+    chunk_entry: tuple[str, int],
+    result: ChunkProcessResult,
+) -> ChunkProcessResult:
+    chunk, base_offset = chunk_entry
+    partials = [
+        match
+        for match in result.matches
+        if match.tag in {"NAME", "APPROVAL_LINE"}
+        and (
+            (
+                match.end == len(chunk)
+                and base_offset + match.end < len(source_text)
+                and "가" <= source_text[base_offset + match.end] <= "힣"
+            )
+            or (
+                match.start == 0
+                and base_offset > 0
+                and "가" <= source_text[base_offset - 1] <= "힣"
+            )
+        )
+    ]
+    if not partials or len(result.source_boundaries) != len(result.masked_text) + 1:
+        return result
+
+    edits: list[tuple[int, int, RedactionMatch]] = []
+    for match in partials:
+        output_end = result.source_boundaries.index(match.end)
+        tokens = (f"[{match.tag}]", _mask_token(match.tag))
+        token = next((item for item in tokens if result.masked_text[:output_end].endswith(item)), "")
+        if not token:
+            return result
+        edits.append((output_end - len(token), output_end, match))
+
+    masked_text = result.masked_text
+    source_boundaries = list(result.source_boundaries)
+    for output_start, output_end, match in sorted(edits, reverse=True):
+        masked_text = masked_text[:output_start] + chunk[match.start:match.end] + masked_text[output_end:]
+        source_boundaries = (
+            source_boundaries[:output_start]
+            + list(range(match.start, match.end + 1))
+            + source_boundaries[output_end + 1:]
+        )
+
+    counts = dict(result.counts)
+    for match in partials:
+        counts[match.tag] -= 1
+        if counts[match.tag] == 0:
+            del counts[match.tag]
+    partial_ids = {id(match) for match in partials}
+    return replace(
+        result,
+        masked_text=masked_text,
+        counts=counts,
+        matches=[match for match in result.matches if id(match) not in partial_ids],
+        source_boundaries=tuple(source_boundaries),
+    )
+
+
 def _source_to_output_offsets(
     chunks: list[tuple[str, int]],
     results: list[ChunkProcessResult],
@@ -638,6 +698,8 @@ def process_masking_queue(
             attempts += 1
             try:
                 result = chunk_processor(chunk, opts)
+                if chunk_processor is _mask_text_chunk:
+                    result = _defer_partial_name_matches(text, (chunk, base_offset), result)
                 masked_chunks.append(result.masked_text)
                 chunk_results.append(result)
                 _merge_counts(total_counts, result.counts)
@@ -654,6 +716,8 @@ def process_masking_queue(
                 failed_chunks += 1
                 logger(f"[청크] {idx}/{len(chunks)} 실패 - 기본 규칙 엔진으로 계속 진행")
                 fallback = _mask_text_chunk(chunk, opts)
+                if chunk_processor is _mask_text_chunk:
+                    fallback = _defer_partial_name_matches(text, (chunk, base_offset), fallback)
                 fallback_chunks += 1
                 masked_chunks.append(fallback.masked_text)
                 chunk_results.append(fallback)
@@ -775,6 +839,64 @@ def _sub_court_when(
         _record_redaction_match(matches, "COURT", value, start, end)
         _count_up(report, "COURT")
         return "[COURT]"
+
+    return _tracked_sub(pattern, repl, text)
+
+
+_APPROVAL_INLINE_NAME_PAT = re.compile(
+    r"(?:^|[\s|/,])(?P<label>[가-힣A-Za-z0-9]{1,30}?(?:관|장|급|긍|금))\s*"
+    r"(?P<value>[가-힣]{2,4}?)(?=\s*(?:[|/,]|$)|\s+[가-힣A-Za-z0-9]{1,30}?(?:관|장|급|긍|금))"
+)
+
+
+def _sub_approval_name_when(
+    text: str,
+    pattern: re.Pattern[str],
+    report: dict[str, int],
+    matches: list[RedactionMatch],
+    *,
+    table_line: bool = False,
+) -> str:
+    def repl(match: re.Match[str]) -> str:
+        value = match.group("value")
+        start = match.start("value")
+        end = match.end("value")
+        if not is_likely_person_name(value, text, start, end):
+            return match.group(0)
+        _record_redaction_match(matches, "APPROVAL_LINE", value, start, end)
+        _count_up(report, "APPROVAL_LINE")
+        separator = "\n" if table_line else ""
+        return f"{match.group('label')}{separator}[APPROVAL_LINE]"
+
+    return _tracked_sub(pattern, repl, text)
+
+
+def _sub_approval_inline_multi_when(
+    text: str,
+    pattern: re.Pattern[str],
+    report: dict[str, int],
+    matches: list[RedactionMatch],
+) -> str:
+    def repl(match: re.Match[str]) -> str:
+        block = match.group("value")
+        block_start = match.start("value")
+        candidates = list(_APPROVAL_INLINE_NAME_PAT.finditer(block))
+        pieces: list[str] = []
+        cursor = 0
+        for candidate in candidates:
+            value = candidate.group("value")
+            value_start = block_start + candidate.start("value")
+            value_end = block_start + candidate.end("value")
+            pieces.append(block[cursor:candidate.start("value")])
+            if is_likely_person_name(value, text, value_start, value_end):
+                _record_redaction_match(matches, "APPROVAL_LINE", value, value_start, value_end)
+                _count_up(report, "APPROVAL_LINE")
+                pieces.append("[APPROVAL_LINE]")
+            else:
+                pieces.append(value)
+            cursor = candidate.end("value")
+        pieces.append(block[cursor:])
+        return "".join(pieces)
 
     return _tracked_sub(pattern, repl, text)
 
@@ -1075,89 +1197,17 @@ def mask_text(
         text = _sub_keep_label(text, ATTORNEY_PAT, "ATTORNEY", report, value_group="value", matches=matches)
 
     if use_approval_line:
-        text = _sub_keep_label_when(
-            text,
-            APPROVAL_LINE_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
-        text = _sub_keep_label_when(
-            text,
-            OFFICIAL_ROLE_NAME_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
-        text = _sub_keep_label_when(
-            text,
-            APPROVAL_GRADE_OCR_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
-        text = _sub_keep_label_when(
-            text,
-            DEPT_ROLE_NAME_COMPACT_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
-        text = _sub_keep_label_when(
-            text,
-            OFFICIAL_COMBINED_ROLE_NAME_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
-        text = _sub_keep_label_when(
-            text,
-            ACTING_APPROVER_NAME_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
-        text = _sub_approval_table_line(text, APPROVAL_TABLE_LINE_PAT, "APPROVAL_LINE", report, matches=matches)
-        text = _sub_simple(text, APPROVAL_TABLE_INLINE_MULTI_PAT, "APPROVAL_LINE", report, matches=matches, value_group="value")
-        text = _sub_keep_label_when(
-            text,
-            APPROVAL_ROLE_PAREN_NAME_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
-        text = _sub_keep_label_when(
-            text,
-            APPROVAL_ROLE_DATE_NAME_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
-        text = _sub_keep_label_when(
-            text,
-            APPROVAL_DATE_NAME_PAT,
-            "APPROVAL_LINE",
-            report,
-            value_group="value",
-            should_mask=lambda m: is_likely_person_name_value(m.group("value")),
-            matches=matches,
-        )
+        text = _sub_approval_name_when(text, APPROVAL_LINE_PAT, report, matches)
+        text = _sub_approval_name_when(text, OFFICIAL_ROLE_NAME_PAT, report, matches)
+        text = _sub_approval_name_when(text, APPROVAL_GRADE_OCR_PAT, report, matches)
+        text = _sub_approval_name_when(text, DEPT_ROLE_NAME_COMPACT_PAT, report, matches)
+        text = _sub_approval_name_when(text, OFFICIAL_COMBINED_ROLE_NAME_PAT, report, matches)
+        text = _sub_approval_name_when(text, ACTING_APPROVER_NAME_PAT, report, matches)
+        text = _sub_approval_name_when(text, APPROVAL_TABLE_LINE_PAT, report, matches, table_line=True)
+        text = _sub_approval_inline_multi_when(text, APPROVAL_TABLE_INLINE_MULTI_PAT, report, matches)
+        text = _sub_approval_name_when(text, APPROVAL_ROLE_PAREN_NAME_PAT, report, matches)
+        text = _sub_approval_name_when(text, APPROVAL_ROLE_DATE_NAME_PAT, report, matches)
+        text = _sub_approval_name_when(text, APPROVAL_DATE_NAME_PAT, report, matches)
         text = _sub_keep_label(text, APPROVAL_FLOW_CONTEXT_PAT, "APPROVAL_FLOW", report, value_group="value", matches=matches)
         text = _sub_simple(text, APPROVAL_FLOW_LINE_PAT, "APPROVAL_FLOW", report, matches=matches, value_group="value")
 

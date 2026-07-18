@@ -544,7 +544,10 @@ class FrontendLabelsTests(unittest.TestCase):
         # OS 네이티브 저장 창에서 선택한다.
         self.assertIn('id="final-save-dialog"', html)
         self.assertNotIn("안전 리포트", html)
-        self.assertIn("저장 전 확인 (권고사항)", html)
+        self.assertIn('title="저장 전 확인"', html)
+        self.assertIn("추가 확인이 필요한 항목이 있습니다", html)
+        self.assertIn("우측 패널에서 권고 항목을 확인하거나 바로 저장할 수 있습니다.", html)
+        self.assertIn("저장 준비 완료", html)
         self.assertIn('id="final-save-warning-list"', html)
         self.assertIn('id="btn-dialog-cancel-save"', html)
         self.assertIn("취소하고 검토하기", html)
@@ -675,7 +678,7 @@ class FrontendLabelsTests(unittest.TestCase):
         self.assertNotIn("load_phase6_fixture_pdf", script)
         self.assertNotIn("load_phase6_fixture_pdf", rust)
         self.assertNotIn("미리보기만 반영", html)
-        self.assertNotIn(">보기<", html)
+        self.assertNotIn("보기/검토", html)
         self.assertNotIn(">검토<", html)
         self.assertIn("키워드 적용 후 다시 마스킹", html)
         self.assertIn('data-screen-target="masking-settings"', html)
@@ -706,6 +709,49 @@ class FrontendLabelsTests(unittest.TestCase):
         self.assertIn("canvasToolReadinessText", script)
         self.assertIn("needsEditablePdf && (editsLocked() || (!canEdit && !deps.isStandaloneCanvasWindow))", script)
         self.assertIn("state.savingInFlight", script)
+
+    def test_canvas_workspace_segment_and_progressive_disclosure_preserve_every_control_path(self):
+        html = frontend_markup()
+        script = frontend_script()
+        canvas_screen = html[html.index('id="canvas-workspace-screen"') :]
+
+        tool_menu = canvas_screen[
+            canvas_screen.index('id="canvas-tool-menu"') : canvas_screen.index('id="btn-open-keyword-dialog"')
+        ]
+        self.assertIn('id="canvas-tool-menu-trigger"', tool_menu)
+        self.assertIn('role="toolbar"', tool_menu)
+        self.assertIn('className="dm-seg dm-canvas__palette dm-canvas__tool-segment canvas-editor-palette"', tool_menu)
+        self.assertNotIn('role="menuitemradio"', tool_menu)
+        self.assertNotIn('name="arrow_drop_down"', tool_menu)
+        for tool_id in [
+            "btn-canvas-tool-mask",
+            "btn-canvas-tool-restore",
+            "btn-canvas-tool-select",
+            "btn-canvas-tool-delete",
+            "btn-canvas-tool-pan",
+        ]:
+            self.assertIn(f'id="{tool_id}"', tool_menu)
+
+        view_group = canvas_screen[
+            canvas_screen.index('className="dm-canvas__tool-group dm-canvas__tool-group--view"') : canvas_screen.index('className="dm-canvas__batch')
+        ]
+        self.assertIn('id="canvas-view-menu"', view_group)
+        self.assertIn('id="canvas-view-menu-trigger"', view_group)
+        self.assertIn('id="toggle-original-compare"', view_group)
+        self.assertIn('role="menuitemcheckbox"', view_group)
+        self.assertIn('id="btn-canvas-zoom-out"', view_group)
+        self.assertIn('id="btn-canvas-zoom-in"', view_group)
+        self.assertIn('toggleOriginalCompareEl.setAttribute("aria-checked", String(toggleOriginalCompareEl.checked))', script)
+
+        self.assertIn('id="inspector-empty-guide"', canvas_screen)
+        self.assertIn('id="inspector-review-content"', canvas_screen)
+        self.assertIn('id="canvas-box-accordion"', canvas_screen)
+        self.assertIn('id="canvas-box-accordion-content"', canvas_screen)
+        self.assertIn('id="save-summary-accordion"', canvas_screen)
+        self.assertIn('id="save-summary-accordion-content"', canvas_screen)
+        self.assertIn('aria-expanded="false"', canvas_screen)
+        self.assertIn("canvasBoxAccordionEl.open = true", script)
+        self.assertIn('classList.toggle("is-disclosed", hasPendingManualEdits)', script)
 
     def test_canvas_workspace_has_box_property_panel_for_selection(self):
         html = frontend_markup()

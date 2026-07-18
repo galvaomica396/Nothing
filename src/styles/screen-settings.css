@@ -1,0 +1,799 @@
+/* ============================================================================
+ * screen-settings.css — 마스킹 설정 + 앱 설정 (REDESIGN_SPEC_V2_2 §8-4 / §8-5)
+ * 소유 화면: #masking-settings-screen, #settings-screen
+ * 공용 토큰(--dm-*)과 dm-* 컴포넌트만 사용. !important 금지.
+ * ========================================================================== */
+
+/* ----------------------------------------------------------------------------
+ * 1. 화면 골격 — 상단 고정 액션바 / 스크롤 본문 / (앱 설정) 하단 푸터
+ * -------------------------------------------------------------------------- */
+.dm-settings-screen {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--dm-bg);
+  color: var(--dm-text);
+}
+
+/* 화면 전환 규칙(shell.css)이 비활성 화면을 숨기므로 여기서는 활성 배치만. */
+.dm-settings-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(100%, 880px);
+  min-width: 0;
+  margin: 0 auto;
+  padding: 40px 40px 24px;
+  background: var(--dm-bg);
+}
+
+/* 보조 화면 표식: 상단 좌측에 [← 돌아가기] pill + 제목을 한 묶음으로. pill 모양은
+ * 상단 "문서|템플릿" 탭 문법과 의도적으로 다르게 해 설정이 탭처럼 보이지 않게 한다. */
+.dm-settings-topbar__lead {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.dm-settings-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px 0 8px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface);
+  color: var(--dm-text-secondary);
+  font: 600 14px / 1 var(--dm-font);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.dm-settings-back:hover {
+  border-color: var(--dm-border-strong);
+  background: var(--dm-surface);
+  color: var(--dm-text);
+}
+
+.dm-settings-back:focus-visible {
+  outline: none;
+  box-shadow: var(--dm-focus-ring);
+}
+
+.dm-settings-back .symbol-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.dm-settings-topbar__heading {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dm-settings-kicker {
+  color: var(--dm-accent);
+  font: 600 12px / 1.3 var(--dm-font);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.dm-settings-topbar__heading > strong {
+  color: var(--dm-text);
+  font: 700 26px / 1.2 var(--dm-font);
+  letter-spacing: -0.025rem;
+}
+
+.dm-settings-topbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.dm-settings-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  padding: 0 40px 40px;
+}
+
+.dm-settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px max(24px, calc((100% - 800px) / 2));
+  border-top: 1px solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+.dm-settings-footer__main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 설정 탭 패널 (data-settings-panel) — legacy 가 is-hidden 을 토글한다 */
+.dm-settings-panel.is-hidden {
+  display: none;
+}
+
+/* ----------------------------------------------------------------------------
+ * 2. 섹션 카드 그리드
+ * -------------------------------------------------------------------------- */
+.dm-settings-grid {
+  display: grid;
+  gap: 24px;
+  align-items: start;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.dm-settings-grid--masking {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.dm-settings-card--rules {
+  grid-row: auto;
+  order: 4;
+}
+
+.dm-settings-card--scope {
+  grid-column: auto;
+  order: 10;
+}
+
+.dm-settings-card--safety {
+  order: 9;
+}
+
+.dm-settings-card--document,
+.dm-settings-card--document > .dm-card__body {
+  display: contents;
+}
+
+.dm-settings-card--document > .dm-card__header {
+  display: none;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field {
+  padding: 24px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface);
+  box-shadow: var(--dm-shadow-sm);
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(1) {
+  order: 5;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(2) {
+  order: 6;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(3) {
+  order: 1;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(4) {
+  order: 2;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(5) {
+  order: 3;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(6) {
+  order: 7;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(7) {
+  order: 8;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-choice-field > label {
+  font-size: 20px;
+  line-height: 1.3;
+  letter-spacing: -0.0125rem;
+}
+
+.dm-settings-grid--app {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.dm-settings-card-hint {
+  margin-top: 8px;
+  color: var(--dm-text-secondary);
+  font: 400 16px / 1.5 var(--dm-font);
+}
+
+.dm-settings-card .dm-card__header {
+  padding: 24px 24px 8px;
+  border-bottom: 0;
+}
+
+.dm-settings-card .dm-card__title {
+  font: 600 20px / 1.3 var(--dm-font);
+  letter-spacing: -0.0125rem;
+}
+
+.dm-settings-card .dm-card__body {
+  padding: 8px 24px 24px;
+}
+
+/* ----------------------------------------------------------------------------
+ * 3. 필드 열 (문서/탐지 방식, 산출물)
+ * -------------------------------------------------------------------------- */
+.dm-settings-fields {
+  display: grid;
+  gap: 24px;
+}
+
+.dm-field-hint {
+  color: var(--dm-text-secondary);
+  font: 400 14px / 1.5 var(--dm-font);
+}
+
+.dm-settings-screen .dm-field > label,
+.dm-settings-screen .dm-field__label {
+  color: var(--dm-text);
+  font: 600 15px / 1.4 var(--dm-font);
+}
+
+.dm-settings-screen .dm-input,
+.dm-settings-screen .dm-select {
+  min-height: 36px;
+  font-size: 15px;
+}
+
+.dm-settings-screen .dm-checkbox {
+  min-height: 32px;
+  font-size: 15px;
+}
+
+.dm-choice-field {
+  gap: 12px;
+}
+.dm-choice-control {
+  min-width: 0;
+}
+
+.dm-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.dm-choice-grid--four {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dm-choice-card {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  min-height: 160px;
+  padding: 16px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface);
+  color: var(--dm-text);
+  font-family: var(--dm-font);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.dm-choice-card::after {
+  content: "";
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--dm-border-strong);
+  border-radius: 50%;
+  background: var(--dm-surface);
+}
+
+.dm-choice-card:hover {
+  border-color: var(--dm-border-strong);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-choice-card:focus-visible {
+  outline: none;
+  box-shadow: var(--dm-focus-ring);
+}
+
+.dm-choice-control:has(> #display-mode option[value="black"]:checked) #btn-display-mode-black,
+.dm-choice-control:has(> #display-mode option[value="label_en"]:checked) #btn-display-mode-label-en,
+.dm-choice-control:has(> #display-mode option[value="label_ko"]:checked) #btn-display-mode-label-ko,
+.dm-choice-control:has(> #display-mode option[value="pseudonym"]:checked) #btn-display-mode-pseudonym,
+.dm-choice-control:has(> #deidentification-policy option[value="token"]:checked) #btn-policy-token,
+.dm-choice-control:has(> #deidentification-policy option[value="partial"]:checked) #btn-policy-partial,
+.dm-choice-control:has(> #deidentification-policy option[value="pseudonym"]:checked) #btn-policy-pseudonym {
+  border-color: var(--dm-accent);
+  background: var(--dm-accent-soft);
+}
+
+.dm-choice-control:has(> #display-mode option[value="black"]:checked) #btn-display-mode-black::after,
+.dm-choice-control:has(> #display-mode option[value="label_en"]:checked) #btn-display-mode-label-en::after,
+.dm-choice-control:has(> #display-mode option[value="label_ko"]:checked) #btn-display-mode-label-ko::after,
+.dm-choice-control:has(> #display-mode option[value="pseudonym"]:checked) #btn-display-mode-pseudonym::after,
+.dm-choice-control:has(> #deidentification-policy option[value="token"]:checked) #btn-policy-token::after,
+.dm-choice-control:has(> #deidentification-policy option[value="partial"]:checked) #btn-policy-partial::after,
+.dm-choice-control:has(> #deidentification-policy option[value="pseudonym"]:checked) #btn-policy-pseudonym::after {
+  border: 4px solid var(--dm-accent);
+  background: var(--dm-on-accent);
+}
+
+.dm-choice-control:has(> select:disabled) .dm-choice-card {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dm-choice-card__title {
+  padding-right: 24px;
+  color: var(--dm-text);
+  font: 600 15px / 1.35 var(--dm-font);
+}
+
+.dm-choice-card__description {
+  color: var(--dm-text-secondary);
+  font: 400 14px / 1.5 var(--dm-font);
+}
+
+.dm-choice-preview {
+  display: grid;
+  gap: 3px;
+  align-self: end;
+  margin-top: auto;
+  padding: 12px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-sm);
+  background: var(--dm-bg);
+  color: var(--dm-text-secondary);
+  font: 500 12px / 1.5 var(--dm-font-mono);
+}
+
+.dm-choice-preview code {
+  color: var(--dm-text);
+  font: inherit;
+}
+
+.dm-choice-preview__mask {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: var(--dm-mask);
+  color: transparent;
+  user-select: none;
+}
+
+/* 사용자 지정 지역 셀 — legacy 가 .config-cell 에 is-disabled 를 토글한다 */
+.dm-settings-screen .config-cell.is-disabled > label,
+.dm-settings-screen .config-cell.is-disabled .dm-field-hint {
+  color: var(--dm-text-muted);
+}
+
+/* ----------------------------------------------------------------------------
+ * 4. 탐지 룰 16종 — 2열 그리드 카드
+ * -------------------------------------------------------------------------- */
+.dm-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dm-rule-card {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface);
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.dm-rule-card:hover {
+  border-color: var(--dm-border-strong);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-rule-card input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--dm-accent);
+}
+
+.dm-rule-card__label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dm-text);
+  font: 500 15px / 1.35 var(--dm-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 선택됨(기본 다수): 액센트 남용 금지(REDESIGN §2 화면당 1~2곳). 체크박스의 accent
+ * 체크 자체가 유일한 액센트 신호이고, 카드는 조용히 raised 로만 든다. */
+.dm-rule-card:has(input:checked) {
+  border-color: var(--dm-border-strong);
+  background: var(--dm-surface-raised);
+}
+
+.dm-rule-card:has(input:checked) .dm-rule-card__label {
+  color: var(--dm-text);
+}
+
+/* 제외됨(체크 해제): 라벨을 가라앉혀 포함/제외 대비를 액센트 없이 만든다. */
+.dm-rule-card:not(:has(input:checked)):not(:has(input:disabled)) .dm-rule-card__label {
+  color: var(--dm-text-secondary);
+}
+
+/* 프로필에 따라 legacy 가 label 에 is-disabled 를 토글한다 */
+.dm-rule-card.is-disabled,
+.dm-rule-card:has(input:disabled) {
+  border-color: var(--dm-border);
+  border-style: dashed;
+  background: var(--dm-surface-sunken);
+  cursor: not-allowed;
+}
+
+.dm-rule-card.is-disabled .dm-rule-card__label,
+.dm-rule-card:has(input:disabled) .dm-rule-card__label {
+  color: var(--dm-text-muted);
+}
+
+.dm-rule-card:has(input:focus-visible) {
+  box-shadow: var(--dm-focus-ring);
+}
+
+
+/* ----------------------------------------------------------------------------
+ * 6. 적용 범위 (앱 기본값 / 현재 문서 작업값)
+ * -------------------------------------------------------------------------- */
+.dm-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.dm-scope-item {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-scope-item > strong {
+  color: var(--dm-text);
+  font: 600 15px / 1.35 var(--dm-font);
+}
+
+.dm-scope-item > span {
+  color: var(--dm-text-secondary);
+  font: 400 14px / 1.5 var(--dm-font);
+}
+
+/* ----------------------------------------------------------------------------
+ * 7. 테마 선택 — 스와치 7종 (각 테마 실제 색 미니 프리뷰)
+ * -------------------------------------------------------------------------- */
+.dm-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.dm-theme-choice {
+  position: relative;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  min-height: 112px;
+  padding: 16px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface);
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.dm-theme-choice:hover {
+  border-color: var(--dm-border-strong);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-theme-choice input[type="radio"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dm-theme-choice:has(input:checked) {
+  border-color: var(--dm-accent);
+  background: var(--dm-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--dm-accent);
+}
+
+.dm-theme-choice:has(input:focus-visible) {
+  box-shadow: var(--dm-focus-ring);
+}
+
+.dm-theme-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dm-theme-copy > strong {
+  color: var(--dm-text);
+  font: 600 15px / 1.35 var(--dm-font);
+  white-space: normal;
+}
+
+.dm-theme-choice:has(input:checked) .dm-theme-copy > strong {
+  color: var(--dm-accent);
+}
+
+.dm-theme-copy > small {
+  color: var(--dm-text-secondary);
+  font: 400 14px / 1.45 var(--dm-font);
+  white-space: normal;
+}
+
+/* 스와치: 미니 앱 프리뷰 (배경판 + 헤더 + 액센트 칩)
+ * 각 색은 variables.css/themes.css 팔레트의 실제 값(하드코딩 미러) —
+ * 테마 색을 바꾸면 아래 프리뷰 색도 함께 갱신한다.
+ * 기본(base)은 default=다크 값을 미러한다. */
+.dm-theme-swatch {
+  --swatch-bg: #0e1116;
+  --swatch-surface: #161b22;
+  --swatch-line: #262d38;
+  --swatch-accent: #2f81f7;
+  position: relative;
+  display: block;
+  width: 72px;
+  height: 48px;
+  overflow: hidden;
+  border: 1px solid var(--swatch-line);
+  border-radius: var(--dm-radius-sm);
+  background: var(--swatch-bg);
+}
+
+.dm-theme-swatch > i {
+  position: absolute;
+  display: block;
+}
+
+/* 좌측 레일 */
+.dm-theme-swatch__rail {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 16px;
+  border-right: 1px solid var(--swatch-line);
+  background: var(--swatch-surface);
+}
+
+/* 상단 헤더 */
+.dm-theme-swatch__head {
+  top: 0;
+  right: 0;
+  left: 16px;
+  height: 9px;
+  border-bottom: 1px solid var(--swatch-line);
+  background: var(--swatch-surface);
+}
+
+/* 액센트 칩 (1차 버튼) */
+.dm-theme-swatch__accent {
+  right: 5px;
+  bottom: 5px;
+  width: 18px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--swatch-accent);
+}
+
+.dm-theme-choice[data-theme-preview="light"] .dm-theme-swatch {
+  --swatch-bg: #f6f5f4;
+  --swatch-surface: #ffffff;
+  --swatch-line: #e6e6e6;
+  --swatch-accent: #0075de;
+}
+
+.dm-theme-choice[data-theme-preview="system"] .dm-theme-swatch {
+  --swatch-bg: #f6f5f4;
+  --swatch-surface: #ffffff;
+  --swatch-line: #a39e98;
+  --swatch-accent: #0075de;
+  background: linear-gradient(90deg, #f6f5f4 0 50%, #0e1116 50% 100%);
+}
+
+/* ----------------------------------------------------------------------------
+ * 8. 앱 동작 토글 스위치
+ * -------------------------------------------------------------------------- */
+.dm-switch {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 12px;
+  min-height: 48px;
+  cursor: pointer;
+}
+
+.dm-switch input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dm-switch__track {
+  position: relative;
+  display: block;
+  width: 34px;
+  height: 19px;
+  margin-top: 1px;
+  border: 1px solid var(--dm-border-strong);
+  border-radius: 999px;
+  background: var(--dm-surface-sunken);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.dm-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  display: block;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--dm-text-muted);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.dm-switch:has(input:checked) .dm-switch__track {
+  border-color: var(--dm-accent);
+  background: var(--dm-accent);
+}
+
+.dm-switch:has(input:checked) .dm-switch__thumb {
+  background: var(--dm-on-accent);
+  transform: translateX(15px);
+}
+
+.dm-switch:has(input:focus-visible) .dm-switch__track {
+  box-shadow: var(--dm-focus-ring);
+}
+
+.dm-switch__copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dm-switch__copy > strong {
+  color: var(--dm-text);
+  font: 600 15px / 1.4 var(--dm-font);
+}
+
+.dm-switch__copy > small {
+  color: var(--dm-text-secondary);
+  font: 400 14px / 1.5 var(--dm-font);
+}
+
+/* 앱 설정 · 버전 항목 — 앱 동작 카드 하단의 조용한 한 줄. */
+.dm-settings-version {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--dm-border);
+}
+
+.dm-settings-version > span {
+  color: var(--dm-text-secondary);
+  font: 500 14px / 1.4 var(--dm-font);
+}
+
+.dm-settings-version > strong {
+  color: var(--dm-text);
+  font: 600 15px / 1.2 var(--dm-font);
+  letter-spacing: 0.01em;
+}
+
+/* ----------------------------------------------------------------------------
+ * 9. 반응형
+ * v4: 구 `[data-theme="black"]` 셀렉트 화살표 보정 블록은 삭제됨 — black 테마가
+ * 폐지(light / dark / system 3종만)되어 매칭되지 않는 죽은 규칙이었다.
+ * -------------------------------------------------------------------------- */
+@media (max-width: 768px) {
+  .dm-settings-topbar {
+    width: 100%;
+    padding: 24px;
+  }
+
+  .dm-settings-scroll {
+    padding: 0 24px 32px;
+  }
+
+  .dm-settings-footer {
+    padding: 16px 24px;
+  }
+
+}
+
+@media (max-width: 640px) {
+  .dm-settings-topbar {
+    align-items: flex-start;
+    padding: 16px;
+  }
+
+  .dm-settings-scroll {
+    padding: 0 16px 24px;
+  }
+
+  .dm-settings-footer {
+    padding: 12px 16px;
+  }
+
+  #settings-screen .dm-settings-topbar__actions {
+    display: none;
+  }
+
+  .dm-rule-grid,
+  .dm-scope-grid,
+  .dm-choice-grid,
+  .dm-theme-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dm-settings-card .dm-card__header {
+    padding: 20px 20px 8px;
+  }
+
+  .dm-settings-card .dm-card__body {
+    padding: 8px 20px 20px;
+  }
+
+  .dm-settings-topbar__heading > strong {
+    font-size: 22px;
+  }
+
+  .dm-settings-topbar__lead {
+    align-items: flex-start;
+  }
+
+}

@@ -1,0 +1,107 @@
+/* ============================================================================
+ * DocuMasker 디자인 토큰 (REDESIGN_V4_DARK §2 — "Two Screens, One Accent")
+ * 단일 토큰 루트: --dm-* 만이 신규 CSS의 공식 토큰이다.
+ * v4: :root 기본을 다크로 전환한다 (near-black + 단일 신뢰-블루 액센트).
+ *     라이트 값은 themes.css 의 `light` 프리셋으로 이관됨.
+ * (--nothing-* / --stitch-* 토큰 체계와 구 CSS는 전부 삭제됨 — 별칭/브리지 없음.)
+ * ========================================================================== */
+
+:root {
+  /* surfaces — near-black, 살짝 블루 틴트 */
+  --dm-bg: #0e1116;            /* 앱 배경 (near-black) */
+  --dm-surface: #161b22;       /* 카드/패널 */
+  --dm-surface-raised: #1c2330;/* 떠 있는 표면 (다이얼로그/헤더 강조) */
+  --dm-surface-sunken: #0b0e13;/* 인풋/웰 (배경보다 더 어둡게) */
+  --dm-border: #262d38;
+  --dm-border-strong: #3a4351;
+
+  /* text */
+  --dm-text: #e8edf4;          /* 본문 */
+  --dm-text-secondary: #9aa6b5;
+  --dm-text-muted: #5c6875;    /* 대기/빈 상태 전용 */
+  --dm-placeholder: #9aa6b5;
+
+  /* accent — 단일 신뢰 블루 (문서·보안 도구 정체성). 화면당 1~2곳만. */
+  --dm-accent: #2f81f7;
+  --dm-accent-hover: #4c95f9;
+  --dm-accent-soft: #16233c;   /* 선택/활성 배경 (다크 블루 틴트) */
+
+  /* semantic — 채도 낮춰 다크 조정 */
+  --dm-success: #3fb950;  --dm-success-soft: #122619;
+  --dm-warning: #d29922;  --dm-warning-soft: #2a2110;
+  --dm-danger:  #f85149;  --dm-danger-soft:  #3a1a1a;
+  --dm-danger-hover: #da3633;
+  --dm-mask:    #000000;   /* 마스킹 박스 색 (검정) */
+  --dm-document-paper: #ffffff;
+  --dm-on-accent: #ffffff;
+  --dm-overlay: rgba(0, 0, 0, 0.68);
+  --dm-toast-bg: #e8edf4;
+  --dm-toast-text: #161b22;
+
+  --dm-space-1: 4px;
+  --dm-space-2: 8px;
+  --dm-space-3: 12px;
+  --dm-space-4: 16px;
+  --dm-space-6: 24px;
+  --dm-space-8: 32px;
+
+  /* geometry */
+  --dm-hairline: 1px;
+  --dm-radius-sm: 8px; --dm-radius: 8px; --dm-radius-lg: 12px;
+  --dm-radius-modal: 16px;
+  --dm-radius-pill: 9999px;
+  --dm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24), 0 4px 18px rgba(0, 0, 0, 0.12);
+  --dm-shadow-md: 0 3px 7px rgba(0, 0, 0, 0.14), 0 14px 28px rgba(0, 0, 0, 0.16), 0 23px 52px rgba(0, 0, 0, 0.18);
+
+  /* layout */
+  --dm-header-h: 48px;
+  --dm-inspector-w: 320px;   /* 우측 검토 패널 */
+  --dm-statusbar-h: 28px;
+
+  /* typography */
+  --dm-font: "Pretendard Variable", Pretendard, "Segoe UI Variable Text",
+             "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --dm-font-mono: "Cascadia Mono", Consolas, "SF Mono", monospace;
+  --dm-fs-eyebrow: 12px;
+  --dm-fs-caption: 14px;
+  --dm-fs-control: 15px;
+  --dm-fs-body: 16px;
+  --dm-fs-card-title: 20px;
+  --dm-fs-modal-title: 22px;
+  --dm-fs-page-title: 26px;
+  --dm-fs-xs: var(--dm-fs-eyebrow);
+  --dm-fs-sm: var(--dm-fs-caption);
+  --dm-fs-base: var(--dm-fs-control);
+  --dm-fs-md: var(--dm-fs-body);
+  --dm-fs-lg: var(--dm-fs-card-title);
+  --dm-fs-xl: var(--dm-fs-page-title);
+
+  /* focus */
+  --dm-focus-ring: 0 0 0 3px rgba(47, 129, 247, 0.40);
+
+  /* 상태·디스클로저 아이콘 — SymbolIcon 셋과 동일한 SVG 형상을 CSS mask 로 재사용
+   * (유니코드 글리프 ⚠✓›🔒 대체). background-color:currentColor 로 테마색 상속. */
+  --dm-icon-warning: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3Cpath d='M12 7.5v5.8M12 16.7h.01'/%3E%3C/svg%3E");
+  --dm-icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3Cpath d='m8.3 12.3 2.5 2.5 5-5.4'/%3E%3C/svg%3E");
+  --dm-icon-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 6 6 6-6 6'/%3E%3C/svg%3E");
+  --dm-icon-lock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='10.5' width='14' height='10' rx='2'/%3E%3Cpath d='M8 10.5V7a4 4 0 0 1 8 0v3.5'/%3E%3C/svg%3E");
+}
+
+/* 상태·디스클로저 아이콘 공통 박스 (mask 로 그린다) */
+.dm-maskicon,
+.dm-savegate__readiness::before,
+.dm-coord__gate::before,
+.dm-wizard__lock::before {
+  content: "";
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}

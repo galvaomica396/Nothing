@@ -1,0 +1,181 @@
+/* ============================================================================
+ * base.css — reset, html/body, 타이포, 스크롤바, 포커스 링
+ * (REDESIGN_SPEC_V2_2 §3 — 새 디자인 시스템의 기저 레이어. !important 금지.)
+ * ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  min-width: 0;
+  background: var(--dm-bg);
+  color: var(--dm-text);
+  font: 400 var(--dm-fs-body) / 1.5 var(--dm-font);
+  letter-spacing: 0;
+  word-break: keep-all;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+figure,
+blockquote,
+dl,
+dd {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+img,
+canvas,
+svg,
+video {
+  max-width: 100%;
+  display: block;
+}
+
+button,
+input,
+select,
+textarea {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: var(--dm-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--dm-accent-hover);
+  text-decoration: underline;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--dm-font-mono);
+  font-size: 0.92em;
+}
+
+::selection {
+  background: var(--dm-accent-soft);
+  color: var(--dm-text);
+}
+
+/* 포커스 링 — 키보드 접근성 (구 CSS의 outline:none 을 후행 로드로 되돌린다) */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--dm-accent);
+  outline-offset: 1px;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+canvas:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--dm-accent);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
+/* 스크롤바 — Windows 업무용 밀도 (WebView2/Chromium) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--dm-border-strong);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--dm-text-muted);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 전역 숨김 토글 — legacy 컨트롤러가 .is-hidden / [hidden] 을 토글해 패널·모달·
+ * 비교뷰를 표시/숨김한다 (구 styles.css 의 전역 규칙 계승, !important 없이).
+ * id 스코프에서 display 를 지정하는 요소(#keyword-dialog 등)는 각 화면 CSS 가
+ * 같은 특이도의 `#id.is-hidden { display:none }` 규칙으로 덮는다. */
+.is-hidden,
+[hidden] {
+  display: none;
+}
+
+/* 런타임 전용 오프스크린 요소 — 계약상 DOM 에는 존재하되 화면에는 숨긴다
+ * (구 .obsidian-hidden-runtime 계승, 토큰/접근성 표준 visually-hidden 패턴). */
+.dm-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms;
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+  }
+}

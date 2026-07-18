@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nothing",
+  "version": "4.6.1",
+  "identifier": "io.github.galvaomica.nothing",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Nothing",
+        "width": 1280,
+        "height": 860,
+        "visible": true,
+        "focus": true,
+        "center": true,
+        "create": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "license": "AGPL-3.0",
+    "resources": {
+      "../document_masker_ocr_gui.py": "masking_runtime/document_masker_ocr_gui.py",
+      "../masking_context.py": "masking_runtime/masking_context.py",
+      "../privacy_false_positive.py": "masking_runtime/privacy_false_positive.py",
+      "../privacy_detection.py": "masking_runtime/privacy_detection.py",
+      "../privacy_spans.py": "masking_runtime/privacy_spans.py",
+      "../privacy_transformers.py": "masking_runtime/privacy_transformers.py",
+      "../pdf_redaction_rendering.py": "masking_runtime/pdf_redaction_rendering.py",
+      "../masking_rules.py": "masking_runtime/masking_rules.py",
+      "../masking_extraction.py": "masking_runtime/masking_extraction.py",
+      "../masking_redaction.py": "masking_runtime/masking_redaction.py",
+      "../masking_reporting.py": "masking_runtime/masking_reporting.py",
+      "../path_guard.py": "masking_runtime/path_guard.py",
+      "../data/kr_regions.json": "masking_runtime/data/kr_regions.json",
+      "../data/kr_regions.seed.json": "masking_runtime/data/kr_regions.seed.json",
+      "../masking_runtime/bin": "masking_runtime/bin",
+      "../requirements.txt": "masking_runtime/requirements.txt",
+      "../scripts/apply_manual_boxes.py": "masking_runtime/tauri_frontend/scripts/apply_manual_boxes.py",
+      "../scripts/run_masking_pipeline.py": "masking_runtime/tauri_frontend/scripts/run_masking_pipeline.py"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

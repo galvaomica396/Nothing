@@ -1,0 +1,40 @@
+{
+  "name": "nothing",
+  "private": true,
+  "version": "4.6.1",
+  "license": "AGPL-3.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "contract": "node scripts/check_runtime_contract.mjs",
+    "qa:smoke": "node scripts/qa_redesign_smoke.mjs",
+    "qa:canvas": "node scripts/qa_canvas_render_tasks.mjs && node scripts/qa_canvas_interactions.mjs",
+    "qa:save": "node scripts/qa_save_flow.mjs",
+    "qa:options": "node scripts/qa_masking_options.mjs",
+    "qa:all": "npm run qa:smoke && npm run qa:canvas && npm run qa:save && npm run qa:options"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "pdfjs-dist": "^5.7.284",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@rolldown/plugin-babel": "^0.2.3",
+    "@tailwindcss/vite": "^4.3.0",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~5.6.2",
+    "vite": "^8.0.16"
+  }
+}

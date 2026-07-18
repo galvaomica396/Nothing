@@ -1,0 +1,1797 @@
+/* ============================================================================
+ * screen-canvas.css — 마스킹 캔버스 워크스페이스 (REDESIGN_SPEC_V2_2 §8-2)
+ * 소유 화면: #canvas-workspace-screen (+ ?mode=canvas → body.standalone-canvas-window)
+ * 공용 토큰(--dm-*)과 dm-* 컴포넌트만 사용. !important 금지(포커스 예외).
+ * z-index 는 5 / 10 / 100 / 200 만 사용.
+ *
+ * 오버레이/캔버스 렌더 크기(px)는 JS 소유(startLegacyApp.ts 가 canvas.width/height 와
+ * wrap.style.width/height 를 인라인 지정)다. 여기서는 wrap 배치(position: relative)와
+ * 캔버스 스택만 안전하게 담당한다.
+ * ========================================================================== */
+
+/* ----------------------------------------------------------------------------
+ * 1. 화면 골격 — 툴바 / 준비 배너 / 본문(스테이지 + 검사기)
+ *    화면 전환(shell.css)이 비활성 화면을 숨기므로 여기서는 활성 배치만 정의.
+ * -------------------------------------------------------------------------- */
+#canvas-workspace-screen.dm-canvas {
+  min-width: 0;
+  min-height: 0;
+  background: var(--dm-bg);
+  color: var(--dm-text);
+}
+
+.dm-canvas__window {
+  display: grid;
+  grid-template-rows: auto 28px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 런타임이 창을 열기 전 상태(전역 .is-hidden{display:none !important} 사용) */
+.dm-canvas__window.is-hidden {
+  display: none;
+}
+
+/* ----------------------------------------------------------------------------
+ * 2. 상단 툴바 — 문서 / 편집 도구 5종 세그먼트 / 키워드 / 보기 / 반영·저장
+ * -------------------------------------------------------------------------- */
+.dm-canvas__toolbar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dm-space-2) var(--dm-space-4);
+  min-width: 0;
+  min-height: 49px;
+  padding: var(--dm-space-2) var(--dm-space-4);
+  border-bottom: var(--dm-hairline) solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+.dm-canvas__tool-group {
+  display: flex;
+  align-items: center;
+  gap: var(--dm-space-1);
+  min-width: 0;
+}
+
+.dm-canvas__tool-group--commit {
+  margin-left: auto;
+}
+
+.dm-canvas__tool-group + .dm-canvas__tool-group {
+  padding-left: var(--dm-space-4);
+  border-left: var(--dm-hairline) solid var(--dm-border);
+}
+
+.dm-canvas__toolbar .dm-canvas__tool-group--edit,
+.dm-canvas__toolbar .dm-canvas__tool-group--view,
+.dm-canvas__toolbar .dm-canvas__tool-group--commit {
+  gap: var(--dm-space-1);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.dm-canvas__tool-group--edit::before,
+.dm-canvas__tool-group--view::before,
+.dm-canvas__tool-group--commit::before {
+  content: attr(aria-label);
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--dm-space-2);
+  border-right: var(--dm-hairline) solid var(--dm-border);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-eyebrow) / 1 var(--dm-font);
+  white-space: nowrap;
+}
+
+.dm-canvas__tool-group--edit .dm-seg {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+/* 세그먼트 컨트롤 (편집 도구 5종 · 비교 탭) */
+.dm-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-seg > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 var(--dm-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--dm-radius-sm);
+  background: transparent;
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-sm) / 1 var(--dm-font);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.dm-seg > button .symbol-icon {
+  font-size: 15px;
+}
+
+.dm-seg > button:hover {
+  color: var(--dm-text);
+  background: var(--dm-surface);
+}
+
+/* 활성 도구/탭 — 액센트 채움 (id 포함으로 세그먼트 기본 규칙을 이긴다). */
+#canvas-workspace-screen .dm-seg > button.is-active {
+  border-color: transparent;
+  background: var(--dm-accent-soft);
+  color: var(--dm-accent);
+}
+
+/* 편집 팔레트 버튼은 세그먼트 높이 28px 를 유지한다. */
+#canvas-workspace-screen .dm-seg.canvas-editor-palette > button {
+  min-width: 0;
+  min-height: 28px;
+}
+
+.dm-canvas__keyword-input {
+  width: clamp(160px, 22vw, 280px);
+  height: 30px;
+}
+
+.dm-canvas__zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.dm-canvas__zoom-value {
+  min-width: 44px;
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-sm) / 1 var(--dm-font-mono);
+  text-align: center;
+}
+
+.dm-icon-btn {
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+}
+
+.dm-icon-btn .symbol-icon {
+  font-size: 16px;
+}
+
+.dm-canvas__view-toggle,
+.dm-canvas__sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-sm) / 1 var(--dm-font);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dm-canvas__view-toggle input,
+.dm-canvas__sync input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--dm-accent);
+}
+
+/* 작업 완결 순서: 수동 보정 반영 → (화살표) → 최종 저장 */
+.dm-canvas__commit {
+  gap: 8px;
+}
+
+.dm-canvas__commit-arrow {
+  flex: 0 0 auto;
+  font-size: 16px;
+  color: var(--dm-text-muted);
+}
+
+.dm-canvas__tool-group--commit.dm-canvas__commit {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.dm-canvas__tool-group--commit::before {
+  display: none;
+}
+
+.dm-canvas__batch {
+  position: static;
+}
+
+.dm-canvas__batch-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-sm) / 1 var(--dm-font);
+  cursor: pointer;
+  list-style: none;
+}
+
+.dm-canvas__batch-summary #batch-summary {
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dm-canvas__batch-summary::-webkit-details-marker {
+  display: none;
+}
+
+.dm-canvas__batch[open] .dm-canvas__batch-summary {
+  border-color: var(--dm-accent);
+  color: var(--dm-text);
+}
+
+.dm-canvas__batch-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: var(--dm-space-3);
+  left: auto;
+  z-index: 10;
+  display: grid;
+  gap: 10px;
+  width: min(660px, calc(100% - (var(--dm-space-3) * 2)));
+  max-height: min(420px, 60vh);
+  padding: var(--dm-space-3);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface-raised);
+  box-shadow: var(--dm-shadow-md);
+}
+
+.dm-canvas__queue {
+  display: grid;
+  gap: 6px;
+  overflow: auto;
+}
+
+.batch-item {
+  display: grid;
+  grid-template-areas:
+    "name kind state"
+    "output output actions";
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--dm-space-2);
+  min-width: 0;
+  padding: var(--dm-space-2);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface);
+}
+
+.batch-item.is-active {
+  border-color: var(--dm-accent);
+}
+
+.batch-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-name {
+  grid-area: name;
+}
+
+.batch-kind {
+  grid-area: kind;
+}
+
+.batch-state {
+  grid-area: state;
+}
+
+.batch-item > .batch-output {
+  grid-area: output;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.batch-actions {
+  grid-area: actions;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--dm-space-1);
+  min-width: 0;
+}
+
+.batch-actions button {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-sm);
+  background: var(--dm-surface-sunken);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-xs) / 1 var(--dm-font);
+}
+
+.dm-canvas__batch-run {
+  justify-self: end;
+}
+
+.dm-canvas__batch-run[hidden] {
+  display: none;
+}
+
+@media (min-width: 1200px) {
+  .dm-canvas__toolbar {
+    flex-wrap: nowrap;
+  }
+
+  .dm-canvas__palette .symbol-icon {
+    display: none;
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * 3. 상태 스트립 — (좌) 선택한 도구 한 줄 안내 · (우) 게이트 사유
+ *    canvas-tool-readiness 는 btn-canvas-apply / btn-canvas-final-save 게이트 사유.
+ * -------------------------------------------------------------------------- */
+.dm-canvas__statusbar {
+  display: flex;
+  align-items: center;
+  gap: var(--dm-space-4);
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--dm-space-4);
+  border-bottom: var(--dm-hairline) solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+.dm-canvas__guide {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-sm) / 1.4 var(--dm-font);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-canvas__guide-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--dm-accent);
+}
+
+/* 도구별 안내는 활성 도구(aria-pressed="true") 한 문장만 노출한다. */
+.dm-canvas__guide [data-guide-for] {
+  display: none;
+}
+
+#mask-canvas-window:has(#btn-canvas-tool-mask[aria-pressed="true"]) .dm-canvas__guide [data-guide-for="mask"],
+#mask-canvas-window:has(#btn-canvas-tool-restore[aria-pressed="true"]) .dm-canvas__guide [data-guide-for="restore"],
+#mask-canvas-window:has(#btn-canvas-tool-select[aria-pressed="true"]) .dm-canvas__guide [data-guide-for="select"],
+#mask-canvas-window:has(#btn-canvas-tool-delete[aria-pressed="true"]) .dm-canvas__guide [data-guide-for="delete"],
+#mask-canvas-window:has(#btn-canvas-tool-pan[aria-pressed="true"]) .dm-canvas__guide [data-guide-for="pan"] {
+  display: inline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dm-canvas__readiness {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-sm) / 1.4 var(--dm-font);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------------------------
+ * 4. 본문 — 스테이지(비교 뷰) + 우측 검사기 320px
+ * -------------------------------------------------------------------------- */
+.dm-canvas__body {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--dm-inspector-w);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dm-canvas__stage {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dm-bg);
+}
+
+/* 커밋 순서 두 버튼 높이 통일(반영 30px / 저장 36px 불일치 방지) */
+.dm-canvas__commit-step {
+  height: 32px;
+  min-height: 32px;
+}
+
+/* ----------------------------------------------------------------------------
+ * PDF 미로드 상태 — 스테이지 중앙 단일 CTA(hero). PDF 렌더 시 숨긴다.
+ * has-rendered-pdf 는 canvasRenderController 가 #canvas-wrap-result 에 토글한다.
+ * -------------------------------------------------------------------------- */
+.dm-canvas__hero {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dm-space-3);
+  padding: var(--dm-space-8);
+  text-align: center;
+  background: var(--dm-bg);
+}
+
+.dm-canvas__stage:has(#canvas-wrap-result.has-rendered-pdf) .dm-canvas__hero {
+  display: none;
+}
+
+.dm-canvas__flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dm-space-4);
+  margin-block: 0 var(--dm-space-6);
+}
+
+.dm-canvas__flow-step {
+  display: grid;
+  justify-items: center;
+  gap: var(--dm-space-2);
+  color: var(--dm-text-secondary);
+}
+
+.dm-canvas__flow-step strong {
+  font: 600 var(--dm-fs-caption) / 1.3 var(--dm-font);
+  white-space: nowrap;
+}
+
+.dm-canvas__flow-number {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: 50%;
+  background: var(--dm-surface);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-caption) / 1 var(--dm-font);
+}
+
+.dm-canvas__flow-step.is-current {
+  color: var(--dm-text);
+}
+
+.dm-canvas__flow-step.is-current .dm-canvas__flow-number {
+  border-color: var(--dm-accent);
+  background: var(--dm-accent);
+  color: var(--dm-on-accent);
+}
+
+.dm-canvas__flow-line {
+  width: 40px;
+  height: var(--dm-hairline);
+  margin-bottom: 26px;
+  background: var(--dm-border-strong);
+}
+
+.dm-canvas__hero-title {
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-page-title) / 1.3 var(--dm-font);
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.dm-canvas__hero-desc {
+  max-width: 500px;
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-body) / 1.5 var(--dm-font);
+  text-wrap: pretty;
+}
+
+.dm-canvas__hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dm-space-2);
+  margin-top: var(--dm-space-4);
+}
+
+.dm-canvas__hero-actions .dm-btn--ghost {
+  border-color: var(--dm-border);
+  background: var(--dm-surface);
+}
+
+.dm-canvas__hero-cta {
+  height: 44px;
+  min-height: 44px;
+  padding: 0 22px;
+  font-size: var(--dm-fs-md);
+}
+
+/* 미로드 상태: 편집·키워드·보기·반영/저장 도구는 잠금(dimmed). 사유는
+ * 상태 스트립의 canvas-tool-readiness 가 안내한다. 도구 안내(guide)도 감춘다. */
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--edit,
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--keyword,
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--view,
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--commit {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__guide {
+  visibility: hidden;
+}
+
+/* 비교 영역 — 유일한 스크롤 영역. 하단 뷰바와 겹치지 않도록 격리 */
+.dm-canvas__compare {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+}
+
+.dm-canvas__compare-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+
+/* 원문 대조가 켜지면(원문 패널이 보이면) 2열 */
+#pdf-compare-view:has(#original-compare-panel:not(.is-hidden)) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dm-canvas__compare-grid.is-hidden {
+  display: none;
+}
+
+.dm-canvas__viewer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface);
+  box-shadow: var(--dm-shadow-sm);
+  overflow: hidden;
+}
+
+.dm-canvas__viewer.is-hidden {
+  display: none;
+}
+
+.dm-canvas__viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+.dm-canvas__viewer-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-sm) / 1.2 var(--dm-font);
+}
+
+.dm-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--dm-text-muted);
+}
+
+.dm-dot--orig {
+  background: var(--dm-text-secondary);
+}
+
+.dm-dot--result {
+  background: var(--dm-accent);
+}
+
+.dm-canvas__viewer-meta {
+  color: var(--dm-text-secondary);
+  font: 700 var(--dm-fs-xs) / 1.2 var(--dm-font-mono);
+  white-space: nowrap;
+}
+
+/* 캔버스가 놓이는 스크롤/센터 영역 */
+.dm-canvas__scroll {
+  min-width: 0;
+  min-height: 220px;
+  padding: 16px;
+  overflow: auto;
+  background:
+    repeating-linear-gradient(45deg, var(--dm-surface-sunken) 0 10px, transparent 10px 20px),
+    var(--dm-bg);
+}
+
+/* wrap: JS 가 인라인 width/height(px)로 캔버스 크기와 일치시킨다.
+ * 여기서는 position: relative + 중앙 정렬만 담당(크기 지정 금지). */
+.dm-canvas__wrap {
+  position: relative;
+  margin: 0 auto;
+  background: var(--dm-document-paper);
+  box-shadow: var(--dm-shadow-md);
+}
+
+/* 캔버스 스택: PDF 렌더 캔버스와 그 위의 오버레이(드래그로 박스 그리기)를
+ * wrap 기준 절대 배치로 정확히 겹친다. 이 규칙은 예전 전역 styles.css 가
+ * 부여했으나 Trust Desk 리디자인(d4cfca7)에서 styles.css 삭제와 함께 유실되어
+ * 오버레이가 PDF 아래로 흘러 내려가 마스킹/복원 드래그가 오버레이에 닿지
+ * 못했다. 현재 캔버스가 독립적으로 소유하는 스택 규칙이다. */
+#pdf-canvas-orig,
+#pdf-canvas-result {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 1px solid var(--dm-border);
+  background: var(--dm-document-paper);
+}
+
+#overlay-canvas-result {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 0;
+  background: transparent;
+  cursor: crosshair;
+  pointer-events: auto;
+}
+
+/* Cursor reflects the active editor tool (set by startLegacyApp via data-tool),
+ * so select/pan/delete read as live interactions rather than the draw crosshair. */
+#overlay-canvas-result[data-tool="select"] { cursor: pointer; }
+#overlay-canvas-result[data-tool="delete"] { cursor: pointer; }
+#overlay-canvas-result[data-tool="pan"] { cursor: grab; }
+#overlay-canvas-result.is-panning { cursor: grabbing; }
+
+/* 빈 상태에서는 캔버스를 숨기고 대기 안내(empty-state)를 노출한다. */
+#canvas-wrap-result:not(.has-rendered-pdf) #pdf-canvas-result,
+#canvas-wrap-result:not(.has-rendered-pdf) #overlay-canvas-result {
+  display: none;
+}
+
+.dm-canvas__placeholder {
+  position: absolute;
+  top: 32px;
+  left: 50%;
+  z-index: 5;
+  width: min(90%, 360px);
+  min-height: 0;
+  transform: translateX(-50%);
+}
+
+.dm-canvas__placeholder .symbol-icon {
+  font-size: 26px;
+  color: var(--dm-text-muted);
+}
+
+#canvas-wrap-result.has-rendered-pdf .dm-canvas__placeholder {
+  display: none;
+}
+
+/* 텍스트 비교 뷰 */
+.dm-canvas__compare-grid--text {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dm-canvas__text {
+  margin: 0;
+  padding: 14px;
+  min-height: 220px;
+  overflow: auto;
+  color: var(--dm-text);
+  font: 500 var(--dm-fs-sm) / 1.6 var(--dm-font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 하단 뷰 바 — 페이지 이동 / 비교 모드 / 동기화 (스테이지 전용, 스크롤 밖) */
+.dm-canvas__viewbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 8px 14px;
+  border-top: 1px solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+.dm-canvas__pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dm-canvas__pager-label {
+  min-width: 56px;
+  color: var(--dm-text-secondary);
+  font: 700 var(--dm-fs-sm) / 1.2 var(--dm-font-mono);
+  text-align: center;
+}
+
+.dm-canvas__compare-tabs > button {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 12px;
+}
+
+/* ----------------------------------------------------------------------------
+ * 5. 우측 검사기 — 선택 박스 속성 / 박스 목록 / 저장 요약
+ * -------------------------------------------------------------------------- */
+.dm-canvas__inspector {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+  border-left: 1px solid var(--dm-border);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-canvas__panel {
+  min-width: 0;
+}
+
+.dm-canvas__panel .dm-card__header {
+  padding: 8px 12px;
+}
+
+.dm-canvas__props {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.dm-canvas__props.is-empty {
+  opacity: 0.75;
+}
+
+.dm-canvas__prop-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.dm-canvas__prop-grid > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dm-canvas__prop-grid dt {
+  color: var(--dm-text-muted);
+  font: 700 var(--dm-fs-xs) / 1.2 var(--dm-font);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.dm-canvas__prop-grid dd {
+  margin: 0;
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-sm) / 1.3 var(--dm-font-mono);
+  word-break: break-word;
+}
+
+.dm-canvas__prop-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.dm-canvas__prop-actions .dm-btn--danger {
+  grid-column: 1 / -1;
+}
+
+/* 박스 목록 (JS 가 button 행 또는 .canvas-box-empty 를 주입) */
+.dm-canvas__box-list {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.dm-canvas__box-list button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface);
+  color: var(--dm-text);
+  font: 500 var(--dm-fs-sm) / 1.3 var(--dm-font);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dm-canvas__box-list button:hover {
+  border-color: var(--dm-border-strong);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-canvas__box-list button.is-active {
+  border-color: var(--dm-accent);
+  background: var(--dm-accent-soft);
+  color: var(--dm-accent);
+}
+
+.dm-canvas__box-list .canvas-box-empty {
+  min-height: 0;
+  padding: 14px 12px;
+}
+
+/* 저장 요약 */
+.dm-canvas__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 12px;
+}
+
+/* 저장 요약 — 4개 카운트 타일을 한 줄 텍스트로 축약 (중점 구분) */
+.dm-canvas__summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+  margin: 0;
+}
+
+.dm-canvas__summary-line > strong {
+  position: relative;
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-sm) / 1.3 var(--dm-font);
+}
+
+.dm-canvas__summary-line > strong + strong::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--dm-text-muted);
+  transform: translateY(-50%);
+}
+
+/* 접힘 상태 속성 탭 (런타임 토글) — 기본 숨김 */
+.dm-canvas__props-tab {
+  display: none;
+  padding: 8px 12px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-sm) / 1 var(--dm-font);
+  cursor: pointer;
+}
+
+/* ----------------------------------------------------------------------------
+ * 6. 키워드 검사 모달 (#keyword-dialog) — Modal(.ux-modal-*) 마크업 재스타일.
+ *    is-hidden 토글 방식 유지(전역 .is-hidden{display:none !important}).
+ * -------------------------------------------------------------------------- */
+#keyword-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--dm-overlay);
+}
+
+#keyword-dialog.is-hidden,
+#keyword-dialog[hidden] {
+  display: none;
+}
+
+#keyword-dialog .ux-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(85dvh, 720px);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface);
+  box-shadow: var(--dm-shadow-md);
+  overflow: hidden auto;
+}
+
+#keyword-dialog .ux-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dm-space-4);
+  padding: var(--dm-space-8) var(--dm-space-8) 0;
+  border-bottom: 0;
+}
+
+#keyword-dialog .ux-modal-head h2 {
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-modal-title) / 1.3 var(--dm-font);
+  letter-spacing: -0.01em;
+}
+
+#keyword-dialog .ux-modal-head p {
+  margin-top: var(--dm-space-2);
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-body) / 1.5 var(--dm-font);
+}
+
+#keyword-dialog .ux-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--dm-space-3);
+  padding: var(--dm-space-4) var(--dm-space-8);
+  border-top: 0;
+  background: var(--dm-surface);
+}
+
+.dm-keyword-dialog {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--dm-space-4);
+  padding: var(--dm-space-6) var(--dm-space-8) 0;
+}
+
+.dm-keyword-dialog__section {
+  display: grid;
+  align-content: start;
+  gap: var(--dm-space-3);
+  min-width: 0;
+}
+
+.dm-keyword-dialog__textarea {
+  width: 100%;
+  min-height: 132px;
+  padding: var(--dm-space-3);
+  resize: vertical;
+}
+
+.dm-keyword-dialog__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dm-space-2);
+  min-height: 40px;
+  padding: var(--dm-space-3);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface);
+  color: var(--dm-text-muted);
+  font: 500 var(--dm-fs-sm) / 1.3 var(--dm-font);
+}
+
+.dm-keyword-dialog__chips span {
+  padding: 2px 8px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-pill);
+  background: var(--dm-surface-sunken);
+  color: var(--dm-text);
+}
+
+.dm-keyword-dialog__policy {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dm-accent);
+  font: 650 var(--dm-fs-sm) / 1.4 var(--dm-font);
+  cursor: pointer;
+}
+
+#new-document-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--dm-overlay);
+}
+
+#new-document-dialog.is-hidden,
+#new-document-dialog[hidden] {
+  display: none;
+}
+
+#new-document-dialog .ux-modal {
+  display: grid;
+  width: min(480px, calc(100vw - 48px));
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface);
+  box-shadow: var(--dm-shadow-md);
+  overflow: hidden;
+}
+
+#new-document-dialog .ux-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dm-space-4);
+  padding: var(--dm-space-8) var(--dm-space-8) 0;
+  border-bottom: 0;
+}
+
+#new-document-dialog .ux-modal-head h2 {
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-modal-title) / 1.3 var(--dm-font);
+}
+
+#new-document-dialog .ux-modal-head p,
+.dm-modal-message {
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-body) / 1.5 var(--dm-font);
+}
+
+.dm-modal-message {
+  padding: var(--dm-space-6) var(--dm-space-8) 0;
+}
+
+#new-document-dialog .ux-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--dm-space-3);
+  padding: var(--dm-space-4) var(--dm-space-8);
+  border-top: 0;
+  background: var(--dm-surface);
+}
+
+/* ----------------------------------------------------------------------------
+ * 7. standalone 캔버스 창 (?mode=canvas → body.standalone-canvas-window)
+ *    셸(헤더/레일/상태바)은 shell.css 가 숨긴다. 여기서는 검사기 축소만.
+ * -------------------------------------------------------------------------- */
+body.standalone-canvas-window .dm-canvas__body {
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+/* ----------------------------------------------------------------------------
+ * 8. 반응형 — 좁은 폭에서 검사기를 아래로 내리고 도구를 접는다.
+ * -------------------------------------------------------------------------- */
+@media (max-width: 1180px) {
+  .dm-canvas__body {
+    grid-template-columns: minmax(0, 1fr) 288px;
+  }
+}
+
+@media (max-width: 1023.98px) {
+  /* 좁은 폭(v4 P3): 모바일 독 삭제 → 스테이지와 검토·저장 레일을 세로로 스택하고
+     본문 전체가 스크롤을 소유한다. 레일은 별도 스위처 없이 스크롤로 접근한다. */
+  /* 그리드 대신 블록 흐름 — 스테이지·레일이 각자 자연 높이를 갖고 본문이 스크롤.
+     (그리드 auto 행 + min-height:0 조합은 레일을 남는 높이로 찌부러뜨렸다.) */
+  .dm-canvas__body {
+    display: block;
+    overflow: auto;
+  }
+
+  .dm-canvas__stage {
+    min-height: 60vh;
+  }
+
+  .dm-keyword-dialog {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dm-canvas__batch-panel {
+    right: var(--dm-space-3);
+    left: var(--dm-space-3);
+    width: auto;
+  }
+
+  .batch-item {
+    grid-template-areas:
+      "name kind state"
+      "output output actions";
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .batch-name {
+    grid-area: name;
+  }
+
+  .batch-kind {
+    grid-area: kind;
+  }
+
+  .batch-state {
+    grid-area: state;
+  }
+
+  .batch-output {
+    grid-area: output;
+  }
+
+  .batch-actions {
+    grid-area: actions;
+    justify-content: flex-end;
+  }
+
+  .dm-canvas__batch-run {
+    justify-self: stretch;
+    width: 100%;
+  }
+}
+
+@media (max-width: 639.98px) {
+  #mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__stage {
+    height: 480px;
+    min-height: 480px;
+  }
+
+  .dm-canvas__hero {
+    justify-content: flex-start;
+    padding: 40px var(--dm-space-4) var(--dm-space-6);
+  }
+
+  .dm-canvas__toolbar {
+    gap: var(--dm-space-2);
+    padding-inline: var(--dm-space-2);
+  }
+
+  .dm-canvas__tool-group--edit {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .dm-canvas__tool-group--edit .dm-canvas__palette {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .dm-canvas__tool-group--edit .dm-canvas__palette > button {
+    flex: 1 1 0;
+    padding-inline: var(--dm-space-1);
+  }
+
+  .dm-canvas__tool-group--edit .dm-canvas__palette .symbol-icon {
+    display: none;
+  }
+
+  .dm-canvas__tool-group + .dm-canvas__tool-group {
+    padding-left: var(--dm-space-2);
+  }
+
+  .dm-canvas__batch-panel {
+    right: var(--dm-space-2);
+    left: var(--dm-space-2);
+    max-height: min(520px, 70dvh);
+  }
+
+  .batch-item {
+    grid-template-areas:
+      "name state"
+      "kind kind"
+      "output output"
+      "actions actions";
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .batch-actions {
+    justify-content: stretch;
+  }
+
+  .batch-actions button {
+    flex: 1 1 96px;
+    min-height: 44px;
+  }
+
+  .dm-canvas__batch-run {
+    min-height: 44px;
+  }
+
+  .dm-canvas__viewbar {
+    display: grid;
+    grid-template-areas:
+      "pager tabs"
+      "sync sync";
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--dm-space-2);
+  }
+
+  .dm-canvas__pager {
+    grid-area: pager;
+  }
+
+  .dm-canvas__compare-tabs {
+    grid-area: tabs;
+    min-width: 0;
+    justify-self: end;
+  }
+
+  .dm-canvas__sync {
+    grid-area: sync;
+    min-height: 32px;
+  }
+
+  .dm-canvas__flow {
+    gap: var(--dm-space-2);
+  }
+
+  .dm-canvas__flow-line {
+    width: 20px;
+  }
+
+  .dm-canvas__flow-step strong {
+    max-width: 88px;
+    white-space: normal;
+  }
+
+  .dm-canvas__hero {
+    padding: var(--dm-space-6) var(--dm-space-4);
+  }
+}
+
+/* ===========================================================================
+ * v4 P2 이식 (REDESIGN_V4_DARK §1): 문서 관제 화면의 검토·저장 레일과 최종
+ * 저장 게이트 모달 스타일을 통합 "문서" 화면(#canvas-workspace-screen)으로
+ * 이관. 원본 screen-documents.css 는 삭제됨. #canvas-workspace-screen 스코프를
+ * #canvas-workspace-screen 로 재지정한다.
+ * ========================================================================== */
+
+/* 공통: 라벨/값 쌍 + 배지 이탤릭 제거 */
+/* 공통: 라벨/값 쌍 */
+#canvas-workspace-screen .dm-kv {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+#canvas-workspace-screen .dm-kv > span {
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-xs) / 1.3 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-kv > strong,
+#canvas-workspace-screen .dm-kv > b {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-md) / 1.3 var(--dm-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 배지로 쓰는 em/b 의 이탤릭 제거 */
+#canvas-workspace-screen em.dm-badge,
+#canvas-workspace-screen b.dm-badge {
+  font-style: normal;
+}
+
+/* 저장 게이트: 준비/차단은 배지 색으로 (legacy 가 data-state=ready|blocked 세팅) */
+#canvas-workspace-screen .dm-savegate__readiness {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 9px 11px;
+  border: 1px solid var(--dm-warning);
+  border-radius: var(--dm-radius);
+  background: var(--dm-warning-soft);
+  color: var(--dm-warning);
+  font: 600 var(--dm-fs-sm) / 1.5 var(--dm-font);
+  overflow-wrap: anywhere;
+}
+
+#canvas-workspace-screen .dm-savegate__readiness::before {
+  -webkit-mask-image: var(--dm-icon-warning); /* 경고: 저장 차단 사유 */
+  mask-image: var(--dm-icon-warning);
+}
+
+#canvas-workspace-screen .dm-savegate__readiness[data-state="ready"] {
+  border-color: var(--dm-success);
+  background: var(--dm-success-soft);
+  color: var(--dm-success);
+}
+
+#canvas-workspace-screen .dm-savegate__readiness[data-state="ready"]::before {
+  -webkit-mask-image: var(--dm-icon-check); /* 체크: 저장 준비 완료 */
+  mask-image: var(--dm-icon-check);
+}
+
+#canvas-workspace-screen .dm-savegate__hint {
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-xs) / 1.5 var(--dm-font);
+}
+
+/* 2-7. 문서 추가 안내 (legacy 가 is-muted 토글) */
+
+/* 검토·저장 레일 (ReviewInspector 이식) + 최종 저장 다이얼로그 */
+/* ----------------------------------------------------------------------------
+ * 3. ReviewInspector (우) — 탐지 요약/저장 요약/설정 요약/안전 리포트 +
+ *    하단 고정 액션 (저장 버튼 잘림 금지: auto 1fr auto 그리드)
+ * -------------------------------------------------------------------------- */
+#canvas-workspace-screen .dm-inspector {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  /* .dm-canvas__inspector 의 padding/gap/overflow 을 재설정해 3행 그리드가
+     bar/scroll/actions 로 깔끔히 나뉘도록 한다(이중 스크롤·이중 패딩 방지). */
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  align-content: stretch;
+  border-left: 1px solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+#canvas-workspace-screen .dm-inspector__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm-space-2);
+  min-width: 0;
+  min-height: 48px;
+  padding: var(--dm-space-3) var(--dm-space-4);
+  border-bottom: var(--dm-hairline) solid var(--dm-border);
+}
+
+#canvas-workspace-screen .dm-inspector__bar-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dm-space-2);
+  min-width: 0;
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-control) / 1.3 var(--dm-font);
+  white-space: nowrap;
+}
+
+#canvas-workspace-screen .dm-inspector__bar-title .symbol-icon {
+  color: var(--dm-accent);
+}
+
+#canvas-workspace-screen .dm-inspector__collapse {
+  flex: 0 0 auto;
+  color: var(--dm-text-secondary);
+  font-size: var(--dm-fs-sm);
+}
+
+#canvas-workspace-screen .dm-inspector__scroll {
+  display: grid;
+  align-content: start;
+  gap: var(--dm-space-4);
+  min-height: 0;
+  /* 하단 여백을 넉넉히 둬 마지막 카드(저장 요약·저장 게이트 사유)가
+     고정 액션 푸터에 딱 붙어 잘려 보이지 않게 한다(P3 검수 메모 1). */
+  padding: var(--dm-space-6);
+  overflow: hidden auto;
+  scrollbar-gutter: stable;
+}
+
+#canvas-workspace-screen .dm-inspector__card {
+  display: grid;
+  gap: var(--dm-space-2);
+  min-width: 0;
+  padding: var(--dm-space-4);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface);
+}
+
+/* 탐지 항목 통계 카드 — final-state-card data-state 로 톤 전환 */
+#canvas-workspace-screen .dm-detect__list {
+  display: grid;
+  gap: 6px;
+}
+
+#canvas-workspace-screen .dm-detect__list > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+#canvas-workspace-screen .dm-detect__list i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--dm-text-muted);
+}
+
+#canvas-workspace-screen .dm-detect__list i.dot-primary {
+  background: var(--dm-accent);
+}
+
+#canvas-workspace-screen .dm-detect__list i.dot-warning {
+  background: var(--dm-warning);
+}
+
+#canvas-workspace-screen .dm-detect__list i.dot-danger {
+  background: var(--dm-danger);
+}
+
+#canvas-workspace-screen .dm-detect__list strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-sm) / 1.4 var(--dm-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#canvas-workspace-screen .dm-detect__list em {
+  color: var(--dm-text-secondary);
+  font: 700 var(--dm-fs-sm) / 1.3 var(--dm-font);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#canvas-workspace-screen .dm-detect__state {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface-sunken);
+}
+
+#canvas-workspace-screen .dm-detect__state strong {
+  color: var(--dm-text);
+  font: 800 var(--dm-fs-md) / 1.3 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-detect__state b {
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-sm) / 1.45 var(--dm-font);
+  overflow-wrap: anywhere;
+}
+
+#canvas-workspace-screen .dm-detect[data-state="pass"] .dm-detect__state {
+  background: var(--dm-success-soft);
+}
+
+#canvas-workspace-screen .dm-detect[data-state="pass"] .dm-detect__state strong {
+  color: var(--dm-success);
+}
+
+#canvas-workspace-screen .dm-detect[data-state="review"] .dm-detect__state {
+  background: var(--dm-warning-soft);
+}
+
+#canvas-workspace-screen .dm-detect[data-state="review"] .dm-detect__state strong {
+  color: var(--dm-warning);
+}
+
+#canvas-workspace-screen .dm-detect[data-state="fail"] .dm-detect__state {
+  background: var(--dm-danger-soft);
+}
+
+#canvas-workspace-screen .dm-detect[data-state="fail"] .dm-detect__state strong {
+  color: var(--dm-danger);
+}
+
+/* 저장 요약 */
+#canvas-workspace-screen .dm-savesummary__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+#canvas-workspace-screen .dm-savesummary__grid .dm-kv {
+  padding: 6px 9px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface-sunken);
+}
+
+#canvas-workspace-screen .dm-savesummary__grid .dm-kv > strong {
+  font-size: var(--dm-fs-base);
+}
+
+
+
+/* 하단 고정 액션 — 저장 버튼이 절대 잘리지 않는다 (v4.2.0: 저장 단일 CTA) */
+#canvas-workspace-screen .dm-inspector__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--dm-space-2);
+  padding: var(--dm-space-4);
+  border-top: var(--dm-hairline) solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+#canvas-workspace-screen .dm-inspector__actions .dm-btn--primary {
+  width: 100%;
+}
+
+/* Inspector 접힘 (legacy: #side-panel.is-collapsed) */
+#canvas-workspace-screen .dm-inspector.is-collapsed .dm-inspector__scroll,
+#canvas-workspace-screen .dm-inspector.is-collapsed .dm-inspector__actions,
+#canvas-workspace-screen .dm-inspector.is-collapsed .dm-inspector__bar-title {
+  display: none;
+}
+
+#canvas-workspace-screen .dm-inspector.is-collapsed .dm-inspector__bar {
+  justify-content: center;
+  padding: 10px 4px;
+}
+
+#canvas-workspace-screen .dm-inspector.is-collapsed .dm-inspector__collapse {
+  height: auto;
+  min-height: 84px;
+  padding: 10px 4px;
+  writing-mode: vertical-rl;
+}
+
+/* 좁은 폭(v4 P3): 모바일 독 삭제 후 검토·저장 레일을 스테이지 아래로 세로 스택.
+ * 이 블록은 위 id 규칙들보다 뒤에 와야(동일 특이도, 나중 규칙 우선) 3행 그리드의
+ * 내부 스크롤을 풀 수 있다. 본문(.dm-canvas__body)이 스크롤을 소유한다. */
+@media (max-width: 1023.98px) {
+  #canvas-workspace-screen .dm-inspector {
+    grid-template-rows: auto auto auto;
+    overflow: visible;
+    border-left: 0;
+    border-top: 1px solid var(--dm-border);
+  }
+
+  #canvas-workspace-screen .dm-inspector__scroll {
+    overflow: visible;
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * 4. 최종 저장 다이얼로그 (#final-save-dialog — hidden/is-hidden 토글 유지)
+ *    Modal 컴포넌트(.ux-modal-*) 마크업을 화면 스코프로 재스타일.
+ * -------------------------------------------------------------------------- */
+#final-save-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--dm-overlay);
+}
+
+#final-save-dialog.is-hidden,
+#final-save-dialog[hidden] {
+  display: none;
+}
+
+#final-save-dialog .ux-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(480px, calc(100vw - 48px));
+  max-height: min(85dvh, 720px);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius-modal);
+  background: var(--dm-surface);
+  box-shadow: var(--dm-shadow-md);
+  overflow: hidden auto;
+}
+
+#final-save-dialog .ux-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dm-space-4);
+  padding: var(--dm-space-8) var(--dm-space-8) 0;
+  border-bottom: 0;
+}
+
+#final-save-dialog .ux-modal-head h2 {
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-modal-title) / 1.3 var(--dm-font);
+  letter-spacing: -0.01em;
+}
+
+#final-save-dialog .ux-modal-head p {
+  margin-top: var(--dm-space-2);
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-body) / 1.5 var(--dm-font);
+}
+
+#final-save-dialog .ux-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--dm-space-3);
+  padding: var(--dm-space-4) var(--dm-space-8);
+  border-top: 0;
+  background: var(--dm-surface);
+}
+
+/* 본문(헤더/푸터 사이 직속 자식) 배치 */
+#final-save-dialog .dm-badge.status-chip {
+  justify-self: start;
+  margin: var(--dm-space-3) 0 0;
+}
+
+#final-save-dialog .status-chip.status-chip-warn {
+  border-color: var(--dm-warning-soft);
+  background: var(--dm-warning-soft);
+  color: var(--dm-warning);
+}
+
+#final-save-dialog .status-chip.status-chip-ok {
+  border-color: var(--dm-success-soft);
+  background: var(--dm-success-soft);
+  color: var(--dm-success);
+}
+#final-save-dialog .dm-savewarn__summary {
+  display: flex;
+  gap: var(--dm-space-4);
+  align-items: flex-start;
+  margin: var(--dm-space-6) var(--dm-space-8) 0;
+  padding: var(--dm-space-4);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-bg);
+}
+
+#final-save-dialog .dm-savewarn__summary-icon {
+  display: grid;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--dm-warning);
+  color: var(--dm-on-accent);
+  font: 700 var(--dm-fs-caption) / 1 var(--dm-font);
+}
+
+#final-save-dialog .dm-savewarn__summary > div {
+  display: grid;
+  gap: var(--dm-space-1);
+  min-width: 0;
+}
+
+#final-save-dialog .dm-savewarn__summary strong {
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-control) / 1.35 var(--dm-font);
+}
+
+#final-save-dialog .dm-savewarn__summary span:not(.dm-savewarn__summary-icon) {
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-caption) / 1.5 var(--dm-font);
+}
+
+#final-save-dialog .dm-savewarn__location-note {
+  margin: var(--dm-space-3) var(--dm-space-8) 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--dm-text-secondary);
+  background: transparent;
+  font: 500 var(--dm-fs-caption) / 1.5 var(--dm-font);
+}
+
+/* 저장 전 확인 — 권고형 경고 목록. 저장을 막지 않으므로 톤은 경고 1단계만 쓰고,
+   비어 있을 때는 무채색으로 가라앉힌다(액센트 남발 금지). */
+#final-save-dialog .dm-savewarn {
+  display: grid;
+  gap: var(--dm-space-2);
+  margin: var(--dm-space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+#final-save-dialog .dm-savewarn__item {
+  padding: var(--dm-space-2) var(--dm-space-3);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface);
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-caption) / 1.5 var(--dm-font);
+  overflow-wrap: anywhere;
+}
+
+#final-save-dialog .dm-savewarn__empty {
+  padding: var(--dm-space-2) var(--dm-space-3);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface-sunken);
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-caption) / 1.5 var(--dm-font);
+}
+
+@media (max-width: 640px) {
+  #final-save-dialog {
+    padding: 12px;
+  }
+
+  #final-save-dialog .ux-modal {
+    width: min(100%, 480px);
+    max-height: calc(100dvh - 24px);
+  }
+
+  #final-save-dialog .ux-modal-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  #final-save-dialog .ux-modal-actions .dm-btn {
+    width: 100%;
+  }
+
+  #final-save-dialog .ux-modal-actions .dm-btn,
+  #keyword-dialog .ux-modal-actions .dm-btn,
+  #new-document-dialog .ux-modal-actions .dm-btn {
+    min-height: 44px;
+  }
+
+  #final-save-dialog .ux-modal-head,
+  #keyword-dialog .ux-modal-head,
+  #new-document-dialog .ux-modal-head {
+    padding: var(--dm-space-6) var(--dm-space-6) 0;
+  }
+
+  #final-save-dialog .dm-savewarn__summary,
+  #final-save-dialog .dm-savewarn__location-note {
+    margin-inline: var(--dm-space-6);
+  }
+
+  #final-save-dialog .ux-modal-actions,
+  #keyword-dialog .ux-modal-actions,
+  #new-document-dialog .ux-modal-actions {
+    padding-inline: var(--dm-space-6);
+  }
+
+  .dm-keyword-dialog,
+  .dm-modal-message {
+    padding-inline: var(--dm-space-6);
+  }
+
+}

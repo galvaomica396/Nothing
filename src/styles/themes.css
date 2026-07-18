@@ -1,0 +1,68 @@
+/* ============================================================================
+ * themes.css — data-theme 프리셋 (REDESIGN_V4_DARK §2) — v4 재정리
+ * ----------------------------------------------------------------------------
+ * 규칙:
+ *  - `<html data-theme="...">` 는 해석된 값 `dark` / `light`만 받는다.
+ *    (구 7종 white/blue/purple/brown/black 프리셋은 삭제.)
+ *  - **--dm-* 토큰 값만 오버라이드한다.** 컴포넌트 셀렉터 오버라이드 금지.
+ *  - dark = variables.css 의 안전한 다크 기본값을 명시적으로 반복한다.
+ *  - light = 구 라이트 토큰 이관분 (variables.css 가 다크로 전환되면서 라이트
+ *    값들이 이 프리셋으로 옮겨왔다).
+ *  - 이 파일은 main.tsx 에서 마지막에 로드되고, 또한
+ *    `:root[data-theme=...]` (0,2,0) 이 `:root` (0,1,0) 보다 구체적이므로
+ *    테마 오버라이드가 항상 이긴다.
+ * ========================================================================== */
+
+/* --------------------------------------------------------------------------
+ * dark — 스펙 §2 다크 값 명시
+ * ------------------------------------------------------------------------ */
+:root[data-theme="dark"] {
+  --dm-bg: #0e1116;
+  --dm-surface: #161b22;
+  --dm-surface-raised: #1c2330;
+  --dm-surface-sunken: #0b0e13;
+  --dm-border: #262d38;
+  --dm-border-strong: #3a4351;
+  --dm-text: #e8edf4;
+  --dm-text-secondary: #9aa6b5;
+  --dm-text-muted: #5c6875;
+  --dm-accent: #2f81f7;
+  --dm-accent-hover: #4c95f9;
+  --dm-accent-soft: #16233c;
+}
+
+/* --------------------------------------------------------------------------
+ * light — 라이트 프리셋 (구 variables.css 라이트 토큰 이관 + Trust Desk 라이트)
+ *   다크 배경 대신 옅은 블루그레이 뉴트럴 + 딥 블루 액센트.
+ * ------------------------------------------------------------------------ */
+:root[data-theme="light"] {
+  --dm-bg: #f6f5f4;
+  --dm-surface: #ffffff;
+  --dm-surface-raised: #ffffff;
+  --dm-surface-sunken: #f6f5f4;
+  --dm-border: #e6e6e6;
+  --dm-border-strong: #d9d9d9;
+
+  --dm-text: #37352f;
+  --dm-text-secondary: #615d59;
+  --dm-text-muted: #a39e98;
+  --dm-placeholder: #6b6965;
+
+  --dm-accent: #0075de;
+  --dm-accent-hover: #005bab;
+  --dm-accent-soft: #f2f9ff;
+
+  --dm-success: #0f7b6c;  --dm-success-soft: #e8f3f1;
+  --dm-warning: #b45309;  --dm-warning-soft: #fdf3e3;
+  --dm-danger:  #eb5757;  --dm-danger-soft:  #fdecec;
+  --dm-danger-hover: #d64545;
+  --dm-mask: #000000;
+  --dm-on-accent: #ffffff;
+  --dm-overlay: rgba(55, 53, 47, 0.42);
+  --dm-toast-bg: #37352f;
+  --dm-toast-text: #ffffff;
+
+  --dm-shadow-sm: 0 0.175px 1.041px rgba(0, 0, 0, 0.01), 0 0.8px 2.925px rgba(0, 0, 0, 0.02), 0 2.025px 7.847px rgba(0, 0, 0, 0.027), 0 4px 18px rgba(0, 0, 0, 0.04);
+  --dm-shadow-md: 0 1px 3px rgba(0, 0, 0, 0.01), 0 3px 7px rgba(0, 0, 0, 0.02), 0 14px 28px rgba(0, 0, 0, 0.04), 0 23px 52px rgba(0, 0, 0, 0.05);
+  --dm-focus-ring: 0 0 0 3px rgba(0, 117, 222, 0.22);
+}

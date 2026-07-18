@@ -1,0 +1,259 @@
+name: Build macOS Tauri
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Upload verified macOS app assets to a GitHub release"
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: "Prerelease tag to create/update when publish_release is true"
+        required: false
+        type: string
+        default: "macos-stabilization-test"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Install Python deps
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Python compile check
+        run: |
+          python -m py_compile \
+            document_masker_ocr_gui.py \
+            masking_context.py \
+            privacy_detection.py \
+            scripts/*.py
+
+      - name: Python tests
+        run: python -m pytest
+
+      - name: Build packaged Python masking engine
+        run: ./scripts/build_masking_engine.sh
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build macOS app
+        run: npm run tauri build -- --bundles app
+
+      # Tauri가 서명 identity 없이 빌드하면 메인 바이너리에 linker-signed ad-hoc
+      # 서명만 남고 번들 리소스 봉인(Sealed Resources)이 없다. 그 상태로 배포하면
+      # 다운로드(격리)된 앱을 Gatekeeper가 "손상됨 → 휴지통으로 이동"으로 차단한다.
+      # 번들 전체를 ad-hoc으로 재서명해 리소스 봉인을 만들고, 검증 실패 시 빌드를 깬다.
+      - name: Ad-hoc sign macOS bundle
+        run: |
+          set -euo pipefail
+          bundle_root="src-tauri/target/release/bundle"
+          app_bundle="$(find "$bundle_root/macos" -maxdepth 1 -name "*.app" -type d | sort | head -n 1)"
+          if [[ -z "$app_bundle" || ! -d "$app_bundle" ]]; then
+            echo "missing Tauri macOS app bundle under $bundle_root/macos" >&2
+            exit 1
+          fi
+          codesign --force --deep --sign - "$app_bundle"
+          codesign --verify --deep --strict "$app_bundle"
+          echo "ad-hoc bundle signature verified: $app_bundle"
+
+      - name: Package macOS bundle
+        run: |
+          set -euo pipefail
+          out_dir="release-macos"
+          app_zip_name="Nothing-4.6.1-macos-arm64-app.zip"
+          manifest_name="Nothing-4.6.1-macos-arm64-manifest.json"
+          bundle_root="src-tauri/target/release/bundle"
+          app_bundle="$(find "$bundle_root/macos" -maxdepth 1 -name "*.app" -type d | sort | head -n 1)"
+          if [[ -z "$app_bundle" || ! -d "$app_bundle" ]]; then
+            echo "missing Tauri macOS app bundle under $bundle_root/macos" >&2
+            exit 1
+          fi
+          rm -rf "$out_dir"
+          mkdir -p "$out_dir"
+          if [[ ! -f "masking_runtime/bin/masking_engine" ]]; then
+            echo "missing packaged masking_engine" >&2
+            exit 1
+          fi
+          if [[ ! -f "data/kr_regions.json" || ! -f "data/kr_regions.seed.json" ]]; then
+            echo "missing active or seed region data" >&2
+            exit 1
+          fi
+          required_app_files=(
+            "Contents/Resources/masking_runtime/bin/masking_engine"
+            "Contents/Resources/masking_runtime/data/kr_regions.json"
+            "Contents/Resources/masking_runtime/data/kr_regions.seed.json"
+            "Contents/Resources/masking_runtime/document_masker_ocr_gui.py"
+            "Contents/Resources/masking_runtime/masking_context.py"
+            "Contents/Resources/masking_runtime/privacy_detection.py"
+            "Contents/Resources/masking_runtime/privacy_false_positive.py"
+            "Contents/Resources/masking_runtime/privacy_spans.py"
+            "Contents/Resources/masking_runtime/privacy_transformers.py"
+            "Contents/Resources/masking_runtime/requirements.txt"
+            "Contents/Resources/masking_runtime/tauri_frontend/scripts/run_masking_pipeline.py"
+            "Contents/Resources/masking_runtime/tauri_frontend/scripts/apply_manual_boxes.py"
+          )
+          for required in "${required_app_files[@]}"; do
+            if [[ ! -e "$app_bundle/$required" ]]; then
+              echo "macOS app bundle missing required file: $required" >&2
+              exit 1
+            fi
+          done
+          app_zip_path="$out_dir/$app_zip_name"
+          ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$app_zip_path"
+          python - <<'PY' "$app_bundle" "$app_zip_path" "$out_dir/$manifest_name"
+          import hashlib
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          
+          app_bundle = Path(sys.argv[1])
+          app_zip = Path(sys.argv[2])
+          manifest_path = Path(sys.argv[3])
+          
+          def digest(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          
+          release_assets = [
+              {
+                  "name": app_zip.name,
+                  "kind": "app_zip",
+                  "bytes": app_zip.stat().st_size,
+                  "sha256": digest(app_zip),
+              }
+          ]
+          
+          required_app_files = [
+              "Contents/Resources/masking_runtime/bin/masking_engine",
+              "Contents/Resources/masking_runtime/data/kr_regions.json",
+              "Contents/Resources/masking_runtime/data/kr_regions.seed.json",
+              "Contents/Resources/masking_runtime/document_masker_ocr_gui.py",
+              "Contents/Resources/masking_runtime/masking_context.py",
+              "Contents/Resources/masking_runtime/privacy_detection.py",
+              "Contents/Resources/masking_runtime/privacy_false_positive.py",
+              "Contents/Resources/masking_runtime/privacy_spans.py",
+              "Contents/Resources/masking_runtime/privacy_transformers.py",
+              "Contents/Resources/masking_runtime/requirements.txt",
+              "Contents/Resources/masking_runtime/tauri_frontend/scripts/run_masking_pipeline.py",
+              "Contents/Resources/masking_runtime/tauri_frontend/scripts/apply_manual_boxes.py",
+          ]
+          bundle_files = []
+          for root, _, files in os.walk(app_bundle):
+              for name in files:
+                  path = Path(root) / name
+                  relative = path.relative_to(app_bundle).as_posix()
+                  bundle_files.append({
+                      "path": relative,
+                      "bytes": path.stat().st_size,
+                      "sha256": digest(path),
+                  })
+          manifest = {
+              "artifact_name": "Nothing-4.6.1-macos-arm64",
+              "app_version": "4.6.1",
+              "os": "macos-arm64",
+              "github_run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+              "github_sha": os.environ.get("GITHUB_SHA", ""),
+              "github_ref": os.environ.get("GITHUB_REF", ""),
+              "github_ref_name": os.environ.get("GITHUB_REF_NAME", ""),
+              "release_assets": release_assets,
+              "required_app_files": required_app_files,
+              "app_bundle_files": sorted(bundle_files, key=lambda item: item["path"]),
+          }
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+          echo "::group::Release package manifest"
+          cat "$out_dir/$manifest_name"
+          echo "::endgroup::"
+
+      - name: macOS packaged desktop launch smoke
+        run: python scripts/e2e_tauri_local_smoke.py --app-path "src-tauri/target/release/bundle/macos/Nothing.app" --seconds 5 --out release-macos/macos-launch-smoke.json
+
+      - name: Upload macOS release assets to GitHub Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.release_tag }}"
+          if [[ -z "$tag" ]]; then
+            echo "release_tag is required when publish_release is true" >&2
+            exit 1
+          fi
+          title="Nothing macOS release $tag"
+          notes="$(cat <<EOF
+          Automated prerelease from ref $GITHUB_REF_NAME at commit $GITHUB_SHA.
+          
+          This release is intended for macOS desktop verification.
+          Download the app zip for no-installer testing.
+          EOF
+          )"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$title" --notes "$notes" --prerelease
+          fi
+          assets=(
+            "release-macos/Nothing-4.6.1-macos-arm64-app.zip"
+            "release-macos/Nothing-4.6.1-macos-arm64-manifest.json"
+          )
+          gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: macOS release asset roundtrip smoke
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.release_tag }}"
+          roundtrip_root="release-roundtrip"
+          extract_dir="$roundtrip_root/extracted"
+          rm -rf "$roundtrip_root"
+          mkdir -p "$extract_dir"
+          gh release download "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "Nothing-4.6.1-macos-arm64-app.zip" \
+            --dir "$roundtrip_root" \
+            --clobber
+          gh release download "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "Nothing-4.6.1-macos-arm64-manifest.json" \
+            --dir "$roundtrip_root" \
+            --clobber
+          unzip -q "$roundtrip_root/Nothing-4.6.1-macos-arm64-app.zip" -d "$extract_dir"
+          python scripts/e2e_tauri_local_smoke.py --app-path "$extract_dir/Nothing.app" --seconds 5 --out "$roundtrip_root/macos-release-roundtrip-smoke.json"
+
+      - name: Upload macOS release asset artifact
+        continue-on-error: ${{ inputs.publish_release }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: Nothing-4.6.1-macos-arm64-release-assets
+          path: release-macos

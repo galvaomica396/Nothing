@@ -175,6 +175,17 @@ npm run qa:all                             # 브라우저 스모크 · 저장 �
 데이터입니다. 출처·생성 정보는 파일 메타데이터와
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)에 기록되어 있습니다.
 
+## 🙏 참조 프로젝트 — ko-pii
+
+Nothing의 한국어 개인정보 탐지 레이어는
+[**ko-pii**](https://github.com/Marker-Inc-Korea/ko-pii) (Marker Inc., MIT License)를
+참조·활용하고 있습니다. Nothing은 자체 룰 엔진을 1차 판단 기준으로 두고, ko-pii의
+탐지 결과를 **보조 레이어로 합집합 결합**해 누락을 줄이는 방식으로 사용합니다
+(이름 항목은 오탐 억제를 위해 자체 문맥 가중치 로직이 담당합니다).
+
+좋은 한국어 PII 탐지기를 공개해 준 Marker Inc.에 감사드립니다. 라이선스 전문과
+버전·리비전 정보는 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)에 있습니다.
+
 ## 📄 라이선스
 
 **Nothing**은 [GNU Affero General Public License v3.0](LICENSE)으로 배포됩니다.

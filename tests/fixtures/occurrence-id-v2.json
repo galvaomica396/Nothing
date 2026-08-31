@@ -1,0 +1,16 @@
+{
+  "version": "occurrence-id-v2",
+  "document_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "analysis_revision": 1,
+  "page_index": 0,
+  "rects": [
+    {"x0": 10.0, "y0": 20.0, "x1": 30.0, "y1": 40.0}
+  ],
+  "tag": "profile_value",
+  "category": "approval_staff",
+  "value_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source": "profile_layout",
+  "policy": "masking-policy-v1",
+  "proposed_action": "mask",
+  "expected_occurrence_id": "occ_92eb1115c8edaed5d78e8c0d"
+}

@@ -1,4 +1,4 @@
-// Browser regression for the explicit masked-TXT export and its three policies.
+// Browser UI-wiring regression for the explicit masked-TXT export and its three policies; mocked IPC does not establish native/backend authority.
 
 import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
@@ -9,21 +9,25 @@ import { chromium } from "playwright";
 import { installTauriQaMocks } from "./qa_tauri_mock.mjs";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const url = "http://localhost:1420/";
+let url;
 const fixturePath = path.join(repoRoot, "tests", "fixtures", "phase6_non_sensitive.pdf");
 const evidenceDir = path.join(repoRoot, "build", "masking-options-evidence");
 
-async function serverIsReady() {
+async function serverIsReady(target) {
   try {
-    return (await fetch(url, { signal: AbortSignal.timeout(1_500) })).ok;
+    return (await fetch(target, { signal: AbortSignal.timeout(1_500) })).ok;
   } catch {
     return false;
   }
 }
 
+function childViteUrl(output) {
+  const match = output.match(/Local:\s+(https?:\/\/[^\s]+)/);
+  return match?.[1] ?? null;
+}
+
 async function ensureDevServer() {
-  if (await serverIsReady()) return null;
-  const child = spawn("npx", ["vite", "--port", "1420", "--strictPort"], {
+  const child = spawn("npx", ["vite", "--host", "127.0.0.1", "--port", "0", "--strictPort"], {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -31,20 +35,42 @@ async function ensureDevServer() {
   child.stdout.on("data", (chunk) => { output += chunk; });
   child.stderr.on("data", (chunk) => { output += chunk; });
   const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`vite exited early:\n${output}`);
-    if (await serverIsReady()) return child;
-    await new Promise((resolve) => setTimeout(resolve, 300));
+  try {
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(`vite exited early:\n${output}`);
+      const childUrl = childViteUrl(output);
+      if (childUrl && await serverIsReady(childUrl)) return { child, url: childUrl };
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    throw new Error(`vite did not publish a ready child-bound URL:\n${output}`);
+  } catch (error) {
+    if (child.exitCode === null) child.kill("SIGTERM");
+    throw error;
   }
-  child.kill("SIGTERM");
-  throw new Error(`vite did not become ready:\n${output}`);
+}
+
+function isMissingSystemChrome(error) {
+  return error instanceof Error && /(executable (does not exist|was not found)|browserType\.launch: Executable)/i.test(error.message);
+}
+
+function launchDiagnostic(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function launchBrowser() {
   try {
-    return await chromium.launch({ channel: "chrome", headless: true });
-  } catch {
-    return chromium.launch({ headless: true });
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    return { browser, selection: "system-chrome" };
+  } catch (systemChromeError) {
+    if (!isMissingSystemChrome(systemChromeError)) {
+      throw new Error(`system Chrome launch failed: ${launchDiagnostic(systemChromeError)}`);
+    }
+    try {
+      const browser = await chromium.launch({ headless: true });
+      return { browser, selection: "bundled-chromium", systemChromeDiagnostic: launchDiagnostic(systemChromeError) };
+    } catch (bundledChromiumError) {
+      throw new Error(`browser launch failed; system Chrome: ${launchDiagnostic(systemChromeError)}; bundled Chromium: ${launchDiagnostic(bundledChromiumError)}`);
+    }
   }
 }
 
@@ -66,10 +92,15 @@ async function runScenario(browser, pdfBytes, policy, exportMaskedText, verifySt
     () => (document.querySelector("#status")?.textContent ?? "").includes("대기 중: PDF 열기"),
   );
   await page.locator('[data-screen-target="masking-settings"]').first().evaluate((element) => element.click());
+  // Masked-TXT policy/export options are exercised through the legacy legal
+  // pipeline; public-document profiles use the server-owned review lifecycle.
+  await page.locator("#profile").selectOption("legal");
 
   const exportCheckbox = page.locator("#settings-export-masked-text");
   const policySelect = page.locator("#deidentification-policy");
   const displaySelect = page.locator("#display-mode");
+  const phoneRule = page.locator("#rule-phone");
+  const phoneRuleDisabled = page.locator('button[data-rule-control="rule-phone"][value="disabled"]');
   const displayMode = requestedDisplayMode || (!exportMaskedText ? "black" : policy === "token" ? "label_en" : policy === "partial" ? "label_ko" : "black");
   const displayCard = page.locator(`#btn-display-mode-${displayMode.replace("_", "-")}`);
   await displayCard.click();
@@ -90,6 +121,9 @@ async function runScenario(browser, pdfBytes, policy, exportMaskedText, verifySt
   if (requestedDisplayMode === "pseudonym") {
     await page.screenshot({ path: path.join(evidenceDir, "pseudonym-settings.png"), fullPage: true });
   }
+  await phoneRuleDisabled.click();
+  if (await phoneRule.isChecked()) throw new Error("rule toggle: phone rule did not remain disabled in React state");
+  if ((await phoneRuleDisabled.getAttribute("aria-pressed")) !== "true") throw new Error("rule toggle: disabled segment did not expose selected state");
   await page.locator("#btn-masking-settings-apply").click();
   await page.locator('[data-screen-target="documents"]').first().evaluate((element) => element.click());
   await page.locator("#btn-pick-pdf").click();
@@ -120,6 +154,9 @@ async function runScenario(browser, pdfBytes, policy, exportMaskedText, verifySt
   if (payload?.opts?.display_mode !== displayMode) {
     throw new Error(`${displayMode}: IPC display mode mismatch (${payload?.opts?.display_mode})`);
   }
+  if (payload?.opts?.phone !== false) {
+    throw new Error(`rule toggle: expected phone=false, got ${payload?.opts?.phone}`);
+  }
   const pdfPolicySummary = await page.locator("#review-summary-pdf-policy").textContent();
   const txtPolicySummary = await page.locator("#review-summary-txt-policy").textContent();
   const expectedPdfSummary = displayMode === "pseudonym"
@@ -146,27 +183,45 @@ async function runScenario(browser, pdfBytes, policy, exportMaskedText, verifySt
     await policySelect.selectOption("partial");
     await page.locator("#btn-masking-settings-apply").click();
     await page.locator('[data-screen-target="documents"]').first().evaluate((element) => element.click());
-    await page.locator("#btn-save").click();
-    await page.waitForFunction(() => {
-      const dialog = document.querySelector("#final-save-dialog");
-      return Boolean(dialog) && !dialog.classList.contains("is-hidden");
+    const staleSaveState = await page.evaluate(() => {
+      const isVisible = (element) => {
+        if (!(element instanceof HTMLButtonElement)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) > 0
+          && rect.width > 0 && rect.height > 0;
+      };
+      const controls = ["#btn-save", "#btn-canvas-final-save"]
+        .map((selector) => document.querySelector(selector))
+        .filter(isVisible);
+      if (controls.length === 0) throw new Error("no visible final-save surface");
+      for (const control of controls) control.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      return {
+        controls: controls.map((control) => ({ id: control.id, disabled: control.disabled })),
+        dialogVisible: (() => {
+          const dialog = document.querySelector("#final-save-dialog");
+          if (!(dialog instanceof HTMLElement)) return false;
+          const style = getComputedStyle(dialog);
+          const rect = dialog.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) > 0
+            && rect.width > 0 && rect.height > 0;
+        })(),
+        saveIpcCalls: window.__QA_INVOKES__.filter((call) => [
+          "choose_final_pdf_path",
+          "finalize_masking_run",
+          "finalize_manual_output",
+          "finalize_manual_output_to_selected_path",
+        ].includes(call.cmd)).map((call) => call.cmd),
+      };
     });
-    const warningText = await page.locator("#final-save-warning-list").textContent();
-    if (!warningText?.includes("마스킹을 다시 실행")) {
-      throw new Error("stale policy: rerun warning was not shown");
+    if (staleSaveState.controls.some((control) => !control.disabled)) {
+      throw new Error(`stale policy: every visible final-save surface must be disabled (${JSON.stringify(staleSaveState.controls)})`);
     }
-    await page.locator("#btn-dialog-save-all").click();
-    await page.waitForFunction(
-      () => /최종 저장 완료/.test(document.querySelector("#status")?.textContent ?? ""),
-      undefined,
-      { timeout: 30_000 },
-    );
-    const finalizePayload = await page.evaluate(() => {
-      const calls = window.__QA_INVOKES__.filter((call) => call.cmd === "finalize_manual_output_to_selected_path");
-      return calls.at(-1)?.payload;
-    });
-    if (finalizePayload?.maskedPath !== "") {
-      throw new Error("stale policy: outdated masked TXT must not be published");
+    if (staleSaveState.dialogVisible) {
+      throw new Error("stale policy: disabled save controls must not open the confirmation dialog");
+    }
+    if (staleSaveState.saveIpcCalls.length !== 0) {
+      throw new Error(`stale policy: guarded save path reached chooser/finalize IPC (${staleSaveState.saveIpcCalls.join(",")})`);
     }
   }
   if (errors.length > 0) throw new Error(`${policy}: browser errors: ${errors.join(" | ")}`);
@@ -177,18 +232,61 @@ async function runScenario(browser, pdfBytes, policy, exportMaskedText, verifySt
   console.log(`[option] ${exportMaskedText ? policy : "pdf-only"}: IPC options OK`);
 }
 
+async function runCodedFailureScenario(browser, pdfBytes) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  const page = await context.newPage();
+  await installTauriQaMocks(page, {
+    fixturePath,
+    outputDir: path.join(evidenceDir, "output"),
+    pdfBytes,
+    codedAnalyzeFailure: true,
+  });
+  await page.goto(url, { waitUntil: "networkidle" });
+  await page.waitForFunction(() => (document.querySelector("#status")?.textContent ?? "").includes("대기 중: PDF 열기"));
+  await page.locator('[data-screen-target="masking-settings"]').first().evaluate((element) => element.click());
+  await page.locator("#profile").selectOption("official_dispatch");
+  await page.locator("#btn-masking-settings-apply").click();
+  await page.locator('[data-screen-target="documents"]').first().evaluate((element) => element.click());
+  await page.locator("#btn-pick-pdf").click();
+  await page.waitForFunction((expected) => document.querySelector("#input-path")?.value === expected, fixturePath);
+  await page.waitForFunction(
+    () => /원문 PDF 로드 완료|문서 로드 실패/.test(document.querySelector("#status")?.textContent ?? ""),
+    undefined,
+    { timeout: 20_000 },
+  );
+  await page.locator("#btn-run-masking").click();
+  await page.waitForFunction(
+    () => /마스킹 실패/.test(document.querySelector("#status")?.textContent ?? ""),
+    undefined,
+    { timeout: 20_000 },
+  );
+  const status = await page.locator("#status").innerText();
+  if (!status.includes("MASKING_SESSION_ANALYZER_UNAVAILABLE") || !status.includes("실행 파일 없음") || status.includes("unknown")) {
+    throw new Error(`coded failure presentation mismatch: ${status}`);
+  }
+  await context.close();
+  console.log("[option] coded failure: code and stage presentation OK");
+}
+
 await mkdir(evidenceDir, { recursive: true });
 const pdfBytes = [...(await readFile(fixturePath))];
-const devServer = await ensureDevServer();
-const browser = await launchBrowser();
+let devServer;
+let browser;
 try {
+  const server = await ensureDevServer();
+  devServer = server.child;
+  url = server.url;
+  const launched = await launchBrowser();
+  browser = launched.browser;
+  console.log(`[browser] ${launched.selection}${launched.systemChromeDiagnostic ? `; system Chrome unavailable: ${launched.systemChromeDiagnostic}` : ""}`);
   await runScenario(browser, pdfBytes, "token", false);
   for (const policy of ["token", "partial", "pseudonym"]) {
     await runScenario(browser, pdfBytes, policy, true, policy === "token");
   }
   await runScenario(browser, pdfBytes, "pseudonym", true, false, "pseudonym");
+  await runCodedFailureScenario(browser, pdfBytes);
 } finally {
-  await browser.close();
+  await browser?.close();
   if (devServer) devServer.kill("SIGTERM");
 }
 

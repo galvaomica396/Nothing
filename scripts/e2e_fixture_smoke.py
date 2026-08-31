@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from ensure_phase6_fixture import RAW_DUMMY_VALUES, ensure_phase6_fixture
 
 DEFAULT_OPTS: Final = {
     "output_artifacts": "pdf_safe_report",
-    "profile": "official",
+    "profile": "legal",
     "region_scope": "national",
     "display_mode": "black",
     "pdf_redaction": True,
@@ -44,19 +45,25 @@ def run_masking_engine(repo_root: Path, fixture: Path, outdir: Path, engine_path
             json.dumps(DEFAULT_OPTS, separators=(",", ":")),
         ]
     )
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    return json.loads(completed.stdout)
-
-
-def report_output_path(result: dict[str, object], key: str) -> str:
-    report = result.get("report")
-    if not isinstance(report, dict):
-        return ""
-    outputs = result.get("runtime_manifest", {}).get("outputs") or report.get("outputs")
-    if not isinstance(outputs, dict):
-        return ""
-    value = outputs.get(key)
-    return value if isinstance(value, str) else ""
+    allowed_roots = os.pathsep.join(
+        dict.fromkeys(str(path.resolve()) for path in (repo_root, fixture.parent, outdir))
+    )
+    completed = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MASK_TOOL_ALLOWED_DIRS": allowed_roots},
+    )
+    event = json.loads(completed.stdout)
+    if (
+        not isinstance(event, dict)
+        or event.get("event") != "engine_result"
+        or event.get("schemaVersion") != 1
+        or not isinstance(event.get("result"), dict)
+    ):
+        raise RuntimeError("ENGINE_RESULT_SCHEMA_INVALID")
+    return event["result"]
 
 
 def run_smoke(repo_root: Path, fixture: Path, workdir: Path, engine_path: Path | None) -> dict[str, object]:
@@ -67,27 +74,34 @@ def run_smoke(repo_root: Path, fixture: Path, workdir: Path, engine_path: Path |
     # 문서 일괄(batch) 흐름: outdir=사용자 산출 폴더로 직접 실행한다. 안전 리포트는
     # 이 outdir이 아닌 내부 세션 디렉터리에만 생성되어야 한다.
     result = run_masking_engine(repo_root, fixture, outdir, engine_path)
-    report_path = str(result.get("report_path") or report_output_path(result, "safe_report_path"))
-    masked_pdf = report_output_path(result, "masked_pdf_file")
-    if not report_path or not Path(report_path).exists():
-        raise FileNotFoundError(f"safe_report was not created: {report_path}")
-    if not masked_pdf or not Path(masked_pdf).exists():
-        raise FileNotFoundError(f"masked PDF was not created: {masked_pdf}")
-
-    report_resolved = Path(report_path).resolve()
+    runtime_manifest = result.get("runtimeManifest")
+    runtime_outputs = runtime_manifest.get("outputs") if isinstance(runtime_manifest, dict) else None
+    if not isinstance(runtime_outputs, dict):
+        raise RuntimeError("ENGINE_RUNTIME_MANIFEST_INVALID")
+    masked_pdfs = sorted(outdir.glob("*.pdf"))
+    masked_pdf = masked_pdfs[0] if len(masked_pdfs) == 1 else None
     outdir_resolved = outdir.resolve()
 
     # 불변식 1: 사용자 outdir 안에 safe_report JSON이 절대 없어야 한다.
     safe_report_in_outdir = sorted(str(p) for p in outdir.rglob("*safe_report*.json"))
-    # 불변식 2: 반환된 리포트 경로는 사용자 outdir 바깥(내부 경로)에 존재해야 한다.
-    report_is_internal = report_resolved.exists() and not report_resolved.is_relative_to(outdir_resolved)
+    # 불변식 2: 엔진의 공개 이벤트는 리포트 존재 여부만 알리고 내부 경로는 노출하지 않는다.
+    report_is_internal = runtime_outputs.get("report_path") is True and not safe_report_in_outdir
     # 불변식 3: 사용자 outdir에는 마스킹 PDF만 남고 리포트는 없어야 한다.
-    masked_pdf_in_outdir = Path(masked_pdf).resolve().is_relative_to(outdir_resolved)
+    masked_pdf_in_outdir = (
+        runtime_outputs.get("masked_pdf_file") is True
+        and masked_pdf is not None
+        and masked_pdf.resolve().is_relative_to(outdir_resolved)
+    )
 
-    report_text = report_resolved.read_text(encoding="utf-8")
-    raw_values_found = [value for value in RAW_DUMMY_VALUES if value in report_text]
+    masked_text = ""
+    if masked_pdf is not None:
+        import fitz
+
+        with fitz.open(masked_pdf) as document:
+            masked_text = "\n".join(page.get_text() for page in document).replace("\xa0", " ")
+    raw_values_found = [value for value in RAW_DUMMY_VALUES if value in masked_text]
     extracted_txt_default_saved = any(outdir.glob("*.extracted.*.txt"))
-    raw_text_returned = bool(result.get("raw_text_returned"))
+    raw_text_returned = result.get("rawTextReturned") is not False
 
     status = "pass"
     if (
@@ -104,14 +118,15 @@ def run_smoke(repo_root: Path, fixture: Path, workdir: Path, engine_path: Path |
         "status": status,
         "fixture_path": fixture_meta["fixture_path"],
         "fixture_sha256": fixture_meta["sha256"],
-        "safe_report_path": report_path,
+        "safe_report_generated": runtime_outputs.get("report_path") is True,
+        "safe_report_path_exposed": False,
         "safe_report_is_internal": report_is_internal,
         "safe_report_files_in_user_outdir": safe_report_in_outdir,
-        "masked_pdf_path": masked_pdf,
+        "masked_pdf_path": str(masked_pdf) if masked_pdf is not None else "",
         "masked_pdf_in_user_outdir": masked_pdf_in_outdir,
         "raw_text_returned": raw_text_returned,
         "extracted_txt_default_saved": extracted_txt_default_saved,
-        "raw_values_found_in_safe_report": raw_values_found,
+        "raw_values_found_in_public_output": raw_values_found,
     }
 
 

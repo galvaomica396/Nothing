@@ -1,0 +1,2768 @@
+{
+  "boundary_resolutions": [
+    {
+      "analysisRevision": 1,
+      "manifestHash": "4533c50d0bfb8d4559ce42b0e4456bc084e48b4c2dc05133735edfdb67e88aec",
+      "resolution": {
+        "kind": "boundary",
+        "pageEnd": 2,
+        "pageStart": 0,
+        "segmentKind": "internal_review"
+      },
+      "reviewId": "fixture-boundary-0",
+      "runId": "golden-run-06"
+    }
+  ],
+  "expected_occurrence_count": 0,
+  "fixture_version": 1,
+  "manifest": {
+    "analysisRevision": 1,
+    "approvalCoverage": {
+      "protectedNeighborCount": 0,
+      "schemaVersion": 1,
+      "signerCount": 0,
+      "state": "absent"
+    },
+    "coordinateSpace": "pdf_points_top_left",
+    "manifestHash": "4533c50d0bfb8d4559ce42b0e4456bc084e48b4c2dc05133735edfdb67e88aec",
+    "manifestVersion": 1,
+    "manualActions": [],
+    "occurrences": [
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "9ca681478d2de451acc068ab4000ab6b3315e9f30ebf15c330e29543c253c7ff",
+        "occurrenceId": "occ_68e6c39407f18bbcbc28e1b6",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 274.79998779296875,
+            "x1": 307.9200134277344,
+            "y0": 169.08767700195312,
+            "y1": 180.11663818359375
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "c1778a351f7d36b22663dbe8f3761175547adf9baa56a3f6ab9bd35bd7eff12c"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "4e1ef2862620e8580c5cb4c1324e8ce8a0cfb88148a15b9dd37c9ed72d80e291",
+        "occurrenceId": "occ_7da34b9404b21c30cfbabcfb",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 384.47998046875,
+            "x1": 417.6000061035156,
+            "y0": 169.08767700195312,
+            "y1": 180.11663818359375
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "00bd4cc33b9d36f29cbbe8361edcbaee81d6368d7749aaac1ffc545e4152583a"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "03ac5d89410540c6afbd57be7b47d9a3cf45fa69d459320e27103391402edadd",
+        "occurrenceId": "occ_ede5990ddb07b5d0da8c34e5",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 439.20001220703125,
+            "x1": 472.3200378417969,
+            "y0": 169.08767700195312,
+            "y1": 180.11663818359375
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "5a38b01e76787dbd0118b34973acc822c76f2dd1d375be896235b4b058679207"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "52c722758cff78a1799aa5e8f486df98dc354941c6033506547607746e749832",
+        "occurrenceId": "occ_f4c575c600d3c03773d816d7",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 493.9200134277344,
+            "x1": 527.0399780273438,
+            "y0": 171.00765991210938,
+            "y1": 182.03662109375
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "96ff65cea625091727e59e34ec900a63631ca155514d6257954befc48d7a5878"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "1872e6555c5b1cd746e7afc0fb6aa0d79c012ceedd3a0490ec9758ab3ae440cf",
+        "occurrenceId": "occ_15b321239f0ad5e65364311e",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 429.8399963378906,
+            "x1": 461.2799987792969,
+            "y0": 240.60763549804688,
+            "y1": 251.6365966796875
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "cd2d705351727c463c183536484d674565f02107d0d1f023eb771b88b2eaff56"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "1b856034dc8ed66df1b9c2d1681bb29bc0d84d3532142ba87c25b90b52c56e1e",
+        "occurrenceId": "occ_7b7c33f7b3aa2f7025b9e94b",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 429.8399963378906,
+            "x1": 461.2799987792969,
+            "y0": 258.3676452636719,
+            "y1": 269.3966064453125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "54eff2b3c7d610405e90790ced8bb0e8e559c63afb475eb9d8554180e6d33ff5"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "62c10db9bfd7f54dbfa422231c8fa73d33fb45c0108848bb0117de8b27aacfc5",
+        "occurrenceId": "occ_c6625d48f190e05483e385bc",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 220.3199920654297,
+            "x1": 268.55999755859375,
+            "y0": 315.72332763671875,
+            "y1": 331.7872314453125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "b2ffa3223fcf5d5c1f34f7ac5fdbbff997eeffe467916c49950271e3f7f6bfb8"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "d6a17069d44c39d3dbd049b3de1986c292d9fbfd3e3d1f67473c0520376944e3",
+        "occurrenceId": "occ_917f62046c1449b39d6ab083",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 396.4799499511719,
+            "x1": 428.3999328613281,
+            "y0": 315.72332763671875,
+            "y1": 331.7872314453125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "597b083697220f0ce7f859e4bb99eb7147268ad0f2ccf453070567cdf370a526"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "375d8bcaedf00110e8eaae28d1a2ed062401571a69c332bf0fcbffad3ed6b756",
+        "occurrenceId": "occ_6b29faa1c12600bd5e0d1aad",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 347.7599792480469,
+            "x1": 455.7599792480469,
+            "y0": 336.49102783203125,
+            "y1": 363.5838928222656
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "0267b261b564e33b345fdae90c39d9ae089d7e1eb5af4fb07dc75d7498699c1d"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "9b1598dfb64644c2f64239b6fd3cd302b2f807908805c61273ad17767ac6a5b1",
+        "occurrenceId": "occ_82fb3b99938648ca51084612",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 258.239990234375,
+            "x1": 294.239990234375,
+            "y0": 422.31597900390625,
+            "y1": 440.2979736328125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "91697cfab28928102a0e446e3e88d639d288d445384f9ff3e510f6a1bb96430e"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "48c468eb6ef5954a23a8e6ef119bf5a170ded6b19f69261bc202547b7d7a5be0",
+        "occurrenceId": "occ_0994745aa5a93e116da18806",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 322.08001708984375,
+            "x1": 384.96002197265625,
+            "y0": 453.0359802246094,
+            "y1": 471.0179748535156
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "f4dcbb8e34e912e610337d38efb17da222964b7aef014bf94deff12fd03dda1b"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "f623d0eb03009259e63523590f4120322cebe3278a3951ef2b1b03c7bdf1bb1c",
+        "occurrenceId": "occ_52270aa9b6787cef77fde838",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 389.280029296875,
+            "x1": 452.1600341796875,
+            "y0": 453.0359802246094,
+            "y1": 471.0179748535156
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "d7841d1b54f803b01910ef0e16c5da1119843cc44eaed7b1543cd7960248a25f"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "37555867638b95ceb14615e790d64977a4462ff0efea920b5a9fdef6664793ff",
+        "occurrenceId": "occ_00b2a39702396839ca7ea695",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 456.48004150390625,
+            "x1": 489.36004638671875,
+            "y0": 453.0359802246094,
+            "y1": 471.0179748535156
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "6b8a39d563996b4d48fff23526cf86059ab95509e8e7b443a014d8684f565fdd"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "c9595f52a2260a176c61e42c397000b95433cd17e8648b5c79e0daf6f272acf5",
+        "occurrenceId": "occ_9c9bebfd4bf420cc1f2aa9b0",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 493.9200439453125,
+            "x1": 526.800048828125,
+            "y0": 453.0359802246094,
+            "y1": 471.0179748535156
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "b63ff1872184fcc65947effe52d27e884ec8bfa82fcb74d3be9fd52217b98078"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "2289b75600ad98f3a972c1cc5599a51f98c607204a1494ecaee853d080a696f1",
+        "occurrenceId": "occ_d9bd8660b424046e326abdb0",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 249.60000610351562,
+            "x1": 294.2400207519531,
+            "y0": 514.0518798828125,
+            "y1": 529.9884033203125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "46ffdea83cdd5aad37de3713fdc4e0a40cc33043bf75e7fa95843cd6c93be90e"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "a7ccc368189e40b10b1bf9f9c8c4f7cb7c733e22d4b16e2a83e0d40fe1db438e",
+        "occurrenceId": "occ_8280802aa8c1c6891a4cf309",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 301.4400329589844,
+            "x1": 331.2000427246094,
+            "y0": 514.0518798828125,
+            "y1": 529.9884033203125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "a61e10e460bfbe4b189658cf77165c25b1f0443d044cb515ddf8d89241dcd4d8"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "026bf0b585d8461157f562a3d92abc0f934761b8aa5fdcf19f1e2e911dced5ea",
+        "occurrenceId": "occ_237eab730ea2df5d5d1cd5da",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 360.7200622558594,
+            "x1": 419.7601013183594,
+            "y0": 514.0518798828125,
+            "y1": 529.9884033203125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "273171f3bca37367d9d2dcc6306c734cf73e8eb3f12caf838af806bf16b51672"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "1478fb134d82ff65add4ee2d2be9ba0af08e66676fcceeee31ca2d1eeb8661c0",
+        "occurrenceId": "occ_7f627e69e9f5e5e8f1faa5ca",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 426.9601135253906,
+            "x1": 456.7201232910156,
+            "y0": 514.0518798828125,
+            "y1": 529.9884033203125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "dfb21bcb20260e6f0f1a89e9169c9b8e57d5ee2b702cd9e0be42c9005f141441"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "20d29ab676beebac08c06d73a1b0df45efc44044c5d317db6c6c9e29db1979cc",
+        "occurrenceId": "occ_b596040ae9d2e12b1cf68852",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 463.9201354980469,
+            "x1": 493.6801452636719,
+            "y0": 514.0518798828125,
+            "y1": 529.9884033203125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "ceb9809b12cf96cab238f85b4f413b2786a9b87da4d9fb9e3ec78ed69f221221"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "ed21ecefd947246dc2be027563965c7deec1f9c88fd233ae58e774c13a780d9e",
+        "occurrenceId": "occ_211804a7dae1ac710ff3d72a",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 500.8800048828125,
+            "x1": 530.6400146484375,
+            "y0": 514.0518798828125,
+            "y1": 529.9884033203125
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "202852f5a2fe2bd6206dfc8f783fa541f6199edb9b3c8793f2f28abd9a9e317c"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "d660b3f1ee4e131fbd2cd8151ebae1474e7f1c7f653357501f02eea549ee494f",
+        "occurrenceId": "occ_d182ef8c153f7a2a8e305776",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 265.20001220703125,
+            "x1": 309.84002685546875,
+            "y0": 539.4918823242188,
+            "y1": 555.4284057617188
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "36fd01e326d3a03ca4d7091577a88f8ff313db479713a2b4e6828943d5767260"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "79c043a438dfcff150c963dbcd997fd6f0cc510b6a26d81a471e2aff558f79da",
+        "occurrenceId": "occ_ace1ae478973407ad500ad80",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 316.56005859375,
+            "x1": 375.840087890625,
+            "y0": 539.4918823242188,
+            "y1": 555.4284057617188
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "e464e563da0bf69db939adfda3f541e3e5c5ef883534aab9100a177f5b5d97bb"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "2c67719d23a60a4bad68541c59e32bfc518fdcc856564683580700b27d03d4a1",
+        "occurrenceId": "occ_7d2c2cfd85aeefcbe4df0f28",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 382.80010986328125,
+            "x1": 412.56011962890625,
+            "y0": 539.4918823242188,
+            "y1": 555.4284057617188
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "ef8de8aae5b9cf067c6099a29c215212054465231cefe090d682ff596c430870"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "ae566f1c7d5971ac40c9d7301e004afda3a96b95488d053149dd8473758b990d",
+        "occurrenceId": "occ_449098e22343ee758c2a897c",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 419.2801513671875,
+            "x1": 463.920166015625,
+            "y0": 539.4918823242188,
+            "y1": 555.4284057617188
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "8198e8b6d3bcecbfe41e5fb1fd908ab8a18814f3697724c96b4839177a343290"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "417968e631b29c31b8cfdc46d291ec0ba988ce0a62833f71b525bde7aea117f4",
+        "occurrenceId": "occ_271954065d652d507e7aa649",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 470.64019775390625,
+            "x1": 500.64019775390625,
+            "y0": 539.4918823242188,
+            "y1": 555.4284057617188
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "2837fc80e1153dd6fcc04038ca8ce94c96eb00e96a4d93f18e04dcc7686cea0b"
+      },
+      {
+        "analysisRevision": 1,
+        "category": "approval_staff",
+        "expectedTextHash": "ce1d199c8aca43e2a95c8de7942cd1fc65de6378fccd3d324de07e1e05840126",
+        "occurrenceId": "occ_9a1b94dec9e264b8aade1ffd",
+        "page": 0,
+        "policy": "masking-policy-v1",
+        "proposedAction": "review",
+        "provenance": "profile_layout",
+        "rects": [
+          {
+            "x0": 195.3599853515625,
+            "x1": 267.3599853515625,
+            "y0": 597.5159912109375,
+            "y1": 615.4979858398438
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "profile_layout",
+        "state": "review_required",
+        "tag": "profile_value",
+        "valueHash": "6ab32de33548ee315a7404e2b9da7ff32d63362eb66e2cb61fff5b25a0b9f167"
+      }
+    ],
+    "optionsHash": "b837e618eb79d0e931b859bf351b1056d708ad7e004676a3c654ffba8bae23aa",
+    "optionsVersion": "options-v2",
+    "originalDocumentHash": "92867806815c5a03d57cb50364fdf5eff8dcf17c8d431a193c26c9ec1d519da3",
+    "policyVersion": "masking-policy-v1",
+    "profile": "mixed",
+    "regions": [
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 0,
+        "reasonCodes": [
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 62.880001,
+            "x1": 536.639893,
+            "y0": 127.19133,
+            "y1": 615.497986
+          }
+        ],
+        "regionId": "region_1fa4fec062b304bb68437478",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 3,
+        "reasonCodes": [
+          "box_structure_missing",
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence"
+        ],
+        "rects": [
+          {
+            "x0": 217.679993,
+            "x1": 360.23999,
+            "y0": 288.264008,
+            "y1": 681.132019
+          }
+        ],
+        "regionId": "region_7fa68a65e822cf9f690ae51c",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 3,
+        "reasonCodes": [
+          "box_structure_missing",
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence"
+        ],
+        "rects": [
+          {
+            "x0": 217.679993,
+            "x1": 387.359955,
+            "y0": 288.264008,
+            "y1": 681.132019
+          }
+        ],
+        "regionId": "region_ee890a265c6421e14720a96c",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 3,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 216.720001,
+            "x1": 360.23999,
+            "y0": 288.264008,
+            "y1": 681.132019
+          }
+        ],
+        "regionId": "region_bc6001565af10e4eb6d814fd",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 3,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 213.600006,
+            "x1": 360.23999,
+            "y0": 288.264008,
+            "y1": 681.132019
+          }
+        ],
+        "regionId": "region_82e772c45f27ec796921d385",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "conflicting_region_evidence",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 321.371979
+          }
+        ],
+        "regionId": "region_dd513c65d59db8c2d337971e",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 339.371979
+          }
+        ],
+        "regionId": "region_bcdd3a6f4230c8e810775e71",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 357.371979
+          }
+        ],
+        "regionId": "region_8ee443257d373c405b5936fe",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 375.371979
+          }
+        ],
+        "regionId": "region_569d806af027eda232049638",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 440.411957
+          }
+        ],
+        "regionId": "region_d02f2b0c6a29cd1fb0b698a1",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 499.577972
+          }
+        ],
+        "regionId": "region_270a3b0d893e403dc4a30f29",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 534.587219
+          }
+        ],
+        "regionId": "region_3ee0b90bd688ae973ee9eca6",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 564.06842
+          }
+        ],
+        "regionId": "region_05b6679519d14eb2029cd747",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 588.06842
+          }
+        ],
+        "regionId": "region_66d361eb8dcc24ce5c0ef77d",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 616.187256
+          }
+        ],
+        "regionId": "region_939833622ff7093b10b355a1",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 645.668396
+          }
+        ],
+        "regionId": "region_2d591e47f16e3211bc72944b",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 669.668396
+          }
+        ],
+        "regionId": "region_23aed6b6b1eb1690c30ba3a1",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 697.787292
+          }
+        ],
+        "regionId": "region_750bf1e0a10c26b2f98c6f74",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 727.268433
+          }
+        ],
+        "regionId": "region_1a02489267f6892bf88ca572",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 751.268433
+          }
+        ],
+        "regionId": "region_d174c7f7a3d048e77741f3f9",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval",
+        "page": 5,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 102.479996,
+            "x1": 291.359985,
+            "y0": 93.996002,
+            "y1": 146.747253
+          }
+        ],
+        "regionId": "region_e8c2e71ef332d65e58b40e51",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 0,
+        "reasonCodes": [
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 62.880001,
+            "x1": 536.639893,
+            "y0": 127.19133,
+            "y1": 615.497986
+          }
+        ],
+        "regionId": "region_0574196a0cf1e6495538da0c",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "dispatch_metadata",
+        "page": 0,
+        "reasonCodes": [
+          "page_position_evidence_missing"
+        ],
+        "rects": [
+          {
+            "x0": 62.880001,
+            "x1": 222.132462,
+            "y0": 123.144005,
+            "y1": 135.132004
+          }
+        ],
+        "regionId": "region_2e5993d5e236f5744a7337f6",
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 3,
+        "reasonCodes": [
+          "box_structure_missing",
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence"
+        ],
+        "rects": [
+          {
+            "x0": 217.679993,
+            "x1": 360.23999,
+            "y0": 288.264008,
+            "y1": 681.132019
+          }
+        ],
+        "regionId": "region_6d8d76697813ea650f0655bd",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 3,
+        "reasonCodes": [
+          "box_structure_missing",
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence"
+        ],
+        "rects": [
+          {
+            "x0": 217.679993,
+            "x1": 387.359955,
+            "y0": 288.264008,
+            "y1": 681.132019
+          }
+        ],
+        "regionId": "region_8ea8237f8f766b78bfc08fb9",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 3,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 216.720001,
+            "x1": 360.23999,
+            "y0": 288.264008,
+            "y1": 681.132019
+          }
+        ],
+        "regionId": "region_27aebfa09c368e5a27bc1120",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 3,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 213.600006,
+            "x1": 360.23999,
+            "y0": 288.264008,
+            "y1": 681.132019
+          }
+        ],
+        "regionId": "region_832783ad2912e1121a9e0835",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "conflicting_region_evidence",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 321.371979
+          }
+        ],
+        "regionId": "region_e4e6dc2a440e9454238d8124",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 339.371979
+          }
+        ],
+        "regionId": "region_b6f1e1537f0fefa40efe56bf",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 357.371979
+          }
+        ],
+        "regionId": "region_19ceba7dc136ae03672cb780",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 375.371979
+          }
+        ],
+        "regionId": "region_4566e82a9838a0e0890fbb21",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 440.411957
+          }
+        ],
+        "regionId": "region_6d4651da1af38c5596dc8408",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 499.577972
+          }
+        ],
+        "regionId": "region_f170d3eee91405ed845be578",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 534.587219
+          }
+        ],
+        "regionId": "region_b1eee3df760a96c7696414d4",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 564.06842
+          }
+        ],
+        "regionId": "region_f6ae01176745f257c9f4eb02",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 588.06842
+          }
+        ],
+        "regionId": "region_2391d167beb6949fb6dbf7f5",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 616.187256
+          }
+        ],
+        "regionId": "region_bec9e37f861bdbd472f441bd",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 645.668396
+          }
+        ],
+        "regionId": "region_a2adff8e9eecd45d3fac02b6",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 669.668396
+          }
+        ],
+        "regionId": "region_ea3f72f426fa127d489d2773",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 697.787292
+          }
+        ],
+        "regionId": "region_bdb0acab4fc296e7d7701ff0",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 727.268433
+          }
+        ],
+        "regionId": "region_cc9e0cbf1d56309cde262f43",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 4,
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "rects": [
+          {
+            "x0": 64.559998,
+            "x1": 516.47998,
+            "y0": 93.996002,
+            "y1": 751.268433
+          }
+        ],
+        "regionId": "region_b9ab1266f00ca9b690342ebc",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      },
+      {
+        "analysisRevision": 1,
+        "confirmationSource": null,
+        "kind": "approval_staff",
+        "page": 5,
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "rects": [
+          {
+            "x0": 102.479996,
+            "x1": 291.359985,
+            "y0": 93.996002,
+            "y1": 146.747253
+          }
+        ],
+        "regionId": "region_5cf8a105c80126eacd3b6608",
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "official_layout",
+        "state": "review_required"
+      }
+    ],
+    "requiredRegionCoverage": {
+      "blocking": true,
+      "kinds": [
+        {
+          "kind": "approval",
+          "state": "present"
+        },
+        {
+          "kind": "header_meta",
+          "state": "indeterminate"
+        },
+        {
+          "kind": "labeled_staff",
+          "state": "absent"
+        },
+        {
+          "kind": "recipient_reference",
+          "state": "absent"
+        },
+        {
+          "kind": "sender_institution",
+          "state": "absent"
+        },
+        {
+          "kind": "approval_staff",
+          "state": "present"
+        },
+        {
+          "kind": "dispatch_metadata",
+          "state": "indeterminate"
+        },
+        {
+          "kind": "footer_contact",
+          "state": "absent"
+        }
+      ],
+      "profile": "mixed",
+      "schemaVersion": 1
+    },
+    "reviewItems": [
+      {
+        "analysisRevision": 1,
+        "commonOnly": true,
+        "kind": "acknowledge",
+        "pageEnd": 5,
+        "pageStart": 3,
+        "provenance": "routing",
+        "reasonCodes": [
+          "ambiguous_boundary",
+          "continuation_evidence_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_f92014b7b9d1b1ad77b005d6",
+        "status": "pending",
+        "targetId": "seg_b8f7aa8869a53e457685dde3"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_39e79a74c69f3af1af57ef64",
+        "status": "pending",
+        "targetId": "region_1fa4fec062b304bb68437478"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 3,
+        "pageStart": 3,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_d88df032224d7c32df2bcb56",
+        "status": "pending",
+        "targetId": "region_7fa68a65e822cf9f690ae51c"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 3,
+        "pageStart": 3,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_2b704c02eb63eaab202df2e0",
+        "status": "pending",
+        "targetId": "region_ee890a265c6421e14720a96c"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 3,
+        "pageStart": 3,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_975eed7b651cd540605d7e39",
+        "status": "pending",
+        "targetId": "region_bc6001565af10e4eb6d814fd"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 3,
+        "pageStart": 3,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_f51bcc2585c1ab528f09ba17",
+        "status": "pending",
+        "targetId": "region_82e772c45f27ec796921d385"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "conflicting_region_evidence",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_3d034cfea0c5a775c12d4c32",
+        "status": "pending",
+        "targetId": "region_dd513c65d59db8c2d337971e"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_0c27d0d256c61fb034e2ac1c",
+        "status": "pending",
+        "targetId": "region_bcdd3a6f4230c8e810775e71"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_4c96c78e3097a39b5147a560",
+        "status": "pending",
+        "targetId": "region_8ee443257d373c405b5936fe"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_8cb16cbc432a579ca8fcc91b",
+        "status": "pending",
+        "targetId": "region_569d806af027eda232049638"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_a9d02b51b74a8bbe3efd689f",
+        "status": "pending",
+        "targetId": "region_d02f2b0c6a29cd1fb0b698a1"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_c26387f2b2cddc7cddcf97a1",
+        "status": "pending",
+        "targetId": "region_270a3b0d893e403dc4a30f29"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_0b5a925cafc2b36217d17f98",
+        "status": "pending",
+        "targetId": "region_3ee0b90bd688ae973ee9eca6"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_77dd21402bf77769da507dca",
+        "status": "pending",
+        "targetId": "region_05b6679519d14eb2029cd747"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_26b0609169380483f6c90316",
+        "status": "pending",
+        "targetId": "region_66d361eb8dcc24ce5c0ef77d"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_e57eba8c82b4d4af0630a386",
+        "status": "pending",
+        "targetId": "region_939833622ff7093b10b355a1"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_756fb3069182947a8501289b",
+        "status": "pending",
+        "targetId": "region_2d591e47f16e3211bc72944b"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_f1656ac1855e3ec4b91f2352",
+        "status": "pending",
+        "targetId": "region_23aed6b6b1eb1690c30ba3a1"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_e9d6ccea0e54a664cdc5f3cc",
+        "status": "pending",
+        "targetId": "region_750bf1e0a10c26b2f98c6f74"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_9baf2c08e9aefbfa1a40e648",
+        "status": "pending",
+        "targetId": "region_1a02489267f6892bf88ca572"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_6b10a7d161817307678c53c7",
+        "status": "pending",
+        "targetId": "region_d174c7f7a3d048e77741f3f9"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 5,
+        "pageStart": 5,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_aec05f366a069d7e456444d8",
+        "status": "pending",
+        "targetId": "region_e8c2e71ef332d65e58b40e51"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_2505e70d09e5f6d5d5a1be56",
+        "status": "pending",
+        "targetId": "region_0574196a0cf1e6495538da0c"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "page_position_evidence_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_09b109d9e1c0de5f838aa2fd",
+        "status": "pending",
+        "targetId": "region_2e5993d5e236f5744a7337f6"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 3,
+        "pageStart": 3,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_39ee051a6f30f8086e6f0c9f",
+        "status": "pending",
+        "targetId": "region_6d8d76697813ea650f0655bd"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 3,
+        "pageStart": 3,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "compound_layout_text_evidence",
+          "conflicting_region_evidence"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_08b85c14eced777a609ea6f1",
+        "status": "pending",
+        "targetId": "region_8ea8237f8f766b78bfc08fb9"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 3,
+        "pageStart": 3,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_a0db59694ac3990fbf287ad4",
+        "status": "pending",
+        "targetId": "region_27aebfa09c368e5a27bc1120"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 3,
+        "pageStart": 3,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_ad1e723dfaf0eb9da69ac5e5",
+        "status": "pending",
+        "targetId": "region_832783ad2912e1121a9e0835"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "conflicting_region_evidence",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_8d36639e93d9f8a8ff7c877d",
+        "status": "pending",
+        "targetId": "region_e4e6dc2a440e9454238d8124"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_77cec69f93c2554b60437525",
+        "status": "pending",
+        "targetId": "region_b6f1e1537f0fefa40efe56bf"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_8b8f3dc2f3215d78c74bce01",
+        "status": "pending",
+        "targetId": "region_19ceba7dc136ae03672cb780"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_2b2d53458420282a13bfc4f6",
+        "status": "pending",
+        "targetId": "region_4566e82a9838a0e0890fbb21"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_dcd645a09ee522ee92282811",
+        "status": "pending",
+        "targetId": "region_6d4651da1af38c5596dc8408"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_5b9257d0de77879e0a03d452",
+        "status": "pending",
+        "targetId": "region_f170d3eee91405ed845be578"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_04b395e14febe0fd3ccf63fd",
+        "status": "pending",
+        "targetId": "region_b1eee3df760a96c7696414d4"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_4f5973ece18965d676ffb47a",
+        "status": "pending",
+        "targetId": "region_f6ae01176745f257c9f4eb02"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_a4e3065a6d5a3750ba784fd8",
+        "status": "pending",
+        "targetId": "region_2391d167beb6949fb6dbf7f5"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_465b2d0b65509fcf752223b1",
+        "status": "pending",
+        "targetId": "region_bec9e37f861bdbd472f441bd"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_36031a695232267f91ba6cb1",
+        "status": "pending",
+        "targetId": "region_a2adff8e9eecd45d3fac02b6"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_701ad705413b093c7645301d",
+        "status": "pending",
+        "targetId": "region_ea3f72f426fa127d489d2773"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_479c72fe9b766842ab4dcc23",
+        "status": "pending",
+        "targetId": "region_bdb0acab4fc296e7d7701ff0"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_0a3b14361763fe2dfd54c7f0",
+        "status": "pending",
+        "targetId": "region_cc9e0cbf1d56309cde262f43"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 4,
+        "pageStart": 4,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing",
+          "label_value_distance_out_of_range"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_4d8e7c45a6eff035d47238e2",
+        "status": "pending",
+        "targetId": "region_b9ab1266f00ca9b690342ebc"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "region_geometry",
+        "pageEnd": 5,
+        "pageStart": 5,
+        "provenance": "official_layout",
+        "reasonCodes": [
+          "box_structure_missing"
+        ],
+        "requiresAcknowledgment": true,
+        "reviewId": "review_8a7b425b69300f65dfb07376",
+        "status": "pending",
+        "targetId": "region_5cf8a105c80126eacd3b6608"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_cccf62752d585066730a23d6",
+        "status": "pending",
+        "targetId": "occ_68e6c39407f18bbcbc28e1b6"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_31edfc62ba1c49c4028540d1",
+        "status": "pending",
+        "targetId": "occ_7da34b9404b21c30cfbabcfb"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_53e89fa1a30b5363f16b5f7e",
+        "status": "pending",
+        "targetId": "occ_ede5990ddb07b5d0da8c34e5"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_cf17091042025c6072725dcb",
+        "status": "pending",
+        "targetId": "occ_f4c575c600d3c03773d816d7"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_56a85e162375edb4a55156ab",
+        "status": "pending",
+        "targetId": "occ_15b321239f0ad5e65364311e"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_28ff08424bc7d022db755b6b",
+        "status": "pending",
+        "targetId": "occ_7b7c33f7b3aa2f7025b9e94b"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_2d8d6a2c3e638c29acacd536",
+        "status": "pending",
+        "targetId": "occ_c6625d48f190e05483e385bc"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_66119fb623f128ef333638ec",
+        "status": "pending",
+        "targetId": "occ_917f62046c1449b39d6ab083"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_da3f7da5c6b292932e71c281",
+        "status": "pending",
+        "targetId": "occ_6b29faa1c12600bd5e0d1aad"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_f4a658798f557c3e7f5adf22",
+        "status": "pending",
+        "targetId": "occ_82fb3b99938648ca51084612"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_ef5713b95fa7b508537712d4",
+        "status": "pending",
+        "targetId": "occ_0994745aa5a93e116da18806"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_cc860c33386f59becaa5b329",
+        "status": "pending",
+        "targetId": "occ_52270aa9b6787cef77fde838"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_aadbed7bf254d74087850c0d",
+        "status": "pending",
+        "targetId": "occ_00b2a39702396839ca7ea695"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_ebae7ad4b2f6b73fc7c3d43b",
+        "status": "pending",
+        "targetId": "occ_9c9bebfd4bf420cc1f2aa9b0"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_c61ffd042b8cc1e50e7dd889",
+        "status": "pending",
+        "targetId": "occ_d9bd8660b424046e326abdb0"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_8f508da3a9736179c99b8dd4",
+        "status": "pending",
+        "targetId": "occ_8280802aa8c1c6891a4cf309"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_238c086f32c987a1181d6686",
+        "status": "pending",
+        "targetId": "occ_237eab730ea2df5d5d1cd5da"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_34d6e73d1ccd387e859db7f5",
+        "status": "pending",
+        "targetId": "occ_7f627e69e9f5e5e8f1faa5ca"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_1c2c8cf9c5f5dc3e82fafa1f",
+        "status": "pending",
+        "targetId": "occ_b596040ae9d2e12b1cf68852"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_5aa1821387aaaa19fd6e44dc",
+        "status": "pending",
+        "targetId": "occ_211804a7dae1ac710ff3d72a"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_781b6a4fb72603a54a09d35c",
+        "status": "pending",
+        "targetId": "occ_d182ef8c153f7a2a8e305776"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_95d21fe6dfa6dbe550812830",
+        "status": "pending",
+        "targetId": "occ_ace1ae478973407ad500ad80"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_eb216b054f3c3462cf666ded",
+        "status": "pending",
+        "targetId": "occ_7d2c2cfd85aeefcbe4df0f28"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_2eb472d2c8c2bf23a289b8c2",
+        "status": "pending",
+        "targetId": "occ_449098e22343ee758c2a897c"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_a07d91b17ae00cd8b5020701",
+        "status": "pending",
+        "targetId": "occ_271954065d652d507e7aa649"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "name",
+        "pageEnd": 0,
+        "pageStart": 0,
+        "provenance": "profile_layout",
+        "reasonCodes": [
+          "profile_region_review_required"
+        ],
+        "requiresAcknowledgment": false,
+        "reviewId": "review_0441cffad4e284da0f1434bf",
+        "status": "pending",
+        "targetId": "occ_9a1b94dec9e264b8aade1ffd"
+      }
+    ],
+    "runId": "golden-run-06",
+    "segments": [
+      {
+        "analysisRevision": 1,
+        "commonOnly": false,
+        "kind": "internal_review",
+        "pageEnd": 2,
+        "pageStart": 0,
+        "segmentId": "seg_82a3fbcd1ed24da3f4474582",
+        "source": "routing",
+        "state": "confirmed"
+      },
+      {
+        "analysisRevision": 1,
+        "commonOnly": true,
+        "kind": "unknown",
+        "pageEnd": 5,
+        "pageStart": 3,
+        "segmentId": "seg_b8f7aa8869a53e457685dde3",
+        "source": "routing",
+        "state": "review_required"
+      }
+    ],
+    "thresholdArtifact": {
+      "autoMaskThreshold": 0.85,
+      "contentHash": "351682525a4883ee48a56f088266c68298c63a0ed2d94fb6cc69d6c159db1af3",
+      "reviewThreshold": 0.5,
+      "version": "thresholds-v2"
+    },
+    "thresholdHash": "351682525a4883ee48a56f088266c68298c63a0ed2d94fb6cc69d6c159db1af3",
+    "thresholdVersion": "thresholds-v2"
+  },
+  "policy_version": "masking-policy-v1",
+  "threshold_version": "thresholds-v2"
+}

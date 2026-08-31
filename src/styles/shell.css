@@ -1,21 +1,10 @@
-/* ============================================================================
- * shell.css — 앱 셸 (REDESIGN_V4_DARK §1)
- * v4: 좌측 레일 폐지 → 상단 바 문서 명령+기어. 헤더 48px / 상태바 28px / 화면 전환 /
- * 모바일 독 / 반응형. 세로 공간 전부를 문서 화면에 준다.
- * 화면(스크린) 내부 스타일은 각 screen-*.css 소유 — 여기서는 배치와 표시
- * 전환만 담당한다. !important 금지.
- * ========================================================================== */
-
-/* ----------------------------------------------------------------------------
- * 1. 셸 그리드: 헤더(전폭) / 메인(전폭) / 상태바(전폭) — 레일 열 없음
- * -------------------------------------------------------------------------- */
 .dm-shell {
   display: grid;
   grid-template-areas:
-    "header"
-    "main"
-    "status";
-  grid-template-columns: minmax(0, 1fr);
+    "sidebar header"
+    "sidebar main"
+    "sidebar status";
+  grid-template-columns: var(--dm-sidebar-w) minmax(0, 1fr);
   grid-template-rows: var(--dm-header-h) minmax(0, 1fr) var(--dm-statusbar-h);
   width: 100%;
   height: 100dvh;
@@ -24,71 +13,241 @@
   color: var(--dm-toast-text);
 }
 
-/* ----------------------------------------------------------------------------
- * 2. 상단 바 — [로고] [현재 문서] ── [문서 명령] [상태] [기어]
- * -------------------------------------------------------------------------- */
-.dm-header {
-  grid-area: header;
+.dm-sidebar {
+  grid-area: sidebar;
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: var(--dm-space-3);
-  min-width: 0;
-  height: var(--dm-header-h);
-  min-height: var(--dm-header-h);
-  padding: 0 var(--dm-space-4);
-  border-bottom: var(--dm-hairline) solid var(--dm-border);
+  flex-direction: column;
+  min-height: 0;
+  padding: 20px 12px;
+  border-right: 1px solid var(--dm-border);
   background: var(--dm-surface);
 }
 
-.dm-header__brand {
+.dm-sidebar__brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
+  min-height: 32px;
+  margin-bottom: 20px;
+  padding: 0 8px;
 }
 
-.dm-header__home {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--dm-space-2);
-  height: 32px;
-  padding: 0 var(--dm-space-1);
-  border: 0;
-  border-radius: var(--dm-radius);
-  background: transparent;
-  color: var(--dm-text);
-  font: 600 var(--dm-fs-control) / 1 var(--dm-font);
-  letter-spacing: -0.01em;
-}
-
-.dm-header__home.is-active {
-  background: transparent;
-  color: var(--dm-text);
-}
-
-.dm-header__logo {
+.dm-sidebar__logo {
   display: block;
   width: 24px;
   height: 24px;
   object-fit: contain;
 }
 
+.dm-header__home {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dm-text);
+  font: 700 17px / 1 var(--dm-font);
+  letter-spacing: -0.01em;
+  cursor: pointer;
+}
+
+.dm-sidebar__nav,
+.dm-sidebar__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dm-sidebar__foot {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--dm-border);
+}
+
+.dm-sidebar__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--dm-radius);
+  background: transparent;
+  color: var(--dm-text);
+  font: 500 var(--dm-fs-caption) / 1 var(--dm-font);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dm-sidebar__item .symbol-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--dm-text-secondary);
+}
+
+.dm-sidebar__item:hover {
+  background: var(--dm-surface-sunken);
+}
+
+.dm-sidebar__item:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.dm-sidebar__item.is-active,
+.dm-sidebar__item[aria-pressed="true"] {
+  background: var(--dm-surface-sunken);
+  font-weight: 600;
+}
+
+.dm-sidebar__item.is-active .symbol-icon,
+.dm-sidebar__item[aria-pressed="true"] .symbol-icon {
+  color: var(--dm-accent);
+}
+
+.dm-sidebar__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-sidebar__count {
+  margin-left: auto;
+  color: var(--dm-accent);
+  font: 700 13px / 1 var(--dm-font);
+}
+
+:root[data-theme="light"] .dm-sidebar__count {
+  color: #1459cf;
+}
+
+.dm-header {
+  grid-area: header;
+  display: block;
+  min-width: 0;
+  height: var(--dm-header-h);
+  min-height: var(--dm-header-h);
+  border-bottom: 1px solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+.dm-header__screen {
+  display: none;
+  align-items: center;
+  gap: 16px;
+  height: 100%;
+  min-width: 0;
+  padding: 0 32px;
+}
+
+.dm-shell:has(#workspace-shell[data-active-screen="desk"]) .dm-header__screen--desk,
+.dm-shell:has(#workspace-shell[data-active-screen="storage"]) .dm-header__screen--storage,
+.dm-shell:has(#workspace-shell[data-active-screen="documents"]) .dm-header__screen--documents,
+.dm-shell:has(#workspace-shell[data-active-screen="settings"]) .dm-header__screen--aux,
+.dm-shell:has(#workspace-shell[data-active-screen="masking-settings"]) .dm-header__screen--aux {
+  display: flex;
+}
+
+.dm-header__search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: min(360px, 100%);
+  min-width: 220px;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface-sunken);
+  color: var(--dm-text-secondary);
+}
+
+.dm-header__search .symbol-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.dm-header__search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dm-text);
+  font: 500 var(--dm-fs-caption) / 1 var(--dm-font);
+}
+
+.dm-header__search input:focus {
+  outline: none;
+}
+
+.dm-header__utility {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.dm-header__meta {
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-caption) / 1.3 var(--dm-font);
+  white-space: nowrap;
+}
+
+.dm-header__icon,
+.dm-header__back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface);
+  color: var(--dm-text-secondary);
+  cursor: pointer;
+}
+
+.dm-header__icon:hover,
+.dm-header__back:hover {
+  border-color: var(--dm-border-strong);
+  color: var(--dm-text);
+}
+
+.dm-header__icon:disabled,
+.dm-header__back:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.dm-header__icon .symbol-icon,
+.dm-header__back .symbol-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.dm-header__context {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .dm-header__doc {
   display: grid;
-  grid-template-rows: auto auto;
-  align-items: baseline;
-  flex: 1 1 180px;
+  gap: 2px;
   min-width: 0;
-  padding-left: var(--dm-space-4);
-  border-left: var(--dm-hairline) solid var(--dm-border);
 }
 
 .dm-header__doc strong {
   min-width: 0;
   overflow: hidden;
   color: var(--dm-text);
-  font: 600 var(--dm-fs-control) / 1.25 var(--dm-font);
+  font: 700 var(--dm-fs-control) / 1.25 var(--dm-font);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -98,18 +257,21 @@
   overflow: hidden;
   color: var(--dm-text-secondary);
   font: 500 var(--dm-fs-eyebrow) / 1.25 var(--dm-font);
-  font-style: normal; /* 대기 문구 이탤릭 금지 */
+  font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 1차 액션 버튼 묶음 */
 .dm-header__actions {
   display: flex;
   align-items: center;
-  gap: var(--dm-space-1);
+  gap: 8px;
   flex: 0 0 auto;
-  margin-left: auto;
+}
+
+.dm-header__actions .dm-btn {
+  justify-content: center;
+  min-width: 118px;
 }
 
 .dm-run-icon--busy {
@@ -124,7 +286,6 @@
   display: inline-flex;
 }
 
-/* 상태 요약 스트립 (dashboardSurfaces 가 span 을 주입) */
 .dm-header__health {
   display: flex;
   align-items: center;
@@ -137,7 +298,7 @@
 .dm-header__health span {
   padding: 2px 8px;
   border: 1px solid var(--dm-border);
-  border-radius: var(--dm-radius-pill);
+  border-radius: 999px;
   background: var(--dm-surface-sunken);
   color: var(--dm-text-secondary);
   font: 600 var(--dm-fs-xs) / 1.2 var(--dm-font);
@@ -150,49 +311,11 @@
   color: var(--dm-warning);
 }
 
-@media (max-width: 1399.98px) {
-  .dm-header__health {
-    display: none;
-  }
-}
-
-/* 우측 기어 → 설정 화면 진입 */
-.dm-header__gear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: var(--dm-hairline) solid var(--dm-border);
-  border-radius: var(--dm-radius);
-  background: transparent;
+.dm-header__aux-title {
   color: var(--dm-text-secondary);
-  cursor: pointer;
+  font: 600 var(--dm-fs-caption) / 1 var(--dm-font);
 }
 
-.dm-header__gear:hover {
-  background: var(--dm-surface-sunken);
-  color: var(--dm-text);
-}
-
-.dm-header__gear.is-active,
-.dm-header__gear[aria-pressed="true"] {
-  border-color: var(--dm-accent);
-  color: var(--dm-accent);
-}
-
-.dm-header__gear .symbol-icon {
-  width: 18px;
-  height: 18px;
-}
-
-/* ----------------------------------------------------------------------------
- * 3. 메인 스테이지 + 화면 전환 (.is-active / data-screen-panel 메커니즘 보존)
- *    표시 전환만 소유한다: 활성 화면의 display 타입(grid 등)은 화면 CSS 소유
- *    이므로 여기서는 비활성 화면 숨김만 정의한다.
- * -------------------------------------------------------------------------- */
 #workspace-shell {
   grid-area: main;
   position: relative;
@@ -213,18 +336,15 @@
   display: none;
 }
 
-/* ----------------------------------------------------------------------------
- * 4. 상태바 28px — #status / #status-detail (계약 ID 보존)
- * -------------------------------------------------------------------------- */
 .dm-statusbar {
   grid-area: status;
   display: flex;
   align-items: center;
-  gap: var(--dm-space-3);
+  gap: 12px;
   min-width: 0;
   height: var(--dm-statusbar-h);
-  padding: 0 var(--dm-space-4);
-  border-top: var(--dm-hairline) solid var(--dm-border);
+  padding: 0 16px;
+  border-top: 1px solid var(--dm-border);
   background: var(--dm-surface);
 }
 
@@ -232,41 +352,113 @@
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: var(--dm-text);
+  color: var(--dm-toast-text);
   font: 600 var(--dm-fs-caption) / 1.2 var(--dm-font);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@keyframes dm-status-repeat-a {
+  0% { background-color: var(--dm-toast-bg); }
+  45% { background-color: var(--dm-warning-soft); }
+  100% { background-color: var(--dm-toast-bg); }
+}
+
+@keyframes dm-status-repeat-b {
+  0% { background-color: var(--dm-toast-bg); }
+  45% { background-color: var(--dm-warning-soft); }
+  100% { background-color: var(--dm-toast-bg); }
+}
+
+.dm-statusbar #status[data-state="repeat-a"] {
+  animation: dm-status-repeat-a 220ms ease-out;
+}
+
+.dm-statusbar #status[data-state="repeat-b"] {
+  animation: dm-status-repeat-b 220ms ease-out;
 }
 
 .dm-statusbar #status-detail {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  padding-left: var(--dm-space-3);
-  border-left: var(--dm-hairline) solid var(--dm-border);
+  padding-left: 12px;
+  border-left: 1px solid var(--dm-border);
   color: var(--dm-text-secondary);
   font: 500 var(--dm-fs-caption) / 1.2 var(--dm-font);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* ----------------------------------------------------------------------------
- * 5. 반응형 — 1024px 미만: 상단 바 유지. 모바일 독은 v4 P3에서 삭제됐다.
- *    통합 문서 화면은 좁은 폭에서 스테이지+검토 레일을 세로로 스택한다
- *    (독 없이 스크롤로 접근 — 자세한 배치는 screen-canvas.css 소유).
- * -------------------------------------------------------------------------- */
+@media (max-width: 1399.98px) {
+  .dm-header__health {
+    display: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .dm-shell {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .dm-sidebar {
+    padding-inline: 8px;
+  }
+
+  .dm-sidebar__brand {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .dm-sidebar__brand-name,
+  .dm-sidebar__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .dm-sidebar__item {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .dm-sidebar__count {
+    position: absolute;
+    right: 6px;
+    top: 6px;
+    margin: 0;
+  }
+}
+
 @media (max-width: 1023.98px) {
   .dm-header {
-    gap: var(--dm-space-2);
-    padding: 0 var(--dm-space-3);
+    height: auto;
+    min-height: var(--dm-header-h);
   }
 
-  .dm-header__doc {
-    flex-basis: 120px;
+  .dm-header__screen {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 16px;
   }
 
-  .dm-header__actions {
-    gap: var(--dm-space-1);
+  .dm-header__search {
+    width: 100%;
+  }
+
+  .dm-header__utility {
+    margin-left: 0;
+  }
+
+  .dm-header__screen--documents .dm-header__actions {
+    width: 100%;
+    overflow: auto hidden;
   }
 }
 
@@ -276,15 +468,9 @@
     display: none;
   }
 
-  .dm-header__doc {
-    display: block;
-    flex-basis: 96px;
-    padding-left: var(--dm-space-2);
-  }
-
   .dm-header__actions .dm-btn {
-    width: 32px;
     min-width: 32px;
+    width: 32px;
     height: 32px;
     min-height: 32px;
     padding: 0;
@@ -305,37 +491,18 @@
 }
 
 @media (max-width: 479.98px) {
-  .dm-header {
-    padding-inline: var(--dm-space-2);
-  }
-
-  .dm-header__brand-name,
   .dm-header__doc {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .dm-header__actions {
-    margin-left: auto;
+    display: none;
   }
 }
 
-/* ----------------------------------------------------------------------------
- * 6. standalone 캔버스 창 (?mode=canvas → body.standalone-canvas-window)
- * -------------------------------------------------------------------------- */
 body.standalone-canvas-window .dm-shell {
   grid-template-areas: "main";
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
 }
 
+body.standalone-canvas-window .dm-sidebar,
 body.standalone-canvas-window .dm-header,
 body.standalone-canvas-window .dm-statusbar {
   display: none;
@@ -350,5 +517,5 @@ body.standalone-canvas-window #workspace-shell > [data-screen-panel]:not([data-s
 }
 
 body.standalone-canvas-window #workspace-shell > [data-screen-panel="documents"] {
-  display: grid;
+  display: block;
 }

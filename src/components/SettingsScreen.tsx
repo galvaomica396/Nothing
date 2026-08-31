@@ -1,4 +1,7 @@
 import { SymbolIcon } from "./ui/SymbolIcon";
+import { setActiveScreen, useShellState } from "../state/shellStore";
+import { beginSettingsDraft, completeSettingsDraft, saveCurrentSettings, updateSettings, useSettingsState } from "../state/settingsStore";
+import { applicationController } from "../state/appControllerRuntime";
 
 const THEME_CHOICES = [
   {
@@ -19,33 +22,53 @@ const THEME_CHOICES = [
 ] as const;
 
 export function SettingsScreen() {
+  const { activePanel } = useShellState();
+  const { settings } = useSettingsState();
+  const returnToPreviousScreen = (): void => applicationController()?.returnFromAuxScreen() ?? setActiveScreen("desk");
+  const setStatus = (message: string): void => applicationController()?.setStatus(message);
+  const saveSettings = (): void => {
+    const saved = saveCurrentSettings();
+    applicationController()?.applySettings(saved);
+    completeSettingsDraft();
+    setStatus(saved.diagnostic.status === "failed" ? "설정을 저장하지 못했습니다. 저장소 상태를 확인하세요." : "설정 저장 완료");
+  };
+
   return (
     <section
       id="settings-screen"
-      className="dm-settings-screen dm-settings-screen--app"
+      className={activePanel === "settings" ? "dm-settings-screen dm-settings-screen--app is-active" : "dm-settings-screen dm-settings-screen--app"}
       data-screen-panel="settings"
+      data-owner="react"
       aria-label="일반 설정"
     >
       <header className="dm-settings-topbar">
         <div className="dm-settings-topbar__lead">
-          {/* 보조 화면 복귀 어포던스 — 기어로 들어온 이전 문서 화면으로 돌아간다. */}
-          <button id="btn-settings-back" className="dm-settings-back" type="button">
+          <button id="btn-settings-back" className="dm-settings-back" type="button" onClick={returnToPreviousScreen}>
             <SymbolIcon name="chevron_left" />
             <span>돌아가기</span>
           </button>
           <div className="dm-settings-topbar__heading">
-            <span className="dm-settings-kicker">앱 설정</span>
+            <span className="dm-settings-kicker">설정</span>
             <strong id="settings-title">화면과 앱 동작을 설정합니다</strong>
           </div>
         </div>
         <div className="dm-settings-topbar__actions">
-          <button id="btn-settings-close" className="dm-btn dm-btn--ghost" type="button">닫기</button>
+          <button id="btn-settings-close" className="dm-btn dm-btn--ghost" type="button" onClick={returnToPreviousScreen}>닫기</button>
         </div>
       </header>
 
       <div className="dm-settings-scroll">
-        <section className="dm-settings-panel" data-settings-panel="general" role="tabpanel" aria-label="일반">
-          <div className="dm-settings-grid dm-settings-grid--app">
+        <div className="dm-settings-layout">
+          <aside className="dm-settings-subnav" aria-label="설정 분류">
+            <span className="dm-settings-subnav__item is-active" aria-current="page">일반</span>
+            <button className="dm-settings-subnav__item" type="button" data-screen-target="masking-settings" onClick={() => { beginSettingsDraft(); setActiveScreen("masking-settings"); }}>마스킹 규칙</button>
+            <span className="dm-settings-subnav__item dm-settings-subnav__item--disabled" aria-disabled="true">탐지 항목 준비 중</span>
+            <span className="dm-settings-subnav__item dm-settings-subnav__item--disabled" aria-disabled="true">보안·개인정보 준비 중</span>
+            <span className="dm-settings-subnav__item dm-settings-subnav__item--disabled" aria-disabled="true">저장·내보내기 준비 중</span>
+            <span className="dm-settings-subnav__item dm-settings-subnav__item--disabled" aria-disabled="true">정보 준비 중</span>
+          </aside>
+          <section className="dm-settings-panel" data-settings-panel="general" role="tabpanel" aria-label="일반">
+            <div className="dm-settings-grid dm-settings-grid--app">
             <section className="dm-card dm-settings-card" aria-label="화면 색상">
               <div className="dm-card__header">
                 <div>
@@ -57,7 +80,7 @@ export function SettingsScreen() {
                 <div className="dm-theme-grid">
                   {THEME_CHOICES.map((theme) => (
                     <label className="dm-theme-choice" data-theme-preview={theme.value} key={theme.value}>
-                      <input type="radio" name="settings-theme" value={theme.value} defaultChecked={theme.value === "system"} />
+                      <input type="radio" name="settings-theme" value={theme.value} checked={settings.theme === theme.value} onChange={() => { updateSettings({ theme: theme.value }); saveCurrentSettings(); }} />
                       <span className="dm-theme-swatch" aria-hidden="true">
                         <i className="dm-theme-swatch__rail" />
                         <i className="dm-theme-swatch__head" />
@@ -79,7 +102,7 @@ export function SettingsScreen() {
               </div>
               <div className="dm-card__body">
                 <label className="dm-switch">
-                  <input type="checkbox" id="settings-open-output-after-save" />
+                  <input type="checkbox" id="settings-open-output-after-save" checked={settings.openOutputAfterSave} onChange={(event) => updateSettings({ openOutputAfterSave: event.currentTarget.checked })} />
                   <span className="dm-switch__track" aria-hidden="true"><i className="dm-switch__thumb" /></span>
                   <span className="dm-switch__copy">
                     <strong>최종 저장 후 파일 위치 열기</strong>
@@ -92,15 +115,16 @@ export function SettingsScreen() {
                 </div>
               </div>
             </section>
-          </div>
-        </section>
+            </div>
+          </section>
+        </div>
       </div>
 
       <footer className="dm-settings-footer">
-        <button id="btn-app-settings-reset" className="dm-btn" type="button">기본값</button>
+        <button id="btn-app-settings-reset" className="dm-btn" type="button" onClick={() => { updateSettings({ theme: "light", profile: "mixed", engine: "auto", displayMode: "black", deidentificationMode: "token", regionScope: "national", customRegions: "", customKeywords: "", pdfRedaction: true, exportMaskedText: false, openOutputAfterSave: false }); setStatus("설정 기본값 미리보기"); }}>기본값</button>
         <div className="dm-settings-footer__main">
-          <button id="btn-app-settings-save" className="dm-btn dm-btn--primary" type="button">설정 저장</button>
-          <button id="btn-app-settings-close" className="dm-btn" type="button">닫기</button>
+          <button id="btn-app-settings-save" className="dm-btn dm-btn--primary" type="button" onClick={saveSettings}>설정 저장</button>
+          <button id="btn-app-settings-close" className="dm-btn" type="button" onClick={returnToPreviousScreen}>닫기</button>
         </div>
       </footer>
     </section>

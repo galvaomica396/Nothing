@@ -3,6 +3,7 @@ pypdf>=4.0.0
 pymupdf>=1.26.7
 pymupdf4llm>=0.0.9
 pytest>=8.0.0
+pydantic>=2.12,<3
 pyinstaller>=6.0.0
 # MIT, Marker-Inc-Korea/ko-pii v1.15.2 source revision; notice: THIRD_PARTY_NOTICES.md.
 ko-pii @ git+https://github.com/Marker-Inc-Korea/ko-pii.git@635ade22cfe8d89761ed0e8948b5470e2307506e

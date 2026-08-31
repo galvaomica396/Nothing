@@ -1,0 +1,1460 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "models": {
+    "AnalysisManifestV1": {
+      "$defs": {
+        "AnalysisOccurrenceV1": {
+          "additionalProperties": false,
+          "properties": {
+            "analysisRevision": {
+              "minimum": 0,
+              "title": "Analysisrevision",
+              "type": "integer"
+            },
+            "category": {
+              "minLength": 1,
+              "title": "Category",
+              "type": "string"
+            },
+            "expectedTextHash": {
+              "pattern": "^[a-fA-F0-9]{64}$",
+              "title": "Expectedtexthash",
+              "type": "string"
+            },
+            "occurrenceId": {
+              "pattern": "^occ_[a-f0-9]{24}$",
+              "title": "Occurrenceid",
+              "type": "string"
+            },
+            "page": {
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            },
+            "policy": {
+              "minLength": 1,
+              "title": "Policy",
+              "type": "string"
+            },
+            "proposedAction": {
+              "$ref": "#/$defs/OccurrenceAction"
+            },
+            "provenance": {
+              "minLength": 1,
+              "title": "Provenance",
+              "type": "string"
+            },
+            "rects": {
+              "items": {
+                "$ref": "#/$defs/PdfPointsTopLeftRect"
+              },
+              "title": "Rects",
+              "type": "array"
+            },
+            "regionId": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Regionid"
+            },
+            "segmentId": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "title": "Segmentid",
+              "type": "string"
+            },
+            "source": {
+              "minLength": 1,
+              "title": "Source",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/OccurrenceState"
+            },
+            "tag": {
+              "minLength": 1,
+              "title": "Tag",
+              "type": "string"
+            },
+            "valueHash": {
+              "pattern": "^[a-fA-F0-9]{64}$",
+              "title": "Valuehash",
+              "type": "string"
+            }
+          },
+          "required": [
+            "occurrenceId",
+            "segmentId",
+            "regionId",
+            "analysisRevision",
+            "page",
+            "rects",
+            "tag",
+            "category",
+            "valueHash",
+            "expectedTextHash",
+            "source",
+            "policy",
+            "proposedAction",
+            "state",
+            "provenance"
+          ],
+          "title": "AnalysisOccurrenceV1",
+          "type": "object"
+        },
+        "AnalysisRegionKind": {
+          "enum": [
+            "approval",
+            "header_meta",
+            "labeled_staff",
+            "recipient_reference",
+            "sender_institution",
+            "approval_staff",
+            "dispatch_metadata",
+            "footer_contact"
+          ],
+          "title": "AnalysisRegionKind",
+          "type": "string"
+        },
+        "AnalysisRegionState": {
+          "enum": [
+            "confirmed",
+            "review_required",
+            "unconfirmed",
+            "user_confirmed"
+          ],
+          "title": "AnalysisRegionState",
+          "type": "string"
+        },
+        "AnalysisRegionV1": {
+          "additionalProperties": false,
+          "properties": {
+            "analysisRevision": {
+              "minimum": 0,
+              "title": "Analysisrevision",
+              "type": "integer"
+            },
+            "confirmationSource": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "automatic",
+                    "user"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Confirmationsource"
+            },
+            "kind": {
+              "$ref": "#/$defs/AnalysisRegionKind"
+            },
+            "page": {
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            },
+            "reasonCodes": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": "Reasoncodes",
+              "type": "array"
+            },
+            "rects": {
+              "items": {
+                "$ref": "#/$defs/PdfPointsTopLeftRect"
+              },
+              "title": "Rects",
+              "type": "array"
+            },
+            "regionId": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "title": "Regionid",
+              "type": "string"
+            },
+            "segmentId": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "title": "Segmentid",
+              "type": "string"
+            },
+            "source": {
+              "minLength": 1,
+              "title": "Source",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/AnalysisRegionState"
+            }
+          },
+          "required": [
+            "regionId",
+            "segmentId",
+            "analysisRevision",
+            "page",
+            "rects",
+            "kind",
+            "state",
+            "confirmationSource",
+            "reasonCodes",
+            "source"
+          ],
+          "title": "AnalysisRegionV1",
+          "type": "object"
+        },
+        "AnalysisSegmentKind": {
+          "enum": [
+            "internal_review",
+            "official_dispatch",
+            "attachment",
+            "unknown",
+            "legal",
+            "mixed",
+            "common"
+          ],
+          "title": "AnalysisSegmentKind",
+          "type": "string"
+        },
+        "AnalysisSegmentState": {
+          "enum": [
+            "confirmed",
+            "review_required",
+            "user_confirmed"
+          ],
+          "title": "AnalysisSegmentState",
+          "type": "string"
+        },
+        "AnalysisSegmentV1": {
+          "additionalProperties": false,
+          "properties": {
+            "analysisRevision": {
+              "minimum": 0,
+              "title": "Analysisrevision",
+              "type": "integer"
+            },
+            "commonOnly": {
+              "title": "Commononly",
+              "type": "boolean"
+            },
+            "kind": {
+              "$ref": "#/$defs/AnalysisSegmentKind"
+            },
+            "pageEnd": {
+              "minimum": 0,
+              "title": "Pageend",
+              "type": "integer"
+            },
+            "pageStart": {
+              "minimum": 0,
+              "title": "Pagestart",
+              "type": "integer"
+            },
+            "segmentId": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "title": "Segmentid",
+              "type": "string"
+            },
+            "source": {
+              "minLength": 1,
+              "title": "Source",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/AnalysisSegmentState"
+            }
+          },
+          "required": [
+            "segmentId",
+            "analysisRevision",
+            "pageStart",
+            "pageEnd",
+            "kind",
+            "state",
+            "commonOnly",
+            "source"
+          ],
+          "title": "AnalysisSegmentV1",
+          "type": "object"
+        },
+        "ApprovalCoverage": {
+          "additionalProperties": false,
+          "properties": {
+            "protectedNeighborCount": {
+              "minimum": 0,
+              "title": "Protectedneighborcount",
+              "type": "integer"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "title": "Schemaversion",
+              "type": "integer"
+            },
+            "signerCount": {
+              "minimum": 0,
+              "title": "Signercount",
+              "type": "integer"
+            },
+            "state": {
+              "$ref": "#/$defs/CoverageState"
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "state",
+            "signerCount",
+            "protectedNeighborCount"
+          ],
+          "title": "ApprovalCoverage",
+          "type": "object"
+        },
+        "CoverageState": {
+          "enum": [
+            "present",
+            "absent",
+            "indeterminate"
+          ],
+          "title": "CoverageState",
+          "type": "string"
+        },
+        "ManualActionV1": {
+          "additionalProperties": false,
+          "properties": {
+            "actionId": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "title": "Actionid",
+              "type": "string"
+            },
+            "analysisRevision": {
+              "minimum": 0,
+              "title": "Analysisrevision",
+              "type": "integer"
+            },
+            "expectedTextHash": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-fA-F0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expectedtexthash"
+            },
+            "linkedOccurrenceId": {
+              "anyOf": [
+                {
+                  "pattern": "^occ_[a-f0-9]{24}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Linkedoccurrenceid"
+            },
+            "mode": {
+              "enum": [
+                "mask",
+                "restore"
+              ],
+              "title": "Mode",
+              "type": "string"
+            },
+            "page": {
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            },
+            "protectedNeighborRefs": {
+              "items": {
+                "$ref": "#/$defs/PdfPointsTopLeftRect"
+              },
+              "title": "Protectedneighborrefs",
+              "type": "array"
+            },
+            "rects": {
+              "items": {
+                "$ref": "#/$defs/PdfPointsTopLeftRect"
+              },
+              "title": "Rects",
+              "type": "array"
+            },
+            "restoreAuthorizationHash": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-fA-F0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Restoreauthorizationhash"
+            },
+            "sourceKind": {
+              "enum": [
+                "text_pdf",
+                "scan"
+              ],
+              "title": "Sourcekind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "actionId",
+            "analysisRevision",
+            "page",
+            "rects",
+            "protectedNeighborRefs",
+            "mode",
+            "sourceKind",
+            "linkedOccurrenceId",
+            "expectedTextHash"
+          ],
+          "title": "ManualActionV1",
+          "type": "object"
+        },
+        "OccurrenceAction": {
+          "enum": [
+            "mask",
+            "exclude",
+            "review"
+          ],
+          "title": "OccurrenceAction",
+          "type": "string"
+        },
+        "OccurrenceState": {
+          "enum": [
+            "confirmed",
+            "review_required",
+            "user_confirmed"
+          ],
+          "title": "OccurrenceState",
+          "type": "string"
+        },
+        "PdfPointsTopLeftRect": {
+          "additionalProperties": false,
+          "properties": {
+            "x0": {
+              "title": "X0",
+              "type": "number"
+            },
+            "x1": {
+              "title": "X1",
+              "type": "number"
+            },
+            "y0": {
+              "title": "Y0",
+              "type": "number"
+            },
+            "y1": {
+              "title": "Y1",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x0",
+            "y0",
+            "x1",
+            "y1"
+          ],
+          "title": "PdfPointsTopLeftRect",
+          "type": "object"
+        },
+        "PublicReviewProfile": {
+          "enum": [
+            "internal_review",
+            "official_dispatch",
+            "mixed"
+          ],
+          "title": "PublicReviewProfile",
+          "type": "string"
+        },
+        "RequiredRegionCoverage": {
+          "additionalProperties": false,
+          "properties": {
+            "blocking": {
+              "title": "Blocking",
+              "type": "boolean"
+            },
+            "kinds": {
+              "items": {
+                "$ref": "#/$defs/RequiredRegionCoverageKind"
+              },
+              "title": "Kinds",
+              "type": "array"
+            },
+            "profile": {
+              "$ref": "#/$defs/PublicReviewProfile"
+            },
+            "schemaVersion": {
+              "const": 1,
+              "title": "Schemaversion",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "profile",
+            "kinds",
+            "blocking"
+          ],
+          "title": "RequiredRegionCoverage",
+          "type": "object"
+        },
+        "RequiredRegionCoverageKind": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AnalysisRegionKind"
+            },
+            "state": {
+              "$ref": "#/$defs/CoverageState"
+            }
+          },
+          "required": [
+            "kind",
+            "state"
+          ],
+          "title": "RequiredRegionCoverageKind",
+          "type": "object"
+        },
+        "ReviewItemV1": {
+          "additionalProperties": false,
+          "properties": {
+            "analysisRevision": {
+              "minimum": 0,
+              "title": "Analysisrevision",
+              "type": "integer"
+            },
+            "commonOnly": {
+              "title": "Commononly",
+              "type": "boolean"
+            },
+            "kind": {
+              "$ref": "#/$defs/ReviewKind"
+            },
+            "pageEnd": {
+              "minimum": 0,
+              "title": "Pageend",
+              "type": "integer"
+            },
+            "pageStart": {
+              "minimum": 0,
+              "title": "Pagestart",
+              "type": "integer"
+            },
+            "provenance": {
+              "minLength": 1,
+              "title": "Provenance",
+              "type": "string"
+            },
+            "reasonCodes": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": "Reasoncodes",
+              "type": "array"
+            },
+            "requiresAcknowledgment": {
+              "title": "Requiresacknowledgment",
+              "type": "boolean"
+            },
+            "reviewId": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "title": "Reviewid",
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/ReviewStatus"
+            },
+            "targetId": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "title": "Targetid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reviewId",
+            "analysisRevision",
+            "kind",
+            "targetId",
+            "pageStart",
+            "pageEnd",
+            "status",
+            "reasonCodes",
+            "requiresAcknowledgment",
+            "commonOnly",
+            "provenance"
+          ],
+          "title": "ReviewItemV1",
+          "type": "object"
+        },
+        "ReviewKind": {
+          "enum": [
+            "name",
+            "institution",
+            "acknowledge",
+            "boundary",
+            "ocr",
+            "region_geometry"
+          ],
+          "title": "ReviewKind",
+          "type": "string"
+        },
+        "ReviewStatus": {
+          "enum": [
+            "pending",
+            "resolved"
+          ],
+          "title": "ReviewStatus",
+          "type": "string"
+        },
+        "ThresholdArtifactV1": {
+          "additionalProperties": false,
+          "properties": {
+            "autoMaskThreshold": {
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Automaskthreshold",
+              "type": "number"
+            },
+            "contentHash": {
+              "pattern": "^[a-fA-F0-9]{64}$",
+              "title": "Contenthash",
+              "type": "string"
+            },
+            "reviewThreshold": {
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Reviewthreshold",
+              "type": "number"
+            },
+            "version": {
+              "minLength": 1,
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "version",
+            "contentHash",
+            "autoMaskThreshold",
+            "reviewThreshold"
+          ],
+          "title": "ThresholdArtifactV1",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "analysisRevision": {
+          "minimum": 0,
+          "title": "Analysisrevision",
+          "type": "integer"
+        },
+        "approvalCoverage": {
+          "$ref": "#/$defs/ApprovalCoverage"
+        },
+        "coordinateSpace": {
+          "const": "pdf_points_top_left",
+          "title": "Coordinatespace",
+          "type": "string"
+        },
+        "manifestHash": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Manifesthash",
+          "type": "string"
+        },
+        "manifestVersion": {
+          "const": 1,
+          "title": "Manifestversion",
+          "type": "integer"
+        },
+        "manualActions": {
+          "items": {
+            "$ref": "#/$defs/ManualActionV1"
+          },
+          "title": "Manualactions",
+          "type": "array"
+        },
+        "occurrences": {
+          "items": {
+            "$ref": "#/$defs/AnalysisOccurrenceV1"
+          },
+          "title": "Occurrences",
+          "type": "array"
+        },
+        "optionsHash": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Optionshash",
+          "type": "string"
+        },
+        "optionsVersion": {
+          "minLength": 1,
+          "title": "Optionsversion",
+          "type": "string"
+        },
+        "originalDocumentHash": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Originaldocumenthash",
+          "type": "string"
+        },
+        "policyVersion": {
+          "minLength": 1,
+          "title": "Policyversion",
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/$defs/PublicReviewProfile"
+        },
+        "regions": {
+          "items": {
+            "$ref": "#/$defs/AnalysisRegionV1"
+          },
+          "title": "Regions",
+          "type": "array"
+        },
+        "requiredRegionCoverage": {
+          "$ref": "#/$defs/RequiredRegionCoverage"
+        },
+        "reviewItems": {
+          "items": {
+            "$ref": "#/$defs/ReviewItemV1"
+          },
+          "title": "Reviewitems",
+          "type": "array"
+        },
+        "runId": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Runid",
+          "type": "string"
+        },
+        "segments": {
+          "items": {
+            "$ref": "#/$defs/AnalysisSegmentV1"
+          },
+          "title": "Segments",
+          "type": "array"
+        },
+        "thresholdArtifact": {
+          "$ref": "#/$defs/ThresholdArtifactV1"
+        },
+        "thresholdHash": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Thresholdhash",
+          "type": "string"
+        },
+        "thresholdVersion": {
+          "minLength": 1,
+          "title": "Thresholdversion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "manifestVersion",
+        "runId",
+        "originalDocumentHash",
+        "analysisRevision",
+        "manifestHash",
+        "profile",
+        "policyVersion",
+        "optionsVersion",
+        "optionsHash",
+        "thresholdVersion",
+        "thresholdHash",
+        "thresholdArtifact",
+        "coordinateSpace",
+        "approvalCoverage",
+        "requiredRegionCoverage",
+        "segments",
+        "regions",
+        "occurrences",
+        "reviewItems",
+        "manualActions"
+      ],
+      "title": "AnalysisManifestV1",
+      "type": "object"
+    },
+    "FinalizeMaskingRunResult": {
+      "$defs": {
+        "FinalizeSaveConfirmation": {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "enum": [
+                "not_required",
+                "user_confirmed"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "unresolvedReviews": {
+              "items": {
+                "$ref": "#/$defs/FinalizeSaveWarning"
+              },
+              "title": "Unresolvedreviews",
+              "type": "array"
+            }
+          },
+          "required": [
+            "status",
+            "unresolvedReviews"
+          ],
+          "title": "FinalizeSaveConfirmation",
+          "type": "object"
+        },
+        "FinalizeSaveWarning": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "minLength": 1,
+              "title": "Category",
+              "type": "string"
+            },
+            "kind": {
+              "minLength": 1,
+              "title": "Kind",
+              "type": "string"
+            },
+            "pageEnd": {
+              "minimum": 0,
+              "title": "Pageend",
+              "type": "integer"
+            },
+            "pageStart": {
+              "minimum": 0,
+              "title": "Pagestart",
+              "type": "integer"
+            },
+            "reasonCodes": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": "Reasoncodes",
+              "type": "array"
+            },
+            "targetId": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Targetid"
+            }
+          },
+          "required": [
+            "kind",
+            "targetId",
+            "category",
+            "pageStart",
+            "pageEnd",
+            "reasonCodes"
+          ],
+          "title": "FinalizeSaveWarning",
+          "type": "object"
+        },
+        "RestoreAuthorizationSummary": {
+          "additionalProperties": false,
+          "properties": {
+            "actionIdHash": {
+              "pattern": "^[a-fA-F0-9]{64}$",
+              "title": "Actionidhash",
+              "type": "string"
+            },
+            "authorizationEvent": {
+              "minLength": 1,
+              "title": "Authorizationevent",
+              "type": "string"
+            },
+            "targetOccurrenceIdHash": {
+              "pattern": "^[a-fA-F0-9]{64}$",
+              "title": "Targetoccurrenceidhash",
+              "type": "string"
+            }
+          },
+          "required": [
+            "actionIdHash",
+            "targetOccurrenceIdHash",
+            "authorizationEvent"
+          ],
+          "title": "RestoreAuthorizationSummary",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "analysisRevision": {
+          "minimum": 0,
+          "title": "Analysisrevision",
+          "type": "integer"
+        },
+        "appliedMaskCount": {
+          "minimum": 0,
+          "title": "Appliedmaskcount",
+          "type": "integer"
+        },
+        "effectiveMaskCount": {
+          "minimum": 0,
+          "title": "Effectivemaskcount",
+          "type": "integer"
+        },
+        "finalHash": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Finalhash",
+          "type": "string"
+        },
+        "finalHashAttested": {
+          "const": true,
+          "title": "Finalhashattested",
+          "type": "boolean"
+        },
+        "finalPath": {
+          "minLength": 1,
+          "title": "Finalpath",
+          "type": "string"
+        },
+        "manifestHash": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Manifesthash",
+          "type": "string"
+        },
+        "manualMaskCount": {
+          "minimum": 0,
+          "title": "Manualmaskcount",
+          "type": "integer"
+        },
+        "occurrenceCount": {
+          "minimum": 0,
+          "title": "Occurrencecount",
+          "type": "integer"
+        },
+        "restoreAuthorization": {
+          "$ref": "#/$defs/RestoreAuthorizationSummary"
+        },
+        "restoreCount": {
+          "minimum": 0,
+          "title": "Restorecount",
+          "type": "integer"
+        },
+        "runId": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Runid",
+          "type": "string"
+        },
+        "saveConfirmation": {
+          "$ref": "#/$defs/FinalizeSaveConfirmation"
+        },
+        "status": {
+          "const": "promoted",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "analysisRevision",
+        "manifestHash",
+        "finalPath",
+        "finalHash",
+        "finalHashAttested",
+        "occurrenceCount",
+        "appliedMaskCount",
+        "manualMaskCount",
+        "restoreCount",
+        "effectiveMaskCount",
+        "restoreAuthorization",
+        "saveConfirmation",
+        "status"
+      ],
+      "title": "FinalizeMaskingRunResult",
+      "type": "object"
+    },
+    "ResolveMaskingReviewRequest": {
+      "$defs": {
+        "AcknowledgeReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "acknowledged": {
+              "const": true,
+              "title": "Acknowledged",
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "acknowledge",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "acknowledged"
+          ],
+          "title": "AcknowledgeReviewResolution",
+          "type": "object"
+        },
+        "BoundaryReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "boundary",
+              "title": "Kind",
+              "type": "string"
+            },
+            "pageEnd": {
+              "minimum": 0,
+              "title": "Pageend",
+              "type": "integer"
+            },
+            "pageStart": {
+              "minimum": 0,
+              "title": "Pagestart",
+              "type": "integer"
+            },
+            "segmentKind": {
+              "$ref": "#/$defs/BoundarySegmentKind"
+            }
+          },
+          "required": [
+            "kind",
+            "pageStart",
+            "pageEnd",
+            "segmentKind"
+          ],
+          "title": "BoundaryReviewResolution",
+          "type": "object"
+        },
+        "BoundarySegmentKind": {
+          "enum": [
+            "internal_review",
+            "official_dispatch",
+            "attachment",
+            "legal"
+          ],
+          "title": "BoundarySegmentKind",
+          "type": "string"
+        },
+        "InstitutionReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "mask",
+                "exclude"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "kind": {
+              "const": "institution",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "title": "InstitutionReviewResolution",
+          "type": "object"
+        },
+        "NameReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "mask",
+                "exclude"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "kind": {
+              "const": "name",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "title": "NameReviewResolution",
+          "type": "object"
+        },
+        "OcrReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "accepted": {
+              "title": "Accepted",
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "ocr",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "accepted"
+          ],
+          "title": "OcrReviewResolution",
+          "type": "object"
+        },
+        "PdfPointsTopLeftRect": {
+          "additionalProperties": false,
+          "properties": {
+            "x0": {
+              "title": "X0",
+              "type": "number"
+            },
+            "x1": {
+              "title": "X1",
+              "type": "number"
+            },
+            "y0": {
+              "title": "Y0",
+              "type": "number"
+            },
+            "y1": {
+              "title": "Y1",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x0",
+            "y0",
+            "x1",
+            "y1"
+          ],
+          "title": "PdfPointsTopLeftRect",
+          "type": "object"
+        },
+        "RegionGeometryReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "region_geometry",
+              "title": "Kind",
+              "type": "string"
+            },
+            "rects": {
+              "items": {
+                "$ref": "#/$defs/PdfPointsTopLeftRect"
+              },
+              "title": "Rects",
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "rects"
+          ],
+          "title": "RegionGeometryReviewResolution",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "analysisRevision": {
+          "minimum": 0,
+          "title": "Analysisrevision",
+          "type": "integer"
+        },
+        "manifestHash": {
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Manifesthash",
+          "type": "string"
+        },
+        "resolution": {
+          "discriminator": {
+            "mapping": {
+              "acknowledge": "#/$defs/AcknowledgeReviewResolution",
+              "boundary": "#/$defs/BoundaryReviewResolution",
+              "institution": "#/$defs/InstitutionReviewResolution",
+              "name": "#/$defs/NameReviewResolution",
+              "ocr": "#/$defs/OcrReviewResolution",
+              "region_geometry": "#/$defs/RegionGeometryReviewResolution"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/NameReviewResolution"
+            },
+            {
+              "$ref": "#/$defs/InstitutionReviewResolution"
+            },
+            {
+              "$ref": "#/$defs/AcknowledgeReviewResolution"
+            },
+            {
+              "$ref": "#/$defs/BoundaryReviewResolution"
+            },
+            {
+              "$ref": "#/$defs/OcrReviewResolution"
+            },
+            {
+              "$ref": "#/$defs/RegionGeometryReviewResolution"
+            }
+          ],
+          "title": "Resolution"
+        },
+        "reviewId": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Reviewid",
+          "type": "string"
+        },
+        "runId": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Runid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "analysisRevision",
+        "manifestHash",
+        "reviewId",
+        "resolution"
+      ],
+      "title": "ResolveMaskingReviewRequest",
+      "type": "object"
+    },
+    "ReviewResolution": {
+      "$defs": {
+        "AcknowledgeReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "acknowledged": {
+              "const": true,
+              "title": "Acknowledged",
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "acknowledge",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "acknowledged"
+          ],
+          "title": "AcknowledgeReviewResolution",
+          "type": "object"
+        },
+        "BoundaryReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "boundary",
+              "title": "Kind",
+              "type": "string"
+            },
+            "pageEnd": {
+              "minimum": 0,
+              "title": "Pageend",
+              "type": "integer"
+            },
+            "pageStart": {
+              "minimum": 0,
+              "title": "Pagestart",
+              "type": "integer"
+            },
+            "segmentKind": {
+              "$ref": "#/$defs/BoundarySegmentKind"
+            }
+          },
+          "required": [
+            "kind",
+            "pageStart",
+            "pageEnd",
+            "segmentKind"
+          ],
+          "title": "BoundaryReviewResolution",
+          "type": "object"
+        },
+        "BoundarySegmentKind": {
+          "enum": [
+            "internal_review",
+            "official_dispatch",
+            "attachment",
+            "legal"
+          ],
+          "title": "BoundarySegmentKind",
+          "type": "string"
+        },
+        "InstitutionReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "mask",
+                "exclude"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "kind": {
+              "const": "institution",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "title": "InstitutionReviewResolution",
+          "type": "object"
+        },
+        "NameReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "mask",
+                "exclude"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "kind": {
+              "const": "name",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "title": "NameReviewResolution",
+          "type": "object"
+        },
+        "OcrReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "accepted": {
+              "title": "Accepted",
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "ocr",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "accepted"
+          ],
+          "title": "OcrReviewResolution",
+          "type": "object"
+        },
+        "PdfPointsTopLeftRect": {
+          "additionalProperties": false,
+          "properties": {
+            "x0": {
+              "title": "X0",
+              "type": "number"
+            },
+            "x1": {
+              "title": "X1",
+              "type": "number"
+            },
+            "y0": {
+              "title": "Y0",
+              "type": "number"
+            },
+            "y1": {
+              "title": "Y1",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x0",
+            "y0",
+            "x1",
+            "y1"
+          ],
+          "title": "PdfPointsTopLeftRect",
+          "type": "object"
+        },
+        "RegionGeometryReviewResolution": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "region_geometry",
+              "title": "Kind",
+              "type": "string"
+            },
+            "rects": {
+              "items": {
+                "$ref": "#/$defs/PdfPointsTopLeftRect"
+              },
+              "title": "Rects",
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "rects"
+          ],
+          "title": "RegionGeometryReviewResolution",
+          "type": "object"
+        }
+      },
+      "discriminator": {
+        "mapping": {
+          "acknowledge": "#/$defs/AcknowledgeReviewResolution",
+          "boundary": "#/$defs/BoundaryReviewResolution",
+          "institution": "#/$defs/InstitutionReviewResolution",
+          "name": "#/$defs/NameReviewResolution",
+          "ocr": "#/$defs/OcrReviewResolution",
+          "region_geometry": "#/$defs/RegionGeometryReviewResolution"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/NameReviewResolution"
+        },
+        {
+          "$ref": "#/$defs/InstitutionReviewResolution"
+        },
+        {
+          "$ref": "#/$defs/AcknowledgeReviewResolution"
+        },
+        {
+          "$ref": "#/$defs/BoundaryReviewResolution"
+        },
+        {
+          "$ref": "#/$defs/OcrReviewResolution"
+        },
+        {
+          "$ref": "#/$defs/RegionGeometryReviewResolution"
+        }
+      ]
+    }
+  }
+}

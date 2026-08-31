@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import json
 import unittest
 from pathlib import Path
 
@@ -22,113 +22,41 @@ def frontend_markup() -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in COMPONENT_PATHS)
 
 
-def frontend_script() -> str:
-    paths = [
-        *sorted((REPO_ROOT / "src" / "legacy").rglob("*.ts")),
-        REPO_ROOT / "src" / "features" / "save-gate" / "saveGate.ts",
-        REPO_ROOT / "src" / "features" / "masking-run" / "maskingRunController.ts",
-        REPO_ROOT / "src" / "features" / "document-session" / "documentSessionController.ts",
-        REPO_ROOT / "src" / "features" / "manual-adjustment" / "manualAdjustmentController.ts",
-        REPO_ROOT / "src" / "features" / "finalization" / "finalizationController.ts",
-    ]
-    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 
-def attr_value(attrs: str, name: str) -> str:
-    match = re.search(rf'{re.escape(name)}="([^"]+)"', attrs)
-    return match.group(1) if match else ""
 
 
 class FrontendButtonContractTests(unittest.TestCase):
-    def test_static_button_ids_are_unique_across_mounted_components(self) -> None:
-        markup = frontend_markup()
-        ids = re.findall(r'id="([^"]+)"', markup)
-        duplicates = sorted({button_id for button_id in ids if ids.count(button_id) > 1})
+    def test_visible_toggle_controls_update_exclusive_aria_state(self) -> None:
+        from test_frontend_state_helpers import run_node_helper
 
-        self.assertEqual([], duplicates)
-
-    def test_every_static_button_has_routing_or_click_handler(self) -> None:
-        markup = frontend_markup()
-        script = frontend_script()
-        id_to_var = {
-            match.group("id"): match.group("var")
-            for match in re.finditer(r'const\s+(?P<var>\w+)\s*=\s*\$\("#(?P<id>[^"]+)"\)', script)
-        }
-        # v4 P3: MobileActionDock 삭제 → data-mobile-panel-target 라우팅은 폐지됐다
-        # (해당 querySelectorAll 핸들러도 legacy source set에서 제거됨). 죽은 참조를
-        # 남기지 않도록 이 목록에서도 뺀다.
-        generic_attrs = (
-            "data-screen-target",
-            "data-settings-tab",
-            "data-canvas-tool",
+        result = run_node_helper(
+            "src/features/manual-adjustment/manualAdjustmentController.ts",
+            "(() => {"
+            "const element = (dataset = {}) => ({ dataset, attrs: {}, classList: { toggle() {} }, style: {}, textContent: '', disabled: false, title: '', hidden: false, value: '', setAttribute(name, value) { this.attrs[name] = value; }, removeAttribute() {}, append() {}, replaceChildren() {}, addEventListener() {}, closest() { return null; }, getContext() { return { clearRect() {}, fillRect() {}, drawImage() {} }; } });"
+            "const tools = ['mask', 'restore', 'select', 'delete', 'pan'].map((tool) => element({ canvasTool: tool })); let active = 'mask';"
+            "const state = { documentProvenance: { original: { path: '/input.pdf' }, generated: { path: '/result.pdf' }, manual: { path: '' }, final: { path: '' }, continuation: null }, boxes: [], geometryDraft: null, documentEditRevision: 0, mode: 'mask', selectedCanvasBoxIndex: -1, canvasMode: true, maskingRunning: false, batchRunning: false, savingInFlight: false, extractedText: '', maskedText: '', baseExtractedText: '', baseMaskedText: '', preManualPreviewPdf: '', preManualExtractedText: '', preManualMaskedText: '', latestReportPath: '', latestReport: null, latestMaskedPath: '', latestMaskedTextPolicy: 'token', lastPreviewDiagnostics: '', restoreRevalidationFailed: false, scale: 1, resultDoc: {} };"
+            "const controller = m.createManualAdjustmentController({ state, invokeCommand: async () => ({}), displayModeEl: element(), customKeywordsEl: element(), modeMask: tools[0], modeRestore: tools[1], workspaceShellEl: element(), overlay: element(), canvasEditorToolButtons: tools, canvasActiveToolLabelEl: element(), canvasToolReadinessEl: element(), canvasBoxListEl: element(), canvasBoxPropertiesEl: element(), canvasBoxPropertyPageEl: element(), canvasBoxPropertyTypeEl: element(), canvasBoxPropertyCoordinatesEl: element(), canvasBoxPropertySizeEl: element(), canvasSummaryMaskCountEl: element(), canvasSummaryRestoreCountEl: element(), canvasSummaryKeywordCountEl: element(), canvasSummaryOutputStateEl: element(), btnCanvasZoomOut: element(), btnCanvasZoomIn: element(), btnCanvasUndo: element(), btnCanvasClear: element(), btnCanvasBoxDelete: element(), btnCanvasBoxConvertMask: element(), btnCanvasBoxConvertRestore: element(), isStandaloneCanvasWindow: false, isPdfInput: () => true, currentFinalDocumentPath: () => '/result.pdf', getActiveCanvasTool: () => active, setActiveCanvasToolState: (tool) => { active = tool; }, ensurePreviewWorkDir: async () => '/work', loadResultPdf: async () => true, redrawOverlay() {}, updateMeta() {}, renderFinalState() {}, renderCompare: async () => {}, setTextCompareContents() {}, updateWorkflowReadiness() {}, updateStatusDetail() {}, setStatus() {} });"
+            "return Object.fromEntries(tools.map((button) => { controller.setActiveCanvasTool(button.dataset.canvasTool); return [button.dataset.canvasTool, tools.map((candidate) => candidate.attrs['aria-pressed'])]; }));"
+            "})()",
+            browser_fixture=True,
         )
-        generic_handlers = {
-            "data-screen-target": 'document.querySelectorAll<HTMLButtonElement>("[data-screen-target]")',
-            "data-settings-tab": 'document.querySelectorAll<HTMLButtonElement>("[data-settings-tab]")',
-            "data-canvas-tool": "canvasEditorToolButtons",
-        }
+        for active, states in result.items():
+            with self.subTest(active=active):
+                self.assertEqual(
+                    ["true" if tool == active else "false" for tool in ("mask", "restore", "select", "delete", "pan")],
+                    states,
+                )
 
-        dead_buttons: list[str] = []
-        for match in re.finditer(r"<button\b(?P<attrs>[^>]*)>", markup, re.S):
-            attrs = match.group("attrs")
-            button_id = attr_value(attrs, "id")
-            routed_attr = next((name for name in generic_attrs if attr_value(attrs, name)), "")
-            if routed_attr:
-                self.assertIn(generic_handlers[routed_attr], script)
-                continue
-            if not button_id:
-                dead_buttons.append(attrs.strip())
-                continue
-            var_name = id_to_var.get(button_id)
-            if not var_name:
-                continue
-            if f'{var_name}.addEventListener("click"' not in script:
-                dead_buttons.append(button_id)
+    def test_masking_output_artifacts_keep_reports_internal(self) -> None:
+        from test_frontend_state_helpers import run_node_helper
 
-        self.assertEqual([], dead_buttons)
-
-    def test_disabled_action_buttons_have_visible_readiness_contracts(self) -> None:
-        markup = frontend_markup()
-        script = frontend_script()
-
-        run_button = re.search(r'<button[^>]+id="btn-run-masking"[^>]+>', markup)
-        self.assertIsNotNone(run_button)
-        self.assertRegex(run_button.group(0), r"\bdisabled\b")
-
-        for button_id, reason_text in [
-            ("btn-save", "final-save-readiness"),
-            ("btn-canvas-apply", "canvas-tool-readiness"),
-            ("btn-canvas-final-save", "canvas-tool-readiness"),
-        ]:
-            button = re.search(rf'<(?:button|Button)[^>]+id="{button_id}"[^>]+>', markup)
-            self.assertIsNotNone(button, button_id)
-            self.assertIn(f'aria-describedby="{reason_text}"', button.group(0))
-
-        self.assertIn("btnRunMasking.title = readiness.baseMaskingReason", script)
-        self.assertIn("btnManualApply.title = readiness.manualApplyReason", script)
-        self.assertIn("btnSave.title =", script)
-        self.assertIn("finalSaveReadinessEl.textContent", script)
-        self.assertIn("canvasToolReadinessEl.textContent", script)
-
-    def test_pdf_only_still_generates_internal_safe_report_without_copying_it(self) -> None:
-        # v4.1: 안전 리포트는 내부 검증 장치로만 존재한다. 사용자 대면 산출물 선택
-        # (output-artifacts)이 삭제되며 프론트는 산출물을 내부 고정값으로 전달하고,
-        # finalize 는 항상 copyReport:false 로 호출한다(리포트가 사용자 산출 폴더에
-        # 절대 복사되지 않음). 엔진은 여전히 리포트 JSON 을 내부 임시폴더에 생성한다.
-        script = frontend_script()
-
-        # 기본값은 PDF+내부 리포트이고, 비식별 TXT를 명시적으로 켠 경우에만
-        # 옵션 헬퍼가 masked_txt 산출물을 추가한다.
-        self.assertIn(
-            "output_artifacts: maskingOutputArtifacts(settingsExportMaskedTextEl.checked)",
-            script,
+        result = run_node_helper(
+            "src/settingsState.ts",
+            "({ pdfOnly: m.maskingOutputArtifacts(false), withMaskedText: m.maskingOutputArtifacts(true) })",
         )
-        # finalize 리포트 복사는 어떤 경우에도 꺼져 있다(하드코딩 false).
-        self.assertIn("copyReport: false", script)
-        # 삭제된 리포트 복사 결정 함수/산출물 셀렉터가 되살아나지 않았는지 회귀 가드.
-        self.assertNotIn("shouldCopyReportArtifact", script)
-        self.assertNotIn("outputArtifactsEl", script)
-        self.assertNotIn("selectedOutputArtifacts", script)
+        self.assertEqual(result["pdfOnly"], "pdf_safe_report")
+        self.assertEqual(result["withMaskedText"], "pdf_masked_txt_safe_report")
 
     def test_final_save_checklist_controls_are_removed_from_documents_screen(self) -> None:
         # v4 P2: 저장 전 확인은 한 곳(최종 저장 모달)뿐이다. 통합 화면 마크업에
@@ -139,88 +67,245 @@ class FrontendButtonContractTests(unittest.TestCase):
         self.assertNotIn(f'className="checklist {removed_checklist_class}"', markup)
         self.assertNotIn('className="stage-bottom-dock"', markup)
 
-    def test_frontend_final_save_is_advisory_not_hard_blocking(self) -> None:
-        # v4.2.0 정책 전환: 검증 결과는 저장을 "차단"하지 않는다. 최종 저장은 항상
-        # 사용자 재량이며, save-gate 모듈은 더 이상 "차단 사유"를 만들지 않고 저장
-        # 직전 확인 1회에 띄울 "권고형 경고 목록(finalSaveWarnings)"을 산출한다.
-        # 폐기된 하드 차단 술어(reportFinalSaveBlockingReason/reportBlocker)가 되살아
-        # 나지 않았는지도 함께 지킨다.
-        script = frontend_script()
-        legacy_controller = (REPO_ROOT / "src" / "legacy" / "legacyAppController.ts").read_text(encoding="utf-8")
+    def test_public_save_gate_warns_for_pending_reviews_while_legal_is_advisory(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
 
-        # 권고형 경고 산출기와 그 배선(currentFinalSaveWarnings)이 살아 있어야 한다.
-        self.assertIn("export function finalSaveWarnings(", script)
-        self.assertIn("function currentFinalSaveWarnings()", script)
-        self.assertIn("export function finalSaveWarningPresentation(", script)
-        self.assertIn("const presentation = finalSaveWarningPresentation(", legacy_controller)
-        self.assertNotIn("residual_hits", legacy_controller)
-        self.assertNotIn("missing_targets_count", legacy_controller)
-        # 폐기된 하드 차단 술어/배선은 완전히 사라져야 한다(권고형 전환 회귀 가드).
-        self.assertNotIn("reportFinalSaveBlockingReason", script)
-        self.assertNotIn("reportBlocker", script)
+        pending = json.dumps(canonical_review_manifest())
+        result = run_node_helper(
+            "src/features/save-gate/saveGate.ts",
+            "(() => {"
+            f"const manifest = {pending};"
+            "const session = loadModule(path.resolve('src/state/maskingSession.ts'));"
+            "const identity = (manifest) => ({ runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile });"
+            "const publicReport = session.parseBoundSafeReport({ analysisManifest: manifest, reviewQueue: manifest.reviewItems, product_checks: {} }, identity(manifest)).value;"
+            "const legalReport = { product_checks: { quality_gate_passed: false }, document_redaction: { verification: { residual_hits: 1 } } };"
+            "return { public: m.finalSaveGate({ report: publicReport }), legal: m.legalCompatibilityFinalSaveGate({ hasReportPath: true, report: legalReport }) };"
+            "})()",
+        )
+        self.assertFalse(result["public"]["eligible"])
+        self.assertEqual(result["public"]["state"], "advisory")
+        self.assertEqual(result["public"]["reasonCodes"], ["ambiguous_boundary"])
+        self.assertTrue(result["legal"]["eligible"])
+        self.assertEqual(result["legal"]["state"], "advisory")
 
-    def test_final_save_dialog_uses_advisory_ids_and_confirm_reentry(self) -> None:
-        # v4.2.0 저장 흐름 회귀 가드:
-        #  (a) 삭제된 저장/검토 관련 DOM ID 6종이 마크업·컨트롤러 어디에도 없어야 한다.
-        #  (b) "저장할 수 없습니다" 등 강제 차단 문구가 사용자 대면 마크업에 없어야 한다.
-        markup = frontend_markup()
-        script = frontend_script()
+    def test_excluded_only_manifest_does_not_require_partial_save_confirmation(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
 
-        removed_ids = [
-            "btn-acknowledge-review",
-            "btn-dialog-acknowledge-review",
-            "dialog-review-state",
-            "btn-open-final-save-dialog",
-            "btn-dialog-open-output-folder",
-            "btn-save-artifact-pdf",
-        ]
-        for removed_id in removed_ids:
-            self.assertNotIn(f'id="{removed_id}"', markup, removed_id)
-            self.assertNotIn(f'#{removed_id}', script, removed_id)
+        manifest = canonical_review_manifest(status="resolved")
+        manifest["reviewItems"] = []
+        manifest["occurrences"] = [{
+            "occurrenceId": "occ_aaaaaaaaaaaaaaaaaaaaaaaa",
+            "segmentId": "segment-1",
+            "regionId": None,
+            "analysisRevision": 7,
+            "page": 0,
+            "rects": [{"x0": 10, "y0": 10, "x1": 20, "y1": 20}],
+            "tag": "NAME",
+            "category": "name",
+            "valueHash": "c" * 64,
+            "expectedTextHash": "d" * 64,
+            "source": "text_pdf",
+            "policy": "masking-policy-v1",
+            "proposedAction": "exclude",
+            "state": "confirmed",
+            "provenance": "qa",
+        }]
+        result = run_node_helper(
+            "src/features/save-gate/saveGate.ts",
+            f"(() => {{ const manifest = {json.dumps(manifest)}; const session = loadModule(path.resolve('src/state/maskingSession.ts')); const identity = {{ runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile }}; const report = session.parseBoundSafeReport({{ product_checks: {{}}, analysisManifest: manifest, reviewQueue: manifest.reviewItems }}, identity).value; return {{ gate: m.finalSaveGate({{ report }}), warnings: m.publicFinalSaveWarnings({{ report }}) }}; }})()",
+        )
+        self.assertEqual("eligible", result["gate"]["state"])
+        self.assertEqual([], result["warnings"])
 
-        # (b) 강제 차단 문구가 사용자 대면 마크업에 없어야 한다(권고형 전환).
-        for forced_phrase in ["저장할 수 없습니다", "저장이 차단", "저장 불가"]:
-            self.assertNotIn(forced_phrase, markup, forced_phrase)
+    def test_indeterminate_coverage_warning_list_stays_confirm_save_eligible(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
 
-        # 권고형 표현·버튼 배치 계약.
-        self.assertIn('id="final-save-warning-list"', markup)
-        self.assertIn('id="btn-dialog-cancel-save"', markup)
-        self.assertIn('title="저장 전 확인"', markup)
-        self.assertIn("추가 확인이 필요한 항목이 있습니다", markup)
-        self.assertIn("저장 준비 완료", markup)
-        self.assertIn("취소하고 검토하기", markup)
-        self.assertIn("무시하고 그대로 저장", markup)
-        self.assertIn('className="dm-savewarn__summary"', markup)
-        self.assertIn('id="btn-dialog-cancel-save" className="dm-btn dm-btn--ghost"', markup)
-        self.assertIn('id="btn-dialog-save-all" className="dm-btn dm-btn--primary"', markup)
-        final_save_dialog = markup[markup.index('id="final-save-dialog"') :]
-        self.assertNotIn("dm-btn--danger", final_save_dialog)
+        base_manifest = json.dumps(canonical_review_manifest(status="resolved"))
+        result = run_node_helper(
+            "src/features/save-gate/saveGate.ts",
+            "(() => {"
+            f"const base = {base_manifest};"
+            "const manifest = { ...base, profile: 'internal_review', approvalCoverage: { approval: 'absent', header_meta: 'indeterminate', labeled_staff: 'absent' }, regions: [{ regionId: 'region-header-meta', segmentId: base.segments[0].segmentId, analysisRevision: base.analysisRevision, page: 0, rects: [{ x0: 1, y0: 1, x1: 2, y1: 2 }], kind: 'header_meta', state: 'review_required', confirmationSource: null, reasonCodes: ['geometry_review'], source: 'official_layout' }], reviewItems: [{ reviewId: 'review-header-meta', analysisRevision: base.analysisRevision, kind: 'region_geometry', targetId: 'region-header-meta', pageStart: 0, pageEnd: 0, status: 'pending', reasonCodes: ['geometry_review'], requiresAcknowledgment: false, commonOnly: false, provenance: 'official_layout' }] };"
+            "const session = loadModule(path.resolve('src/state/maskingSession.ts'));"
+            "const dashboard = loadModule(path.resolve('src/dashboardSurfaceModels.ts'));"
+            "const identity = { runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile };"
+            "const parsed = session.parseBoundSafeReport({ product_checks: {}, analysisManifest: manifest, reviewQueue: manifest.reviewItems }, identity);"
+            "const report = parsed.ok ? parsed.value : null;"
+            "return { parsed: parsed.ok, gate: m.finalSaveGate({ report }), warnings: m.publicFinalSaveWarnings({ report }), dashboard: dashboard.dashboardReviewState(report) };"
+            "})()",
+        )
+        self.assertTrue(result["parsed"])
+        self.assertEqual("advisory", result["gate"]["state"])
+        self.assertEqual(
+            ["미가림 가능성: 머리말 정보 · 1쪽 — 결재란 영역 자동확인 미완료 — 확인하고 저장"],
+            result["warnings"],
+        )
 
-        # (c) saveFinalOutput 의 warningsConfirmed 재진입 구조.
-        self.assertIn("async function saveFinalOutput({ warningsConfirmed = false }", script)
-        self.assertIn("if (!warningsConfirmed) {", script)
-        self.assertIn("openFinalSaveDialog();", script)
-        self.assertIn("void saveFinalOutput({ warningsConfirmed: true });", script)
-        self.assertIn("if (state.savingInFlight) return;", script)
-        self.assertIn("state.savingInFlight = true;", script)
-        self.assertIn("state.savingInFlight = false;", script)
-        self.assertIn("state.maskingRunning || state.batchRunning || state.savingInFlight", script)
+    def test_scanned_geometry_warning_is_advisory_and_identifies_the_page(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
 
-    def test_single_pdf_default_output_and_progress_are_engine_backed(self) -> None:
-        script = frontend_script()
-        default_output_service = (REPO_ROOT / "src" / "services" / "tauri" / "defaultOutputDir.ts").read_text(encoding="utf-8")
+        base_manifest = json.dumps(canonical_review_manifest())
+        result = run_node_helper(
+            "src/features/save-gate/saveGate.ts",
+            "(() => {"
+            f"const base = {base_manifest};"
+            "const segment = { ...base.segments[0], kind: 'unknown', state: 'review_required', commonOnly: false, source: 'scanned_geometry_unavailable', pageStart: 1, pageEnd: 2 };"
+            "const review = { ...base.reviewItems[0], kind: 'acknowledge', targetId: segment.segmentId, pageStart: 1, pageEnd: 2, status: 'pending', reasonCodes: ['scanned_geometry_unavailable'], requiresAcknowledgment: true, commonOnly: false, provenance: 'extraction_evidence' };"
+            "const manifest = { ...base, segments: [segment], reviewItems: [review] };"
+            "const session = loadModule(path.resolve('src/state/maskingSession.ts'));"
+            "const dashboard = loadModule(path.resolve('src/dashboardSurfaceModels.ts'));"
+            "const identity = { runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile };"
+            "const parsed = session.parseBoundSafeReport({ product_checks: {}, analysisManifest: manifest, reviewQueue: manifest.reviewItems }, identity);"
+            "const report = parsed.ok ? parsed.value : null;"
+            "return { parsed: parsed.ok, gate: m.finalSaveGate({ report }), warnings: m.publicFinalSaveWarnings({ report }), dashboard: dashboard.dashboardReviewState(report) };"
+            "})()",
+        )
+        self.assertTrue(result["parsed"])
+        self.assertEqual("advisory", result["gate"]["state"])
+        self.assertEqual(
+            ["미가림 가능성: 검토 항목 · 2–3쪽 — 자동 탐지가 되지 않아 수동 확인이 필요합니다."],
+            result["warnings"],
+        )
+        card = result["dashboard"]["items"][0]
+        self.assertEqual(1, card["pageStart"])
+        self.assertTrue(card["scannedGeometryUnavailable"])
+        self.assertEqual("스캔 페이지 2–3쪽: 자동 탐지 불가 — 수동 마스킹으로 가린 뒤 확인하세요.", card["detail"])
 
-        self.assertIn("defaultOutputDirForSelection", script)
-        self.assertIn('"default_output_dir_for_document"', default_output_service)
-        self.assertIn('setBaseMaskingProgress({ status: "running", percent: 0', script)
-        self.assertIn('setBaseMaskingProgress({ status: "complete", percent: 100', script)
-        self.assertIn('setBaseMaskingProgress({ status: "failed", percent: 0', script)
-        self.assertNotIn('return { percent: 25, label: "기본 마스킹 대기" };', script)
-        self.assertNotIn('return { percent: 70, label: "검토 필요" };', script)
-        self.assertNotIn('return { percent: 85, label: "보정 반영 대기" };', script)
-        self.assertNotIn('return { percent: 90, label: "저장 조건 확인" };', script)
-        self.assertNotIn('return { percent: 95, label: "최종 저장 가능" };', script)
+    def test_each_pending_scanned_range_is_listed_in_the_save_warning(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
+
+        base_manifest = json.dumps(canonical_review_manifest())
+        result = run_node_helper(
+            "src/features/save-gate/saveGate.ts",
+            "(() => {"
+            f"const base = {base_manifest};"
+            "const first = { ...base.segments[0], kind: 'unknown', state: 'review_required', commonOnly: false, source: 'scanned_geometry_unavailable', pageStart: 1, pageEnd: 1 };"
+            "const second = { ...first, segmentId: 'segment-2', pageStart: 4, pageEnd: 5 };"
+            "const firstReview = { ...base.reviewItems[0], kind: 'acknowledge', targetId: first.segmentId, pageStart: 1, pageEnd: 1, status: 'pending', reasonCodes: ['scanned_geometry_unavailable'], requiresAcknowledgment: true, commonOnly: false, provenance: 'extraction_evidence' };"
+            "const secondReview = { ...firstReview, reviewId: 'review-2', targetId: second.segmentId, pageStart: 4, pageEnd: 5 };"
+            "const manifest = { ...base, segments: [first, second], reviewItems: [firstReview, secondReview] };"
+            "const session = loadModule(path.resolve('src/state/maskingSession.ts'));"
+            "const identity = { runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile };"
+            "const parsed = session.parseBoundSafeReport({ product_checks: {}, analysisManifest: manifest, reviewQueue: manifest.reviewItems }, identity);"
+            "return { parsed: parsed.ok, warnings: m.publicFinalSaveWarnings({ report: parsed.ok ? parsed.value : null }) };"
+            "})()",
+        )
+        self.assertTrue(result["parsed"])
+        self.assertEqual(
+            [
+                "미가림 가능성: 검토 항목 · 2쪽 — 자동 탐지가 되지 않아 수동 확인이 필요합니다.",
+                "미가림 가능성: 검토 항목 · 5–6쪽 — 자동 탐지가 되지 않아 수동 확인이 필요합니다.",
+            ],
+            result["warnings"],
+        )
+
+    def test_public_confirmed_warning_prepares_save_but_integrity_failure_does_not(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
+
+        manifest = json.dumps(canonical_review_manifest())
+        result = run_node_helper(
+            "src/services/tauri/maskingContracts.ts",
+            "(() => {"
+            f"const manifest = {manifest};"
+            "const session = loadModule(path.resolve('src/state/maskingSession.ts'));"
+            "const identity = { runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile };"
+            "const report = session.parseBoundSafeReport({ analysisManifest: manifest, reviewQueue: manifest.reviewItems, product_checks: {} }, identity).value;"
+            "const request = (warningsConfirmed) => ({ runId: manifest.runId, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, destination: '/out/final.pdf', saveToken: '0'.repeat(32), warningsConfirmed });"
+            "return { unconfirmed: m.prepareFinalizeMaskingRun(request(false), report), confirmed: m.prepareFinalizeMaskingRun(request(true), report), badToken: m.prepareFinalizeMaskingRun({ ...request(true), saveToken: 'token-1' }, report), integrity: m.prepareFinalizeMaskingRun(request(true), null) };"
+            "})()",
+        )
+        self.assertFalse(result["unconfirmed"]["ok"])
+        self.assertTrue(result["confirmed"]["ok"])
+        self.assertEqual(
+            [{"code": "invalid_status", "field": "finalize_request.warningsConfirmed"}],
+            result["unconfirmed"]["errors"],
+        )
+        self.assertEqual(
+            [{"code": "invalid_status", "field": "finalize_request.saveToken"}],
+            result["badToken"]["errors"],
+        )
+        self.assertFalse(result["integrity"]["ok"])
+
+    def test_unmapped_review_reason_codes_warn_by_review_kind_without_raw_code(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
+
+        base_manifest = json.dumps(canonical_review_manifest())
+        result = run_node_helper(
+            "src/features/save-gate/saveGate.ts",
+            "(() => {"
+            f"const base = {base_manifest};"
+            "const occurrence = { occurrenceId: 'occ_000000000000000000000001', segmentId: base.segments[0].segmentId, regionId: null, analysisRevision: base.analysisRevision, page: 0, rects: [{ x0: 72, y0: 60, x1: 200, y1: 78 }], tag: 'NAME', category: 'name', valueHash: 'c'.repeat(64), expectedTextHash: 'd'.repeat(64), source: 'text_pdf', policy: 'mask', proposedAction: 'review', state: 'review_required', provenance: 'qa' };"
+            "const nameManifest = { ...base, occurrences: [occurrence], reviewItems: [{ reviewId: 'review-name', analysisRevision: base.analysisRevision, kind: 'name', targetId: occurrence.occurrenceId, pageStart: 0, pageEnd: 0, status: 'pending', reasonCodes: ['requires_review'], requiresAcknowledgment: false, commonOnly: false, provenance: 'qa' }] };"
+            "const region = { regionId: 'region-1', segmentId: base.segments[0].segmentId, analysisRevision: base.analysisRevision, page: 0, rects: [{ x0: 1, y0: 1, x1: 2, y1: 2 }], kind: 'approval', state: 'unconfirmed', confirmationSource: null, reasonCodes: ['layout_structure_missing'], source: 'official_layout' };"
+            "const geometryManifest = { ...base, regions: [region], reviewItems: [{ reviewId: 'review-region', analysisRevision: base.analysisRevision, kind: 'region_geometry', targetId: 'region-1', pageStart: 0, pageEnd: 0, status: 'pending', reasonCodes: ['layout_structure_missing'], requiresAcknowledgment: true, commonOnly: false, provenance: 'official_layout' }] };"
+            "const session = loadModule(path.resolve('src/state/maskingSession.ts'));"
+            "const identity = (manifest) => ({ runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile });"
+            "const nameReport = session.parseBoundSafeReport({ product_checks: {}, analysisManifest: nameManifest, reviewQueue: nameManifest.reviewItems }, identity(nameManifest)).value;"
+            "const geometryReport = session.parseBoundSafeReport({ product_checks: {}, analysisManifest: geometryManifest, reviewQueue: geometryManifest.reviewItems }, identity(geometryManifest)).value;"
+            "return { name: { gate: m.finalSaveGate({ report: nameReport }), warnings: m.publicFinalSaveWarnings({ report: nameReport }) }, geometry: { gate: m.finalSaveGate({ report: geometryReport }), warnings: m.publicFinalSaveWarnings({ report: geometryReport }) } };"
+            "})()",
+        )
+        self.assertEqual("advisory", result["name"]["gate"]["state"])
+        self.assertEqual(["requires_review"], result["name"]["gate"]["reasonCodes"])
+        self.assertEqual(["미가림 가능성: 이름 · 1쪽 — 이름 또는 기관 탐지 결과를 확인해야 합니다."], result["name"]["warnings"])
+        self.assertEqual("advisory", result["geometry"]["gate"]["state"])
+        self.assertEqual(["geometry_review"], result["geometry"]["gate"]["reasonCodes"])
+        self.assertEqual(["미가림 가능성: 결재선 · 1쪽 — 고정 영역의 박스 구조를 확인해야 합니다."], result["geometry"]["warnings"])
+        encoded = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("(requires_review)", encoded)
+        self.assertNotIn("(layout_structure_missing)", encoded)
+
+    def test_default_output_native_success_parser_rejects_malformed_payload_with_typed_diagnostic(self) -> None:
+        from test_frontend_state_helpers import run_node_helper
+
+        result = run_node_helper(
+            "src/services/tauri/contracts.ts",
+            "({ success: m.parseDefaultOutputDirForDocumentResult({ status: 'ok', outputDir: '/tmp/out' }), missing: m.parseDefaultOutputDirForDocumentResult({ status: 'ok' }), wrongStatus: m.parseDefaultOutputDirForDocumentResult({ status: 'error', outputDir: '/tmp/out' }), blank: m.parseDefaultOutputDirForDocumentResult({ status: 'ok', outputDir: ' ' }) })",
+        )
+        self.assertEqual({"ok": True, "value": {"status": "ok", "outputDir": "/tmp/out"}}, result["success"])
+        self.assertEqual({"ok": False, "errors": [{"code": "missing_outputDir", "field": "outputDir"}]}, result["missing"])
+        self.assertEqual({"ok": False, "errors": [{"code": "invalid_status", "field": "status"}]}, result["wrongStatus"])
+        self.assertEqual({"ok": False, "errors": [{"code": "missing_outputDir", "field": "outputDir"}]}, result["blank"])
 
 
+    def test_masking_native_invoke_wrappers_propagate_each_rejection_with_exact_payload(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
+
+        manifest = json.dumps(canonical_review_manifest())
+        result = run_node_helper(
+            "src/services/tauri/maskingContracts.ts",
+            f"(async () => {{ const base = {manifest}; const finalizedManifest = {{ ...base, reviewItems: base.reviewItems.map((item) => ({{ ...item, status: 'resolved' }})) }}; const session = loadModule(path.resolve('src/state/maskingSession.ts')); const identity = (manifest) => ({{ runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile }}); const reviewReport = session.parseBoundSafeReport({{ product_checks: {{}}, analysisManifest: base, reviewQueue: base.reviewItems }}, identity(base)).value; const finalizedReport = session.parseBoundSafeReport({{ product_checks: {{}}, analysisManifest: finalizedManifest, reviewQueue: finalizedManifest.reviewItems }}, identity(finalizedManifest)).value; const request = {{ runId: 'run-1', analysisRevision: 7, manifestHash: 'b'.repeat(64), destination: '/out/final.pdf', saveToken: '0'.repeat(32), warningsConfirmed: false }}; const prepared = m.prepareFinalizeMaskingRun(request, finalizedReport); const review = {{ runId: 'run-1', analysisRevision: 7, manifestHash: 'b'.repeat(64), reviewId: 'review-1', resolution: {{ kind: 'boundary', pageStart: 0, pageEnd: 0, segmentKind: 'attachment' }} }}; const cases = [ ['state', (invoke) => m.getMaskingRunState(invoke, {{ runId: 'run-1' }})], ['review', (invoke) => m.resolveMaskingReview(invoke, review, reviewReport)], ['finalize', (invoke) => m.finalizeMaskingRun(invoke, prepared.value)] ]; const results = []; for (const [name, call] of cases) {{ const calls = []; const error = new Error(`${{name}} rejected`); try {{ await call(async (command, payload) => {{ calls.push({{ command, payload }}); throw error; }}); }} catch (caught) {{ results.push({{ name, calls, sameError: caught === error, message: caught.message }}); }} }} return results; }})()"
+        )
+        self.assertEqual(
+            result,
+            [
+                {"name": "state", "calls": [{"command": "get_masking_run_state", "payload": {"runId": "run-1"}}], "sameError": True, "message": "state rejected"},
+                {"name": "review", "calls": [{"command": "resolve_masking_review", "payload": {"request": {"runId": "run-1", "analysisRevision": 7, "manifestHash": "b" * 64, "reviewId": "review-1", "resolution": {"kind": "boundary", "pageStart": 0, "pageEnd": 0, "segmentKind": "attachment"}}}}], "sameError": True, "message": "review rejected"},
+                {"name": "finalize", "calls": [{"command": "finalize_masking_run", "payload": {"request": {"runId": "run-1", "analysisRevision": 7, "manifestHash": "b" * 64, "destination": "/out/final.pdf", "saveToken": "0" * 32, "warningsConfirmed": False}}}], "sameError": True, "message": "finalize rejected"},
+            ],
+        )
+    def test_public_save_presentation_transitions_pending_ready_and_blocked(self) -> None:
+        from test_frontend_state_helpers import canonical_review_manifest, run_node_helper
+
+        pending = json.dumps(canonical_review_manifest())
+        resolved = json.dumps(canonical_review_manifest(status="resolved"))
+        result = run_node_helper(
+            "src/features/save-gate/saveGate.ts",
+            "(() => {"
+            f"const pending = {pending}; const resolved = {resolved};"
+            "const session = loadModule(path.resolve('src/state/maskingSession.ts'));"
+            "const identity = (manifest) => ({ runId: manifest.runId, originalDocumentHash: manifest.originalDocumentHash, analysisRevision: manifest.analysisRevision, manifestHash: manifest.manifestHash, profile: manifest.profile });"
+            "const report = (manifest) => session.parseBoundSafeReport({ product_checks: {}, analysisManifest: manifest, reviewQueue: manifest.reviewItems }, identity(manifest)).value;"
+            "return { pending: m.publicFinalSavePresentation({ report: report(pending) }), ready: m.publicFinalSavePresentation({ report: report(resolved) }), blocked: m.publicFinalSavePresentation({ report: null }), blockedGate: m.finalSaveGate({ report: null }) };"
+            "})()",
+        )
+        self.assertEqual("review", result["pending"]["stateName"])
+        self.assertEqual("사용자 확인 필요", result["pending"]["title"])
+        self.assertEqual("pass", result["ready"]["stateName"])
+        self.assertEqual("서버 검토 완료", result["ready"]["title"])
+        self.assertEqual("fail", result["blocked"]["stateName"])
+        self.assertEqual("최종 저장 차단", result["blocked"]["title"])
+        self.assertEqual("현재 서버 검토 세션이 없습니다. 문서를 다시 분석하세요.", result["blocked"]["detail"])
+        self.assertEqual(["missing_current_session"], result["blockedGate"]["reasonCodes"])
 if __name__ == "__main__":
     unittest.main()

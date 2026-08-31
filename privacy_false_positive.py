@@ -35,6 +35,10 @@ DOCUMENT_PHRASE_VALUES: Final = {
 DOCUMENT_PHRASE_SUFFIXES: Final = (
     "결과", "의견", "자료", "계획", "기준", "보고", "절차", "안내", "요청", "처리", "검토",
 )
+APPROVAL_NON_PERSON_VALUES: Final = frozenset({
+    "공사", "공사기간", "연장", "의원발의", "드림",
+    "정함", "최대", "지급한", "장학금", "로서", "주어진", "권한을",
+})
 COURT_BRANCH_VALUES: Final = frozenset(
     {
         "안양지원", "성남지원", "여주지원", "평택지원", "안산지원", "부천지원", "고양지원", "남양주지원",
@@ -103,6 +107,21 @@ def is_likely_person_name_value(value: str) -> bool:
         and has_likely_korean_surname(compact)
         and not is_common_non_person_value(compact)
     )
+
+
+def is_likely_approval_person_name_value(value: str) -> bool:
+    compact = compact_korean_value(value)
+    if not is_likely_person_name_value(compact):
+        return False
+    if (
+        compact in APPROVAL_NON_PERSON_VALUES
+        or compact in DOCUMENT_PHRASE_VALUES
+        or compact.endswith(DOCUMENT_PHRASE_SUFFIXES)
+    ):
+        return False
+    if compact[:2] in KOREAN_COMPOUND_SURNAMES:
+        return len(compact) in (3, 4)
+    return len(compact) in (2, 3)
 
 
 def _is_person_false_positive_value(value: str) -> bool:

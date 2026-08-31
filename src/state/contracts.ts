@@ -62,6 +62,7 @@ export function ok<T>(value: T): ContractResult<T> {
 }
 
 export function err(code: ValidationIssueCode, field: string): ContractResult<never> {
+  try { console.log("[ERR-DBG]", code, field); } catch {}
   return { ok: false, errors: [{ code, field }] };
 }
 

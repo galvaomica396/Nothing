@@ -7,14 +7,22 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "contracts:check": "python3 scripts/generate_contracts.py --check && python3 scripts/check_contract_boundaries.py",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "node scripts/run_tauri.mjs",
+    "plan:chain": "scripts/orchestration/audit_then_write.sh",
+    "package:freshness": "node scripts/verify_package_freshness.mjs",
+    "package:freshness:proof": "node scripts/qa_package_freshness.mjs",
     "contract": "node scripts/check_runtime_contract.mjs",
+    "gate:complete": "node scripts/gate_complete.mjs",
     "qa:smoke": "node scripts/qa_redesign_smoke.mjs",
     "qa:canvas": "node scripts/qa_canvas_render_tasks.mjs && node scripts/qa_canvas_interactions.mjs",
+    "qa:drive": "node scripts/qa_drive_open_timeout.mjs",
     "qa:save": "node scripts/qa_save_flow.mjs",
     "qa:options": "node scripts/qa_masking_options.mjs",
-    "qa:all": "npm run qa:smoke && npm run qa:canvas && npm run qa:save && npm run qa:options"
+    "e2e:real": "node scripts/e2e_real_app.mjs --smoke",
+    "accept:real": "node scripts/acceptance_real_app.mjs",
+    "qa:all": "npm run qa:smoke && npm run qa:canvas && npm run qa:drive && npm run qa:save && npm run qa:options"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

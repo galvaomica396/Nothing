@@ -1,0 +1,28 @@
+{
+  "segments": [],
+  "regions": [
+    {
+      "id": "user-review-required",
+      "type": "approval",
+      "state": "review_required",
+      "confirmation_source": "user"
+    }
+  ],
+  "occurrences": [
+    {
+      "id": "user-review-required-gold",
+      "page_index": 0,
+      "category": "person_name",
+      "region_id": "user-review-required",
+      "text_hash": "text-user-review-required",
+      "rects": [
+        {
+          "x0": 0,
+          "y0": 0,
+          "x1": 10,
+          "y1": 10
+        }
+      ]
+    }
+  ]
+}

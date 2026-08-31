@@ -69,6 +69,7 @@ export type DocumentWorkflowReadinessInput = {
   readonly manualPreviewPath: string;
   readonly safeReportPath: string;
   readonly boxCount: number;
+  readonly publicManualMaskEligible?: boolean;
   readonly latestDocumentPath?: string;
   readonly continuationUnavailable?: boolean;
 };
@@ -111,11 +112,11 @@ function fileNameFromPath(path: string): string {
   return parts.length === 0 ? "" : parts[parts.length - 1] || "";
 }
 
-export function finalSaveDefaultFileName(sourcePath: string): string {
+export function finalSaveDefaultFileName(sourcePath: string, partial = false): string {
   const sourceName = fileNameFromPath(sourcePath.trim());
   const dotIndex = sourceName.lastIndexOf(".");
   const stem = dotIndex > 0 ? sourceName.slice(0, dotIndex) : sourceName;
-  return `${stem || "masked"}_masked`;
+  return `${stem || "masked"}_${partial ? "partial" : "masked"}`;
 }
 
 export function finalSaveConfirmationSummary(input: FinalSaveConfirmationInput): FinalSaveConfirmationSummary {
@@ -203,6 +204,9 @@ export function documentWorkflowReadiness(input: DocumentWorkflowReadinessInput)
   let manualApplyReason = "기본 마스킹 후 수동 박스를 추가하세요.";
   if (documentKind !== "pdf") {
     manualApplyReason = "PDF 문서를 선택하면 수동 보정을 사용할 수 있습니다.";
+  } else if (input.publicManualMaskEligible === true) {
+    canApplyManualPreview = true;
+    manualApplyReason = "공공 수동 마스킹 반영 가능";
   } else if (!editablePdfSourcePath) {
     manualApplyReason = "PDF 문서를 먼저 불러오세요.";
   } else if (input.boxCount <= 0) {

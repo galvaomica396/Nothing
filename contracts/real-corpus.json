@@ -1,0 +1,79 @@
+{
+  "documents": [
+    {
+      "alias": "doc-01",
+      "sha256": "53d634d7cbcd573566720a1565bbdc3f0a8eb734543bf137e73cb1eb45c71de1",
+      "category": "official_dispatch"
+    },
+    {
+      "alias": "doc-02",
+      "sha256": "525eee92754a5c2139d6700ef6aee14cae73082621e85f3e032e9fa65323638a",
+      "category": "internal_review"
+    },
+    {
+      "alias": "doc-03",
+      "sha256": "b7c49d55535cea13fb47dd807860b1d42a5e28737380f4a91e8176087dd7fdde",
+      "category": "official_dispatch"
+    },
+    {
+      "alias": "doc-04",
+      "sha256": "bb9ed1a7c83bc3ee51abca000fb4c5620f2c4429e6380e85f0960209d1d9ac2a",
+      "category": "internal_review"
+    },
+    {
+      "alias": "doc-05",
+      "sha256": "6c6d66f8259f1acbad967e6591f3117e9858dfb807027ea2759d4ee3e2b0db70",
+      "category": "official_dispatch"
+    },
+    {
+      "alias": "doc-06",
+      "sha256": "117e2c59742f356ccfc77214732d95e0dc5a61dee3eb8f7909f9dda1c911c118",
+      "category": "internal_review"
+    },
+    {
+      "alias": "doc-07",
+      "sha256": "700b80a31b9eedaaa6e77a65048015f85a89f2c10c0c9e1c0b42552dfe5c2eb0",
+      "category": "official_dispatch"
+    },
+    {
+      "alias": "doc-08",
+      "sha256": "4676f872cc39025de5c1f619571ce7599996566e6292fd2a59a0a7ab053b784e",
+      "category": "internal_review"
+    },
+    {
+      "alias": "doc-09",
+      "sha256": "8e70263cfa0ebe75307e545bbf09f7150a98f7b898c339baad4001645ea9b921",
+      "category": "official_dispatch"
+    },
+    {
+      "alias": "doc-10",
+      "sha256": "184a602ee7f4f08f7cf9fb52747a77c8df1f4480e4ff81d19d0bf3224846ea7f",
+      "category": "official_dispatch"
+    },
+    {
+      "alias": "doc-11",
+      "sha256": "d4f00e7b5d50a4b6c07741e821e1424167efee66c48290cfa559cc76f7acc548",
+      "category": "internal_review"
+    },
+    {
+      "alias": "doc-12",
+      "sha256": "5ce66427a57bc03a43c192d3bcf1ed736d2f73c3b0676df1b5720189099a341f",
+      "category": "internal_review"
+    },
+    {
+      "alias": "doc-13",
+      "sha256": "8f181d866499acf9a8c55e6d4d6f39666388066fdbc49a881534d92d2a736021",
+      "category": "official_dispatch"
+    },
+    {
+      "alias": "doc-14",
+      "sha256": "149684beb703b83373c1db8e26de4770367e4c2d5eea7db1f5165d783146f11c",
+      "category": "internal_review"
+    },
+    {
+      "alias": "doc-15",
+      "sha256": "5bc1a22d63f216a1b8f0cd04d10a5e13b123ef4721b9f05e98974bb13ca85d7a",
+      "category": "official_dispatch"
+    }
+  ]
+}

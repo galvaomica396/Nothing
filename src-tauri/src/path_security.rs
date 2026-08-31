@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Seek};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -9,7 +9,6 @@ use std::sync::Mutex;
 const MAX_NAME_COLLISIONS: u32 = 10_000;
 const MAX_TEMP_NAME_ATTEMPTS: u32 = 100;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static NATIVE_SAVE_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SaveError {
@@ -63,6 +62,16 @@ struct MaskedTextProvenance {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NativeSaveTargetBinding {
+    Public {
+        run_id: String,
+        analysis_revision: u64,
+        manifest_hash: String,
+    },
+    LegacyManual,
+}
+
+#[derive(Debug)]
 pub(crate) struct NativeSaveTargetRegistration {
     pub(crate) output_path: PathBuf,
     pub(crate) save_token: String,
@@ -73,6 +82,7 @@ struct PendingNativeSaveTarget {
     output_path: PathBuf,
     save_token: String,
     overwrite_confirmed: bool,
+    binding: NativeSaveTargetBinding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +138,7 @@ impl AllowedFileAccess {
     pub(crate) fn register_native_save_target(
         &self,
         path: &Path,
+        binding: NativeSaveTargetBinding,
     ) -> Result<NativeSaveTargetRegistration, String> {
         let normalized = normalize_pdf_save_path(path);
         let normalization_changed = normalized != path;
@@ -140,11 +151,12 @@ impl AllowedFileAccess {
         if normalization_changed && target_exists {
             return Err(SaveError::OverwriteConfirmationRequired.to_string());
         }
-        let save_token = native_save_target_token();
+        let save_token = native_save_target_token()?;
         let registration = PendingNativeSaveTarget {
             output_path: target.clone(),
             save_token: save_token.clone(),
             overwrite_confirmed: target_exists,
+            binding,
         };
         *self
             .native_save_target
@@ -164,19 +176,24 @@ impl AllowedFileAccess {
         Ok(())
     }
 
-    fn take_native_save_target(
+    #[cfg(test)]
+    fn validate_native_save_target(
         &self,
         path: &Path,
         save_token: &str,
+        binding: &NativeSaveTargetBinding,
     ) -> Result<ConsumedNativeSaveTarget, String> {
         let target = canonicalize_save_target(path)?;
         let pending = self
             .native_save_target
             .lock()
             .map_err(|_| "저장 대상 확인에 실패했습니다.".to_string())?
-            .take()
+            .clone()
             .ok_or_else(native_save_target_rejected)?;
-        if pending.output_path != target || pending.save_token != save_token.trim() {
+        if pending.output_path != target
+            || pending.save_token != save_token.trim()
+            || pending.binding != *binding
+        {
             return Err(native_save_target_rejected());
         }
         if !pending.overwrite_confirmed {
@@ -186,6 +203,40 @@ impl AllowedFileAccess {
                 Err(_) => return Err(SaveError::Io.to_string()),
             }
         }
+        Ok(ConsumedNativeSaveTarget {
+            output_path: target,
+            overwrite_confirmed: pending.overwrite_confirmed,
+        })
+    }
+
+    fn reserve_native_save_target(
+        &self,
+        path: &Path,
+        save_token: &str,
+        binding: &NativeSaveTargetBinding,
+    ) -> Result<ConsumedNativeSaveTarget, String> {
+        let target = canonicalize_save_target(path)?;
+        let mut target_slot = self
+            .native_save_target
+            .lock()
+            .map_err(|_| "저장 대상 확인에 실패했습니다.".to_string())?;
+        let pending = target_slot
+            .as_ref()
+            .ok_or_else(native_save_target_rejected)?;
+        if pending.output_path != target
+            || pending.save_token != save_token.trim()
+            || pending.binding != *binding
+        {
+            return Err(native_save_target_rejected());
+        }
+        if !pending.overwrite_confirmed {
+            match std::fs::symlink_metadata(&target) {
+                Ok(_) => return Err(SaveError::OverwriteConfirmationRequired.to_string()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => return Err(SaveError::Io.to_string()),
+            }
+        }
+        let pending = target_slot.take().expect("pending target was checked");
         Ok(ConsumedNativeSaveTarget {
             output_path: target,
             overwrite_confirmed: pending.overwrite_confirmed,
@@ -419,20 +470,41 @@ pub(crate) fn canonicalize_registered_native_save_target(
     path: &str,
     save_token: &str,
 ) -> Result<ConsumedNativeSaveTarget, String> {
-    access.take_native_save_target(Path::new(path.trim()), save_token)
+    access.reserve_native_save_target(
+        Path::new(path.trim()),
+        save_token,
+        &NativeSaveTargetBinding::LegacyManual,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn validate_registered_native_save_target(
+    access: &AllowedFileAccess,
+    path: &str,
+    save_token: &str,
+    binding: &NativeSaveTargetBinding,
+) -> Result<ConsumedNativeSaveTarget, String> {
+    access.validate_native_save_target(Path::new(path.trim()), save_token, binding)
+}
+
+pub(crate) fn consume_registered_native_save_target(
+    access: &AllowedFileAccess,
+    path: &str,
+    save_token: &str,
+    binding: &NativeSaveTargetBinding,
+) -> Result<ConsumedNativeSaveTarget, String> {
+    access.reserve_native_save_target(Path::new(path.trim()), save_token, binding)
 }
 
 fn native_save_target_rejected() -> String {
     "저장 대상은 파일 선택기가 발급한 일회용 권한과 정확한 경로만 사용할 수 있습니다. 저장 다이얼로그를 다시 열어 주세요.".to_string()
 }
 
-fn native_save_target_token() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let sequence = NATIVE_SAVE_TOKEN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("save-{:x}-{:x}-{:x}", std::process::id(), now, sequence)
+fn native_save_target_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 16];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|_| "저장 권한 토큰을 생성할 수 없습니다.".to_string())?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn generated_masked_text_name(path: &Path) -> bool {
@@ -773,11 +845,7 @@ where
     D: FnOnce(&Path) -> io::Result<()>,
     M: FnOnce(&Path, &Path) -> io::Result<()>,
 {
-    match remove_target(final_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => return Err(SaveError::RestoreFailed),
-    }
+    let _ = remove_target;
     restore_backup(backup_path, final_path).map_err(|_| SaveError::RestoreFailed)
 }
 
@@ -808,8 +876,45 @@ pub(crate) fn stage_copy_overwrite_exact(
     })
 }
 
+pub(crate) fn stage_copy_overwrite_exact_from_file(
+    source: &mut File,
+    target: &Path,
+    overwrite_confirmed: bool,
+) -> Result<ExactOverwriteTransaction, SaveError> {
+    stage_copy_overwrite_exact_file_with(
+        source,
+        target,
+        overwrite_confirmed,
+        io::copy,
+        |from, to| std::fs::rename(from, to),
+    )
+}
+
 fn stage_copy_overwrite_exact_with<C, M>(
     src: &Path,
+    target: &Path,
+    overwrite_confirmed: bool,
+    copy_source: C,
+    move_path: M,
+) -> Result<ExactOverwriteTransaction, SaveError>
+where
+    C: FnOnce(&mut File, &mut File) -> io::Result<u64>,
+    M: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    let source =
+        canonicalize_existing_file(src, "저장 원본").map_err(|_| SaveError::SourceRejected)?;
+    let mut source_file = File::open(&source).map_err(|_| SaveError::SourceRejected)?;
+    stage_copy_overwrite_exact_file_with(
+        &mut source_file,
+        target,
+        overwrite_confirmed,
+        copy_source,
+        move_path,
+    )
+}
+
+fn stage_copy_overwrite_exact_file_with<C, M>(
+    source_file: &mut File,
     target: &Path,
     overwrite_confirmed: bool,
     copy_source: C,
@@ -819,8 +924,6 @@ where
     C: FnOnce(&mut File, &mut File) -> io::Result<u64>,
     M: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    let source =
-        canonicalize_existing_file(src, "저장 원본").map_err(|_| SaveError::SourceRejected)?;
     let parent = target.parent().ok_or(SaveError::OutputDirRejected)?;
     let output_dir = canonicalize_existing_dir(parent).map_err(|_| SaveError::OutputDirRejected)?;
     let file_name = target
@@ -845,22 +948,27 @@ where
         return Err(SaveError::OverwriteConfirmationRequired);
     }
 
-    let mut source_file = File::open(&source).map_err(|_| SaveError::SourceRejected)?;
+    source_file
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|_| SaveError::SourceRejected)?;
     let (mut partial, mut partial_file) =
         create_partial_file(&output_dir, file_name, "replace", 0)?;
-    copy_source(&mut source_file, &mut partial_file).map_err(|_| SaveError::Io)?;
+    copy_source(source_file, &mut partial_file).map_err(|_| SaveError::Io)?;
     partial_file.sync_all().map_err(|_| SaveError::Io)?;
     drop(partial_file);
     let backup_path = if target_exists {
         let backup = next_overwrite_backup_path(&output_dir, file_name)?;
-        move_path(&final_path, &backup).map_err(|_| SaveError::Io)?;
+        // Keep the old destination linked until the new staged file atomically
+        // replaces it. Moving the destination to a backup first creates an
+        // observable/crash window where the destination does not exist.
+        std::fs::hard_link(&final_path, &backup).map_err(|_| SaveError::Io)?;
         Some(backup)
     } else {
         None
     };
     if move_path(partial.path(), &final_path).is_err() {
         if let Some(backup) = backup_path.as_deref() {
-            move_path(backup, &final_path).map_err(|_| SaveError::RestoreFailed)?;
+            let _ = std::fs::remove_file(backup);
         }
         return Err(SaveError::Io);
     }
@@ -1089,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_publish_failure_restores_original_by_rename() {
+    fn overwrite_publish_failure_preserves_original_without_removal() {
         let root = temp_security_root("overwrite_publish_failure")
             .canonicalize()
             .expect("canonical root");
@@ -1100,43 +1208,16 @@ mod tests {
         let mut rename_count = 0_u8;
 
         let error =
-            stage_copy_overwrite_exact_with(&source, &target, true, io::copy, |from, to| {
-                rename_count += 1;
-                if rename_count == 2 {
-                    return Err(io::Error::other("injected publish failure"));
-                }
-                fs::rename(from, to)
-            })
-            .expect_err("publish failure must restore the original");
-
-        assert_eq!(error, SaveError::Io);
-        assert_eq!(rename_count, 3, "move, failed publish, restore");
-        assert_eq!(
-            fs::read(&target).expect("restored target"),
-            b"previous masked snapshot"
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn overwrite_backup_move_failure_preserves_original() {
-        let root = temp_security_root("overwrite_backup_move_failure")
-            .canonicalize()
-            .expect("canonical root");
-        let source = root.join("source.pdf");
-        let target = root.join("selected.pdf");
-        fs::write(&source, b"new masked snapshot").expect("source");
-        fs::write(&target, b"previous masked snapshot").expect("old target");
-
-        let error =
             stage_copy_overwrite_exact_with(&source, &target, true, io::copy, |_from, _to| {
-                Err(io::Error::other("injected backup move failure"))
+                rename_count += 1;
+                Err(io::Error::other("injected publish failure"))
             })
-            .expect_err("a failed original move must abort before publication");
+            .expect_err("publish failure must preserve the original");
 
         assert_eq!(error, SaveError::Io);
+        assert_eq!(rename_count, 1, "only the atomic publish is attempted");
         assert_eq!(
-            fs::read(&target).expect("unchanged target"),
+            fs::read(&target).expect("preserved target"),
             b"previous masked snapshot"
         );
         let _ = fs::remove_dir_all(root);
@@ -1170,35 +1251,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn overwrite_restore_failure_is_propagated() {
-        let root = temp_security_root("overwrite_restore_failure")
-            .canonicalize()
-            .expect("canonical root");
-        let source = root.join("source.pdf");
-        let target = root.join("selected.pdf");
-        fs::write(&source, b"new masked snapshot").expect("source");
-        fs::write(&target, b"previous masked snapshot").expect("old target");
-        let mut rename_count = 0_u8;
-
-        let error =
-            stage_copy_overwrite_exact_with(&source, &target, true, io::copy, |from, to| {
-                rename_count += 1;
-                if rename_count >= 2 {
-                    return Err(io::Error::other("injected rename failure"));
-                }
-                fs::rename(from, to)
-            })
-            .expect_err("restore failure must be visible to the caller");
-
-        assert_eq!(error, SaveError::RestoreFailed);
-        assert_eq!(rename_count, 3, "move, failed publish, failed restore");
-        assert!(
-            !target.exists(),
-            "failed restoration must not be reported as success"
-        );
-        let _ = fs::remove_dir_all(root);
-    }
     #[test]
     fn safe_copy_failure_removes_partial_and_final_files() {
         let root = temp_security_root("safe_copy_interrupted");
@@ -1256,6 +1308,28 @@ mod tests {
         );
         let _ = fs::remove_dir_all(root);
     }
+    #[cfg(unix)]
+    #[test]
+    fn exact_overwrite_rejects_symlink_target_without_touching_external_file() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_security_root("exact_overwrite_symlink");
+        let source = root.join("source.pdf");
+        let external = root.join("external.pdf");
+        let target = root.join("selected.pdf");
+        fs::write(&source, b"new snapshot").expect("source");
+        fs::write(&external, b"old external snapshot").expect("external");
+        symlink(&external, &target).expect("target symlink");
+
+        let error = stage_copy_overwrite_exact(&source, &target, true)
+            .expect_err("symlink target must be rejected");
+        assert_eq!(error, SaveError::EscapesOutputDir);
+        assert_eq!(
+            fs::read(&external).expect("external bytes"),
+            b"old external snapshot"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn save_errors_never_include_document_names_or_paths() {
@@ -1303,12 +1377,17 @@ mod tests {
         );
 
         let first_registration = access
-            .register_native_save_target(&first)
+            .register_native_save_target(&first, NativeSaveTargetBinding::LegacyManual)
             .expect("first target must register");
         let registered = access
-            .register_native_save_target(&selected)
+            .register_native_save_target(&selected, NativeSaveTargetBinding::LegacyManual)
             .expect("selected target must register");
         assert_eq!(registered.output_path, selected);
+        assert_eq!(registered.save_token.len(), 32);
+        assert!(registered
+            .save_token
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')));
         assert_ne!(registered.save_token, first_registration.save_token);
         assert!(
             canonicalize_registered_native_save_target(
@@ -1320,7 +1399,7 @@ mod tests {
             "a newer dialog selection must replace the old token"
         );
         let registered = access
-            .register_native_save_target(&selected)
+            .register_native_save_target(&selected, NativeSaveTargetBinding::LegacyManual)
             .expect("selected target must register again after a consumed mismatch");
         assert_eq!(
             canonicalize_registered_native_save_target(
@@ -1342,7 +1421,7 @@ mod tests {
             "native save selection must not be reusable without reopening the dialog"
         );
         let sibling_registration = access
-            .register_native_save_target(&selected)
+            .register_native_save_target(&selected, NativeSaveTargetBinding::LegacyManual)
             .expect("selected target must register for sibling rejection");
         assert!(
             canonicalize_registered_native_save_target(
@@ -1366,7 +1445,7 @@ mod tests {
         let access = AllowedFileAccess::default();
 
         let error = access
-            .register_native_save_target(&selected)
+            .register_native_save_target(&selected, NativeSaveTargetBinding::LegacyManual)
             .expect_err("an unconfirmed normalized collision must be rejected");
 
         assert!(error.contains("SAVE_OVERWRITE_RECONFIRM_REQUIRED"));
@@ -1385,7 +1464,7 @@ mod tests {
         let selected = root.join("selected.pdf");
         let access = AllowedFileAccess::default();
         let registration = access
-            .register_native_save_target(&selected)
+            .register_native_save_target(&selected, NativeSaveTargetBinding::LegacyManual)
             .expect("selected target must register");
 
         access
@@ -1401,6 +1480,57 @@ mod tests {
             .is_err(),
             "cancel or replacement must invalidate the old token"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn public_native_save_target_requires_exact_tuple_and_consumes_only_after_match() {
+        let root = temp_security_root("tuple_bound_native_save_target")
+            .canonicalize()
+            .expect("canonical root");
+        let selected = root.join("selected.pdf");
+        let access = AllowedFileAccess::default();
+        let binding = NativeSaveTargetBinding::Public {
+            run_id: "run-a".to_string(),
+            analysis_revision: 7,
+            manifest_hash: "manifest-a".to_string(),
+        };
+        let registration = access
+            .register_native_save_target(&selected, binding.clone())
+            .expect("register public target");
+
+        let stale = NativeSaveTargetBinding::Public {
+            run_id: "run-a".to_string(),
+            analysis_revision: 6,
+            manifest_hash: "manifest-a".to_string(),
+        };
+        assert!(validate_registered_native_save_target(
+            &access,
+            registration.output_path.to_str().unwrap(),
+            &registration.save_token,
+            &stale,
+        )
+        .is_err());
+        validate_registered_native_save_target(
+            &access,
+            registration.output_path.to_str().unwrap(),
+            &registration.save_token,
+            &binding,
+        )
+        .expect("matching tuple must validate without consuming");
+        consume_registered_native_save_target(
+            &access,
+            registration.output_path.to_str().unwrap(),
+            &registration.save_token,
+            &binding,
+        )
+        .expect("matching tuple consumes after commit");
+        assert!(consume_registered_native_save_target(
+            &access,
+            registration.output_path.to_str().unwrap(),
+            &registration.save_token,
+            &binding,
+        )
+        .is_err());
         let _ = fs::remove_dir_all(root);
     }
 }

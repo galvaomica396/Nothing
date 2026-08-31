@@ -252,16 +252,8 @@ jobs:
           extract_dir="$roundtrip_root/extracted"
           rm -rf "$roundtrip_root"
           mkdir -p "$extract_dir"
-          gh release download "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "Nothing-4.6.3-macos-arm64-app.zip" \
-            --dir "$roundtrip_root" \
-            --clobber
-          gh release download "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "Nothing-4.6.3-macos-arm64-manifest.json" \
-            --dir "$roundtrip_root" \
-            --clobber
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Nothing-4.6.3-macos-arm64-app.zip" --dir "$roundtrip_root" --clobber
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Nothing-4.6.3-macos-arm64-manifest.json" --dir "$roundtrip_root" --clobber
           unzip -q "$roundtrip_root/Nothing-4.6.3-macos-arm64-app.zip" -d "$extract_dir"
           required_license_files=(
             "Contents/Resources/licenses/LICENSE"

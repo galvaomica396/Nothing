@@ -1,20 +1,20 @@
 // Document batch queue controller (docs/CODE_REVIEW_2026-07-04.md
-// "startLegacyApp 분리": 배치 큐 모듈).
+// composition root 분리: 배치 큐 모듈).
 //
 // Owns the batch-queue DOM rendering and per-item lifecycle (load / retry /
 // process / open output). Pure queue helpers stay in src/batchQueue.ts; this
-// module is the controller layer that startLegacyApp wires with injected DOM
+// module is the controller layer that the composition root wires with injected DOM
 // elements, the shared mutable run state, and orchestration callbacks.
 
 import { appendBatchDocuments, batchActionState, summarizeBatchItems } from "../../batchQueue";
 import type { BatchItem, BatchStatus } from "../../batchQueue";
 import { latestGeneratedPath } from "../../state/documentProvenance";
-import type { LegacySessionState } from "../../legacy/startLegacyApp";
+import type { ApplicationSessionState } from "../../app/compositionRoot";
 
-// The slice of startLegacyApp's shared `state` object this controller reads and
+// The slice of the composition root shared `state` object this controller reads and
 // mutates. The full closure state object satisfies this structurally.
 export type DocumentBatchState = Pick<
-  LegacySessionState,
+  ApplicationSessionState,
   | "batchItems"
   | "batchActiveIndex"
   | "batchRunning"
@@ -62,6 +62,19 @@ function queueCell(className: string, text: string): HTMLSpanElement {
   span.textContent = text;
   span.title = text;
   return span;
+}
+
+function basenameOnly(path: string): string {
+  const normalized = String(path || "").trim().replace(/[\\/]+$/, "");
+  if (!normalized) return "";
+  const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
+function queueSafeTitle(item: BatchItem, compactPath: (path: string) => string): string {
+  if (item.error) return item.error;
+  const visiblePath = item.outputPath || item.path;
+  return basenameOnly(visiblePath) || compactPath(visiblePath) || item.basename;
 }
 
 export function createDocumentBatchController(deps: DocumentBatchDeps): DocumentBatchController {
@@ -174,7 +187,7 @@ export function createDocumentBatchController(deps: DocumentBatchDeps): Document
       row.tabIndex = actions.canLoad ? 0 : -1;
       row.className = `batch-item status-${item.status.replace(/\s/g, "-")}`;
       row.classList.toggle("is-active", index === state.batchActiveIndex);
-      row.title = item.error || item.outputPath || item.path;
+      row.title = queueSafeTitle(item, deps.compactPath);
       row.setAttribute("aria-label", `${item.basename} ${item.status}${actions.canRetry ? " 재실행 가능" : ""}`);
       row.append(
         queueCell("batch-name", item.basename),

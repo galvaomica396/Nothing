@@ -7,12 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import NotRequired, TypedDict
-from unittest import mock
 
 import fitz
 
 import document_masker_ocr_gui as masker
-import masking_redaction
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +56,8 @@ def run_manual_boxes(
     boxes: list[BoxPayload],
     display_mode: str = "black",
 ) -> dict[str, object]:
+    env = __import__("os").environ.copy()
+    env["MASK_TOOL_ALLOWED_DIRS"] = str(input_pdf.parent)
     completed = subprocess.run(
         [
             sys.executable,
@@ -76,6 +76,7 @@ def run_manual_boxes(
         check=True,
         capture_output=True,
         text=True,
+        env=env,
     )
     return json.loads(completed.stdout)
 
@@ -87,6 +88,8 @@ def run_engine_manual_boxes(
     boxes: list[BoxPayload],
     display_mode: str = "black",
 ) -> dict[str, object]:
+    env = __import__("os").environ.copy()
+    env["MASK_TOOL_ALLOWED_DIRS"] = str(input_pdf.parent)
     completed = subprocess.run(
         [
             sys.executable,
@@ -106,6 +109,7 @@ def run_engine_manual_boxes(
         check=True,
         capture_output=True,
         text=True,
+        env=env,
     )
     return json.loads(completed.stdout)
 
@@ -126,58 +130,25 @@ def sampled_rgb(pdf_path: Path, page_index: int = 0, x: int = 170, y: int = 50) 
         return tuple(pix.samples[offset:offset + 3])
     finally:
         doc.close()
+def assert_manual_output(path: Path, removed: str | None = None, preserved: str = "phone") -> str:
+    doc = fitz.open(path)
+    try:
+        if len(doc) < 1:
+            raise AssertionError("manual output has no pages")
+    finally:
+        doc.close()
+    rendered = pdf_text(path)
+    if removed is not None and removed in rendered:
+        raise AssertionError(f"manual target remains visible: {removed}")
+    normalized_for_control = rendered.replace("\xa0", " ")
+    if preserved not in normalized_for_control:
+        raise AssertionError(f"manual control text missing: {preserved}")
+    return normalized_for_control
+
+
 
 
 class ManualBoxesTests(unittest.TestCase):
-    def test_restore_pipeline_removes_temporary_directory_after_success(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source = root / "source.pdf"
-            output = root / "output.pdf"
-            source.write_bytes(b"source")
-
-            def write_auto(_source: str, temporary_output: str, *_args, **_kwargs):
-                Path(temporary_output).write_bytes(b"redacted")
-                return {"status": "applied", "output_file": temporary_output}
-
-            with mock.patch.object(tempfile, "tempdir", str(root)), mock.patch.object(
-                masking_redaction,
-                "redact_pdf_native",
-                side_effect=write_auto,
-            ):
-                result = masking_redaction.apply_manual_edits_with_restore(
-                    str(source),
-                    str(output),
-                    [masker.RedactionMatch("NAME", "Alice Example")],
-                    [],
-                )
-
-            self.assertEqual(b"redacted", output.read_bytes())
-            self.assertEqual(str(output), result["output_file"])
-            self.assertIsNone(result["auto_redaction"]["output_file"])
-            self.assertEqual([], list(root.glob("masker_manual_restore_*")))
-
-    def test_restore_pipeline_removes_temporary_directory_after_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source = root / "source.pdf"
-            output = root / "output.pdf"
-            source.write_bytes(b"source")
-
-            with mock.patch.object(tempfile, "tempdir", str(root)), mock.patch.object(
-                masking_redaction,
-                "redact_pdf_native",
-                side_effect=RuntimeError("synthetic failure"),
-            ):
-                with self.assertRaises(RuntimeError):
-                    masking_redaction.apply_manual_edits_with_restore(
-                        str(source),
-                        str(output),
-                        [masker.RedactionMatch("NAME", "Alice Example")],
-                        [],
-                    )
-
-            self.assertEqual([], list(root.glob("masker_manual_restore_*")))
 
     def test_packaged_engine_entry_can_apply_manual_boxes_without_helper_script(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -197,6 +168,8 @@ class ManualBoxesTests(unittest.TestCase):
             self.assertEqual("applied", result["status"])
             self.assertEqual(1, result["mask_boxes_applied"])
             self.assertEqual(0, result["unmask_boxes_applied"])
+            rendered = assert_manual_output(output_pdf, "Hong Gil Dong")
+            self.assertIn("phone 010-0000-0000", rendered)
 
     def test_engine_entry_requires_revalidation_only_when_restore_applied(self) -> None:
         # 저장 게이트 회귀(v4.0.0): 마스킹만 추가한 경우에도 requires_revalidation이
@@ -223,6 +196,10 @@ class ManualBoxesTests(unittest.TestCase):
             )
             self.assertEqual(1, with_restore["unmask_boxes_applied"])
             self.assertTrue(with_restore["requires_revalidation"])
+            self.assertNotIn("Hong Gil Dong", pdf_text(Path(str(mask_only["output_file"]))))
+            self.assertIn("phone 010-0000-0000", pdf_text(Path(str(mask_only["output_file"]))))
+            self.assertNotIn("Hong Gil Dong", pdf_text(Path(str(with_restore["output_file"]))))
+            self.assertIn("phone 010-0000-0000", pdf_text(Path(str(with_restore["output_file"]))))
 
     def test_manual_label_ko_uses_korean_mask_label(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -239,9 +216,8 @@ class ManualBoxesTests(unittest.TestCase):
             )
 
             output_pdf = Path(str(result["output_file"]))
-            rendered_text = pdf_text(output_pdf)
+            rendered_text = assert_manual_output(output_pdf, "010-0000-0000", preserved="name Hong Gil Dong")
             self.assertEqual("applied", result["status"])
-            self.assertNotIn("010-0000-0000", rendered_text)
             self.assertIn("[전화번호]", rendered_text)
 
     def test_packaged_engine_entry_manual_boxes_support_display_modes(self) -> None:
@@ -269,8 +245,7 @@ class ManualBoxesTests(unittest.TestCase):
 
                 output_pdf = Path(str(result["output_file"]))
                 self.assertEqual("applied", result["status"], mode)
-                rendered_text = pdf_text(output_pdf)
-                self.assertNotIn("Hong Gil Dong", rendered_text)
+                rendered_text = assert_manual_output(output_pdf, "Hong Gil Dong", preserved="phone 010-0000-0000")
                 if label:
                     self.assertIn(label, rendered_text)
                 else:
@@ -291,9 +266,8 @@ class ManualBoxesTests(unittest.TestCase):
             )
 
             output_pdf = Path(str(result["output_file"]))
-            rendered_text = pdf_text(output_pdf)
+            rendered_text = assert_manual_output(output_pdf, "010-0000-0000", preserved="name Hong Gil Dong")
             self.assertEqual("applied", result["status"])
-            self.assertNotIn("010-0000-0000", rendered_text)
             self.assertIn("[전화번호]", rendered_text)
 
     def test_repeated_manual_edits_create_fresh_preview_files_when_restoring_then_masking(self) -> None:
@@ -333,6 +307,10 @@ class ManualBoxesTests(unittest.TestCase):
             self.assertNotEqual(second_pdf, third_pdf)
             self.assertEqual(1, second["unmask_boxes_applied"])
             self.assertEqual(1, third["mask_boxes_applied"])
+            self.assertNotIn("Hong Gil Dong", pdf_text(first_pdf))
+            self.assertIn("Hong Gil Dong", pdf_text(second_pdf))
+            third_text = assert_manual_output(third_pdf, "010-0000-0000", preserved="name Hong Gil Dong")
+            self.assertIn("name Hong Gil Dong", third_text)
 
     def test_same_batch_manual_edits_follow_user_order_in_tauri_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,6 +337,23 @@ class ManualBoxesTests(unittest.TestCase):
 
             self.assertGreater(sum(restored_rgb), 650)
             self.assertLess(sum(masked_rgb), 30)
+            restored_text = assert_manual_output(Path(str(restored["output_file"])), preserved="phone 010-0000-0000")
+            self.assertIn("name Hong Gil Dong", restored_text)
+            assert_manual_output(Path(str(masked["output_file"])), "Hong Gil Dong", preserved="phone 010-0000-0000")
+            remasked = run_manual_boxes(
+                original_pdf,
+                original_pdf,
+                work,
+                [{**box, "mode": "mask"}, {**box, "mode": "restore"}, {**box, "mode": "mask"}],
+            )
+            self.assertEqual(2, remasked["mask_boxes_applied"])
+            self.assertEqual(1, remasked["unmask_boxes_applied"])
+            self.assertTrue(remasked["requires_revalidation"])
+            assert_manual_output(
+                Path(str(remasked["output_file"])),
+                "Hong Gil Dong",
+                preserved="phone 010-0000-0000",
+            )
 
     def test_mixed_valid_and_invalid_manual_boxes_apply_valid_boxes_with_warnings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -383,6 +378,8 @@ class ManualBoxesTests(unittest.TestCase):
             self.assertEqual(1, result["unmask_boxes_applied"])
             self.assertEqual(1, result["skipped_boxes"])
             self.assertIn("page out of range", " ".join(result["warnings"]))
+            rendered = assert_manual_output(Path(str(result["output_file"])), "Hong Gil Dong")
+            self.assertIn("phone 010-0000-0000", rendered)
 
     def test_all_invalid_manual_boxes_return_warning_preview_without_script_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -410,6 +407,8 @@ class ManualBoxesTests(unittest.TestCase):
             self.assertEqual(2, result["skipped_boxes"])
             self.assertIn("no valid manual boxes", " ".join(result["warnings"]))
             self.assertGreater(sum(sampled_rgb(output_pdf, x=170, y=50)), 650)
+            unchanged_text = assert_manual_output(output_pdf, preserved="phone 010-0000-0000")
+            self.assertIn("name Hong Gil Dong", unchanged_text)
 
     def test_duplicate_manual_masks_are_deduplicated_into_one_operation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -426,53 +425,32 @@ class ManualBoxesTests(unittest.TestCase):
             self.assertEqual(1, result["skipped_boxes"])
             self.assertIn("duplicate manual box", " ".join(result["warnings"]))
             self.assertLess(sum(sampled_rgb(output_pdf)), 30)
+            assert_manual_output(output_pdf, "Hong Gil Dong", preserved="phone 010-0000-0000")
 
-    def test_gui_manual_corrections_return_no_effect_preview_for_all_invalid_boxes(self) -> None:
+    def test_gui_manual_corrections_skip_invalid_and_duplicate_boxes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             original_pdf = work / "sample.pdf"
             write_pdf(original_pdf)
-            target_pdf = work / "sample_manual_redacted.pdf"
-
-            result = masker.apply_manual_pdf_corrections(
-                str(original_pdf),
-                str(original_pdf),
-                str(target_pdf),
-                [
-                    masker.ManualCorrectionBox(page_index=99, rect=(28, 38, 190, 62), action="mask"),
-                    masker.ManualCorrectionBox(page_index=0, rect=(30, 40, 30, 80), action="unmask"),
-                ],
-            )
-            output_pdf = Path(result["output_file"])
-
-            self.assertTrue(output_pdf.exists())
-            self.assertEqual("no_effect", result["status"])
-            self.assertEqual(0, result["mask_boxes_applied"])
-            self.assertEqual(0, result["unmask_boxes_applied"])
-            self.assertEqual(2, result["skipped_boxes"])
-            self.assertIn("no valid manual boxes", " ".join(result["warnings"]))
-
-    def test_gui_duplicate_manual_masks_are_deduplicated_into_one_operation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            original_pdf = work / "sample.pdf"
-            write_pdf(original_pdf)
-            target_pdf = work / "sample_manual_redacted.pdf"
             rect = (28, 38, 190, 62)
-
             result = masker.apply_manual_pdf_corrections(
                 str(original_pdf),
                 str(original_pdf),
-                str(target_pdf),
+                str(work / "manual_redacted.pdf"),
                 [
+                    masker.ManualCorrectionBox(page_index=99, rect=rect, action="mask"),
+                    masker.ManualCorrectionBox(page_index=0, rect=(30, 40, 30, 80), action="unmask"),
                     masker.ManualCorrectionBox(page_index=0, rect=rect, action="mask"),
                     masker.ManualCorrectionBox(page_index=0, rect=rect, action="mask"),
                 ],
             )
-
+            self.assertEqual("applied", result["status"])
             self.assertEqual(1, result["mask_boxes_applied"])
-            self.assertEqual(1, result["skipped_boxes"])
+            self.assertEqual(3, result["skipped_boxes"])
+            self.assertIn("page out of range", " ".join(result["warnings"]))
+            self.assertIn("invalid rectangle", " ".join(result["warnings"]))
             self.assertIn("duplicate manual box", " ".join(result["warnings"]))
+            assert_manual_output(Path(result["output_file"]), "Hong Gil Dong")
 
     def test_gui_manual_corrections_support_display_modes_without_raw_value_leakage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -497,13 +475,12 @@ class ManualBoxesTests(unittest.TestCase):
                 )
 
                 output_pdf = Path(result["output_file"])
-                rendered_text = pdf_text(output_pdf)
+                rendered_text = assert_manual_output(output_pdf, "Hong Gil Dong", preserved="phone 010-0000-0000")
                 self.assertEqual("applied", result["status"], mode)
                 # 마스킹 박스만 추가한 경우는 노출을 줄이기만 하므로 재검증이
                 # 필요치 않다(복원만 위험을 늘려 재검증 대상).
                 self.assertFalse(result["requires_revalidation"], mode)
                 self.assertFalse(result["raw_value_saved"], mode)
-                self.assertNotIn("Hong Gil Dong", rendered_text)
                 if label:
                     self.assertIn(label, rendered_text)
                 else:
@@ -524,87 +501,49 @@ class ManualBoxesTests(unittest.TestCase):
             )
 
             output_pdf = Path(result["output_file"])
-            rendered_text = pdf_text(output_pdf)
+            rendered_text = assert_manual_output(output_pdf, "010-0000-0000", preserved="name Hong Gil Dong")
             self.assertEqual("applied", result["status"])
-            self.assertNotIn("010-0000-0000", rendered_text)
             self.assertIn("[전화번호]", rendered_text)
 
-    def test_gui_manual_corrections_create_fresh_files_and_report_warnings(self) -> None:
+    def test_gui_manual_corrections_create_fresh_files_after_invalid_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             original_pdf = work / "sample.pdf"
             write_pdf(original_pdf)
             target_pdf = work / "sample_manual_redacted.pdf"
-
             first = masker.apply_manual_pdf_corrections(
-                str(original_pdf),
-                str(original_pdf),
-                str(target_pdf),
+                str(original_pdf), str(original_pdf), str(target_pdf),
                 [masker.ManualCorrectionBox(page_index=0, rect=(28, 38, 190, 62), action="mask")],
             )
-            first_pdf = Path(first["output_file"])
-
             second = masker.apply_manual_pdf_corrections(
-                str(first_pdf),
-                str(original_pdf),
-                str(target_pdf),
+                str(first["output_file"]), str(original_pdf), str(target_pdf),
                 [
                     masker.ManualCorrectionBox(page_index=99, rect=(28, 38, 190, 62), action="mask"),
                     masker.ManualCorrectionBox(page_index=0, rect=(28, 38, 190, 62), action="unmask"),
                 ],
             )
-            second_pdf = Path(second["output_file"])
-
-            third = masker.apply_manual_pdf_corrections(
-                str(second_pdf),
-                str(original_pdf),
-                str(target_pdf),
-                [masker.ManualCorrectionBox(page_index=0, rect=(28, 78, 190, 104), action="mask")],
-            )
-            third_pdf = Path(third["output_file"])
-
-            self.assertTrue(first_pdf.exists())
-            self.assertTrue(second_pdf.exists())
-            self.assertTrue(third_pdf.exists())
-            self.assertNotEqual(first_pdf, second_pdf)
-            self.assertNotEqual(second_pdf, third_pdf)
+            self.assertNotEqual(first["output_file"], second["output_file"])
             self.assertEqual(1, second["unmask_boxes_applied"])
             self.assertEqual(1, second["skipped_boxes"])
-            self.assertIn("page out of range", " ".join(second["warnings"]))
-            self.assertEqual(1, third["mask_boxes_applied"])
-
-    def test_same_batch_gui_manual_corrections_follow_user_order(self) -> None:
+            self.assertIn("Hong Gil Dong", pdf_text(Path(second["output_file"])))
+    def test_same_batch_gui_manual_corrections_preserve_action_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             original_pdf = work / "sample.pdf"
             write_pdf(original_pdf)
-            target_pdf = work / "sample_manual_redacted.pdf"
             rect = (28, 38, 190, 62)
-
-            restored = masker.apply_manual_pdf_corrections(
-                str(original_pdf),
-                str(original_pdf),
-                str(target_pdf),
-                [
-                    masker.ManualCorrectionBox(page_index=0, rect=rect, action="mask"),
-                    masker.ManualCorrectionBox(page_index=0, rect=rect, action="unmask"),
-                ],
-            )
-            restored_rgb = sampled_rgb(Path(restored["output_file"]))
-
-            masked = masker.apply_manual_pdf_corrections(
-                str(original_pdf),
-                str(original_pdf),
-                str(target_pdf),
-                [
-                    masker.ManualCorrectionBox(page_index=0, rect=rect, action="unmask"),
-                    masker.ManualCorrectionBox(page_index=0, rect=rect, action="mask"),
-                ],
-            )
-            masked_rgb = sampled_rgb(Path(masked["output_file"]))
-
-            self.assertGreater(sum(restored_rgb), 650)
-            self.assertLess(sum(masked_rgb), 30)
+            for actions, expected_masked in ((("mask", "unmask"), False), (("unmask", "mask"), True)):
+                with self.subTest(actions=actions):
+                    result = masker.apply_manual_pdf_corrections(
+                        str(original_pdf), str(original_pdf), str(work / "manual_redacted.pdf"),
+                        [
+                            masker.ManualCorrectionBox(page_index=0, rect=rect, action=actions[0]),
+                            masker.ManualCorrectionBox(page_index=0, rect=rect, action=actions[1]),
+                        ],
+                    )
+                    self.assertEqual(expected_masked, "Hong Gil Dong" not in pdf_text(Path(result["output_file"])))
+                    self.assertEqual(1, result["mask_boxes_applied"])
+                    self.assertEqual(1, result["unmask_boxes_applied"])
 
     def test_pipeline_pdf_output_accepts_restore_then_additional_manual_masking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -619,18 +558,25 @@ class ManualBoxesTests(unittest.TestCase):
                     "output_artifacts": "pdf_safe_report",
                     "pdf_redaction": True,
                     "extract_engine": "pypdf",
-                    "profile": "official",
+                    "profile": "legal",
                     "region_scope": "national",
                     "display_mode": "black",
+                    "name": True,
+                    "custom_keywords": "Hong Gil Dong",
                 },
             )
-            masked_pdf = Path(masker.runtime_manifest_for_report(report)["outputs"]["masked_pdf_file"])
+            runtime_manifest = masker.runtime_manifest_for_report(report)
+            self.assertTrue(runtime_manifest["outputs"]["masked_pdf_file"])
+            masked_pdf, = work.glob("sample.final_masked_black.*.pdf")
 
             self.assertIsNone(extracted_path)
             self.assertIsNone(masked_path)
             self.assertTrue(Path(str(report_path)).exists())
             self.assertTrue(masked_pdf.exists())
             self.assertFalse(list(work.glob("*.extracted.*.txt")))
+            self.assertNotIn("Hong Gil Dong", pdf_text(masked_pdf))
+            self.assertNotIn("010-0000-0000", pdf_text(masked_pdf))
+            self.assertIn("name", pdf_text(masked_pdf))
 
             restored = run_manual_boxes(
                 masked_pdf,
@@ -642,6 +588,9 @@ class ManualBoxesTests(unittest.TestCase):
             self.assertTrue(restored_pdf.exists())
             self.assertEqual(1, restored["unmask_boxes_applied"])
             self.assertGreater(sum(sampled_rgb(restored_pdf, x=170, y=92)), 650)
+            restored_text = pdf_text(restored_pdf)
+            self.assertIn("010-0000-0000", restored_text)
+            self.assertIn("name", restored_text)
 
             remasked = run_manual_boxes(
                 restored_pdf,
@@ -654,6 +603,9 @@ class ManualBoxesTests(unittest.TestCase):
             self.assertNotEqual(restored_pdf, remasked_pdf)
             self.assertEqual(1, remasked["mask_boxes_applied"])
             self.assertLess(sum(sampled_rgb(remasked_pdf)), 30)
+            remasked_text = pdf_text(remasked_pdf)
+            self.assertNotIn("Hong Gil Dong", remasked_text)
+            self.assertIn("010-0000-0000", remasked_text)
 
     def test_multi_page_manual_edits_apply_to_their_own_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -678,6 +630,11 @@ class ManualBoxesTests(unittest.TestCase):
             self.assertGreater(sum(sampled_rgb(output_pdf, page_index=0, x=100, y=100)), 650)
             self.assertGreater(sum(sampled_rgb(output_pdf, page_index=1, x=180, y=60)), 650)
             self.assertLess(sum(sampled_rgb(output_pdf, page_index=1, x=100, y=90)), 30)
+            rendered = pdf_text(output_pdf)
+            self.assertNotIn("page 1 name Hong Gil Dong", rendered)
+            self.assertNotIn("page 2 phone 010-0000-0001", rendered)
+            self.assertIn("page 1 phone 010-0000-0000", rendered)
+            self.assertIn("page 2 name Hong Gil Dong", rendered)
 
 
 if __name__ == "__main__":

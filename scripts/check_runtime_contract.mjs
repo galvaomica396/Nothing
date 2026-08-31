@@ -1,12 +1,12 @@
 // Static runtime-contract verifier (docs/RUNTIME_CONTRACT.md).
 //
-// Query side  : src/legacy/**/*.ts
+// Query side  : src/app/**/*.ts
 //               + src/features/{save-gate,document-batch,keyword-dialog,
-//                 masking-run,canvas-workbench,app-settings}/**/*.ts
+//                 masking-run,canvas-workbench}/**/*.ts
 //               ($("#id"), querySelector/querySelectorAll, getElementById,
 //                requiredElement(scope, "#id"), `#rule-${id}` expansion)
-//               Legacy DOM bindings may be extracted into dedicated modules;
-//               all legacy TypeScript modules are scanned so their selectors
+//               Application DOM bindings may be extracted into dedicated modules;
+//               all application-composition TypeScript modules are scanned so their selectors
 //               remain under the same runtime contract.
 // Define side : index.html + src/components/**/*.tsx static JSX
 //               (id="...", *Id="..." pass-through props, data-*="...", name="...").
@@ -20,12 +20,20 @@
 //
 // Exit 0 + "CONTRACT OK (N selectors verified)" when every queried selector is
 // defined; exit 1 with a missing-selector listing otherwise.
+//
+// Transition complete (REBUILD-PLAN-2026-08 §③): every static
+// [data-screen-panel] root is declared in contracts/converted-screens.json and
+// data-owner="react". No legacy-owned root may be introduced again.
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { acceptanceBanner } from "./gate_complete.mjs";
+import { checkRuntimeResourceCompleteness } from "./runtime_resource_completeness.mjs";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+
+console.error(acceptanceBanner(repoRoot));
 
 // ---------------------------------------------------------------------------
 // Allowlist: selectors queried by the runtime that are only present in
@@ -41,8 +49,13 @@ const DYNAMIC_DOM_ALLOWLIST = new Map([
   ["data:data-settings-tab", "optional querySelectorAll collection; no settings tab buttons exist at HEAD"],
 ]);
 
+const TRANSITION_CONFIG_PATH = "contracts/converted-screens.json";
+const LEGACY_BINDING_MARKER = "data-legacy-binding";
+const REAL_CORPUS_MANIFEST_PATH = "contracts/real-corpus.json";
+const REAL_CORPUS_RESOLVERS = new Set(["scripts/real_corpus.mjs", "scripts/real_corpus.py"]);
+
 // Fallback rule-id list (RUNTIME_CONTRACT.md §2) used only if extraction from
-// the scanned legacy TypeScript modules finds nothing.
+// the scanned application-composition TypeScript modules finds nothing.
 const FALLBACK_RULE_IDS = [
   "rrn", "phone", "business_reg", "name", "address", "place", "legal_party",
   "company", "court", "case_title", "case_number", "law_firm", "attorney",
@@ -53,6 +66,71 @@ function read(relPath) {
   return fs.readFileSync(path.join(repoRoot, relPath), "utf8");
 }
 
+function realCorpusFailures() {
+  const failures = [];
+  let manifest;
+  try {
+    manifest = JSON.parse(read(REAL_CORPUS_MANIFEST_PATH));
+  } catch (error) {
+    failures.push(`${REAL_CORPUS_MANIFEST_PATH} could not be parsed: ${error instanceof Error ? error.message : "parse error"}`);
+    return failures;
+  }
+  if (!isPlainObject(manifest) || !Array.isArray(manifest.documents)) {
+    failures.push(`${REAL_CORPUS_MANIFEST_PATH} must contain a documents array`);
+  } else {
+    if (manifest.documents.length !== 15) failures.push(`${REAL_CORPUS_MANIFEST_PATH} must contain exactly 15 documents`);
+    const aliases = new Set();
+    const hashes = new Set();
+    for (const [index, entry] of manifest.documents.entries()) {
+      const label = `${REAL_CORPUS_MANIFEST_PATH}.documents[${index}]`;
+      if (!isPlainObject(entry)) {
+        failures.push(`${label} must be an object`);
+        continue;
+      }
+      if (Object.keys(entry).some((key) => ["filename", "fileName", "path", "absolutePath"].includes(key))) {
+        failures.push(`${label} must not contain a filename or path`);
+      }
+      if (typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(entry.sha256)) {
+        failures.push(`${label}.sha256 must be a SHA-256 hash`);
+      } else if (hashes.has(entry.sha256.toLowerCase())) {
+        failures.push(`${label}.sha256 is duplicated`);
+      } else {
+        hashes.add(entry.sha256.toLowerCase());
+      }
+      if (!["internal_review", "official_dispatch"].includes(entry.category)) {
+        failures.push(`${label}.category is unsupported`);
+      }
+      if (entry.alias !== undefined) {
+        if (typeof entry.alias !== "string" || !/^[a-z][a-z0-9-]{1,31}$/.test(entry.alias)) {
+          failures.push(`${label}.alias is invalid`);
+        } else if (aliases.has(entry.alias)) {
+          failures.push(`${label}.alias is duplicated`);
+        } else {
+          aliases.add(entry.alias);
+        }
+      }
+    }
+  }
+
+  const verificationFiles = [
+    "scripts/acceptance_real_app.mjs",
+    "scripts/e2e_real_app.mjs",
+    "scripts/evaluate_routing_corpus.py",
+  ].filter((file) => fs.existsSync(path.join(repoRoot, file)) && !REAL_CORPUS_RESOLVERS.has(file));
+  const bypassPatterns = [
+    { pattern: /Nothing[-_]verification[-_]corpus/i, label: "verification-corpus path" },
+    { pattern: /~\/Downloads|(?:homedir|Path\.home)\s*\(\)[^\\n]*Downloads/i, label: "Downloads path outside resolver" },
+    { pattern: /(?:rglob|glob)\s*\([^)]*\.pdf/i, label: "direct PDF glob outside resolver" },
+  ];
+  for (const relPath of verificationFiles) {
+    const source = read(relPath);
+    for (const { pattern, label } of bypassPatterns) {
+      if (pattern.test(source)) failures.push(`${relPath} bypasses the real-corpus resolver (${label})`);
+    }
+  }
+  return failures;
+}
+
 function walk(dir, predicate, found = []) {
   for (const entry of fs.readdirSync(path.join(repoRoot, dir), { withFileTypes: true })) {
     const rel = path.join(dir, entry.name);
@@ -60,6 +138,195 @@ function walk(dir, predicate, found = []) {
     else if (predicate(rel)) found.push(rel);
   }
   return found;
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function lineOf(source, index) {
+  return source.slice(0, index).split("\n").length;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isScreenId(value) {
+  return typeof value === "string" && /^[A-Za-z][\w-]*$/.test(value);
+}
+
+function isCalendarDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
+}
+
+function readConvertedScreensConfig() {
+  let raw;
+  try {
+    raw = JSON.parse(read(TRANSITION_CONFIG_PATH));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { screens: [], errors: [`Could not parse ${TRANSITION_CONFIG_PATH}: ${detail}`] };
+  }
+
+  if (!isPlainObject(raw) || Object.keys(raw).length !== 1 || !Array.isArray(raw.screens)) {
+    return { screens: [], errors: [`${TRANSITION_CONFIG_PATH} must be { "screens": [...] }`] };
+  }
+
+  const errors = [];
+  const screens = [];
+  const screenIds = new Set();
+  const rootSelectors = new Set();
+  const ownedIds = new Set();
+
+  for (const [index, entry] of raw.screens.entries()) {
+    const label = `${TRANSITION_CONFIG_PATH}.screens[${index}]`;
+    if (!isPlainObject(entry)) {
+      errors.push(`${label} must be an object`);
+      continue;
+    }
+    if (!isScreenId(entry.screenId)) errors.push(`${label}.screenId must be a valid screen id`);
+    if (typeof entry.rootSelector !== "string" || !/^#[A-Za-z][\w-]*$/.test(entry.rootSelector)) {
+      errors.push(`${label}.rootSelector must be an id selector such as #document-desk-screen`);
+    }
+    if (!Array.isArray(entry.ownedIds) || !entry.ownedIds.every(isScreenId)) {
+      errors.push(`${label}.ownedIds must be an array of valid element ids`);
+    }
+
+    const graceEntries = entry.legacyReferenceGrace ?? [];
+    if (!Array.isArray(graceEntries)) {
+      errors.push(`${label}.legacyReferenceGrace must be an array when present`);
+      continue;
+    }
+    const graceIds = new Set();
+    for (const [graceIndex, grace] of graceEntries.entries()) {
+      const graceLabel = `${label}.legacyReferenceGrace[${graceIndex}]`;
+      if (!isPlainObject(grace) || Object.keys(grace).length !== 3) {
+        errors.push(`${graceLabel} must contain id, expiresOn, and comment`);
+        continue;
+      }
+      if (!isScreenId(grace.id)) errors.push(`${graceLabel}.id must be a valid element id`);
+      if (!isCalendarDate(grace.expiresOn)) errors.push(`${graceLabel}.expiresOn must be a real YYYY-MM-DD date`);
+      if (typeof grace.comment !== "string" || grace.comment.trim() === "") {
+        errors.push(`${graceLabel}.comment must document the expiry reason`);
+      }
+      if (graceIds.has(grace.id)) errors.push(`${graceLabel}.id is duplicated`);
+      graceIds.add(grace.id);
+      if (!entry.ownedIds?.includes(grace.id)) {
+        errors.push(`${graceLabel}.id must be listed in ${label}.ownedIds`);
+      }
+    }
+
+    if (screenIds.has(entry.screenId)) errors.push(`${label}.screenId is duplicated: ${entry.screenId}`);
+    if (rootSelectors.has(entry.rootSelector)) errors.push(`${label}.rootSelector is duplicated: ${entry.rootSelector}`);
+    screenIds.add(entry.screenId);
+    rootSelectors.add(entry.rootSelector);
+    for (const id of entry.ownedIds ?? []) {
+      if (ownedIds.has(id)) errors.push(`${label}.ownedIds duplicates another converted screen id: ${id}`);
+      ownedIds.add(id);
+    }
+    screens.push(entry);
+  }
+
+  return { screens, errors };
+}
+
+function findElementSubtree(source, openingTagIndex, tagName) {
+  const tagPattern = new RegExp(`<\\/?${escapeRegex(tagName)}\\b[^>]*>`, "g");
+  tagPattern.lastIndex = openingTagIndex;
+  let depth = 0;
+  for (const match of source.matchAll(tagPattern)) {
+    if (match.index < openingTagIndex) continue;
+    if (match[0].startsWith("</")) {
+      depth -= 1;
+      if (depth === 0) return source.slice(openingTagIndex, match.index + match[0].length);
+    } else if (!match[0].endsWith("/>")) {
+      depth += 1;
+    }
+  }
+  return source.slice(openingTagIndex);
+}
+
+function extractScreenRoots(defineFiles) {
+  const roots = [];
+  for (const file of defineFiles) {
+    const source = read(file);
+    for (const match of source.matchAll(/<([A-Za-z][\w.]*)\b[^>]*\bdata-screen-panel="([^"]+)"[^>]*>/g)) {
+      const openingTag = match[0];
+      const id = openingTag.match(/\bid="([^"]+)"/)?.[1] ?? null;
+      const owner = openingTag.match(/\bdata-owner="([^"]+)"/)?.[1] ?? null;
+      roots.push({
+        file,
+        line: lineOf(source, match.index),
+        screenId: match[2],
+        selector: id === null ? null : `#${id}`,
+        owner,
+        subtree: findElementSubtree(source, match.index, match[1]),
+      });
+    }
+  }
+  return roots;
+}
+
+function transitionDisciplineFailures({ config, screenRoots, compositionReferenceFiles }) {
+  const failures = [...config.errors];
+  const rootsBySelector = new Map(screenRoots.map((root) => [root.selector, root]));
+  const convertedBySelector = new Map(config.screens.map((screen) => [screen.rootSelector, screen]));
+
+  for (const root of screenRoots) {
+    if (root.selector === null) {
+      failures.push(`${root.file}:${root.line} screen root data-screen-panel="${root.screenId}" needs a static id for ownership checks`);
+      continue;
+    }
+    const conversion = convertedBySelector.get(root.selector);
+    if (conversion === undefined) {
+      failures.push(`${root.file}:${root.line} ${root.selector} must be declared in ${TRANSITION_CONFIG_PATH}; the React transition is complete`);
+      continue;
+    }
+    if (root.owner !== "react") {
+      failures.push(`${root.file}:${root.line} ${root.selector} must declare data-owner="react"`);
+    }
+    if (conversion !== undefined && conversion.screenId !== root.screenId) {
+      failures.push(`${root.file}:${root.line} ${root.selector} has data-screen-panel="${root.screenId}" but config declares screenId "${conversion.screenId}"`);
+    }
+    if (conversion !== undefined) {
+      const marker = new RegExp(`\\b${escapeRegex(LEGACY_BINDING_MARKER)}(?:\\s*=|\\s|>)`);
+      if (marker.test(root.subtree)) {
+        failures.push(`${root.file}:${root.line} React-owned ${root.selector} contains ${LEGACY_BINDING_MARKER}`);
+      }
+    }
+  }
+
+  for (const screen of config.screens) {
+    if (!rootsBySelector.has(screen.rootSelector)) {
+      failures.push(`${TRANSITION_CONFIG_PATH} declares ${screen.rootSelector}, but no static screen root matches it`);
+    }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  for (const screen of config.screens) {
+    const graceById = new Map(screen.legacyReferenceGrace?.map((entry) => [entry.id, entry]) ?? []);
+    for (const id of screen.ownedIds) {
+      const grace = graceById.get(id);
+      if (grace !== undefined && grace.expiresOn < today) {
+        failures.push(`${TRANSITION_CONFIG_PATH} grace for "${id}" expired on ${grace.expiresOn}: ${grace.comment}`);
+      }
+      if (grace !== undefined && grace.expiresOn >= today) continue;
+
+      const reference = new RegExp(`(?<![A-Za-z0-9_-])${escapeRegex(id)}(?![A-Za-z0-9_-])`);
+      for (const file of compositionReferenceFiles) {
+        const source = read(file);
+        const match = reference.exec(source);
+        if (match !== null) {
+          failures.push(`Application composition code references React-owned id "${id}" at ${file}:${lineOf(source, match.index)}`);
+        }
+      }
+    }
+  }
+
+  return failures;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,10 +354,10 @@ function selectorRequirements(selector) {
   return requirements;
 }
 
-function extractRuleIds(legacySource) {
+function extractRuleIds(compositionSource) {
   const ids = new Set();
-  for (const match of legacySource.matchAll(/getRule\(\s*"([a-z_]+)"\s*\)/g)) ids.add(match[1]);
-  for (const match of legacySource.matchAll(/setRuleState\(\s*"([a-z_]+)"/g)) ids.add(match[1]);
+  for (const match of compositionSource.matchAll(/getRule\(\s*"([a-z_]+)"\s*\)/g)) ids.add(match[1]);
+  for (const match of compositionSource.matchAll(/setRuleState\(\s*"([a-z_]+)"/g)) ids.add(match[1]);
   return ids.size > 0 ? [...ids] : FALLBACK_RULE_IDS;
 }
 
@@ -119,7 +386,7 @@ function extractQueries(relPath, source, ruleIds) {
     }
   }
   // Dynamic pattern: document.getElementById(step.id) over the workflow step
-  // array literal in startLegacyApp.ts — expand with the literal step ids.
+  // array literal in compositionRoot.ts — expand with the literal step ids.
   if (/getElementById\(\s*step\.id\s*\)/.test(source)) {
     for (const match of source.matchAll(/"(workflow-step-[a-z0-9-]+)"/g)) {
       queries.push({ requirement: { kind: "id", value: match[1] }, file: relPath, line: lineOf(match.index) });
@@ -151,24 +418,27 @@ function extractDefinitions(relPath, source, defined) {
 // Main
 // ---------------------------------------------------------------------------
 
-const legacyFiles = walk("src/legacy", (file) => file.endsWith(".ts"));
-const legacySource = legacyFiles.map(read).join("\n");
-const ruleIds = extractRuleIds(legacySource);
+const compositionFiles = walk("src/app", (file) => file.endsWith(".ts"));
+const compositionReferenceFiles = walk("src/app", () => true);
+const compositionSource = compositionFiles.map(read).join("\n");
+const ruleIds = extractRuleIds(compositionSource);
+const convertedScreensConfig = readConvertedScreensConfig();
+const corpusFailures = realCorpusFailures();
 
 const queryFiles = [
-  ...legacyFiles,
+  ...compositionFiles,
   ...walk("src/features/save-gate", (file) => file.endsWith(".ts")),
   ...walk("src/features/document-batch", (file) => file.endsWith(".ts")),
   ...walk("src/features/keyword-dialog", (file) => file.endsWith(".ts")),
   ...walk("src/features/masking-run", (file) => file.endsWith(".ts")),
   ...walk("src/features/canvas-workbench", (file) => file.endsWith(".ts")),
-  ...walk("src/features/app-settings", (file) => file.endsWith(".ts")),
 ];
 const queries = queryFiles.flatMap((file) => extractQueries(file, read(file), ruleIds));
 
 const defined = { ids: new Map(), dataAttrs: new Set(), dataValues: new Set(), names: new Set() };
 const defineFiles = ["index.html", ...walk("src/components", (file) => file.endsWith(".tsx"))];
 for (const file of defineFiles) extractDefinitions(file, read(file), defined);
+const screenRoots = extractScreenRoots(defineFiles);
 
 // v4: 좌측 레일이 폐지되어 rail-* 정의 소스(WorkspaceNavigationContext.tsx)가
 // 삭제되었다. 상단 바(AppHeader.tsx)의 탭·기어가 [data-screen-target] 를 static
@@ -236,4 +506,28 @@ if (missing.size > 0) {
   process.exit(1);
 }
 
-console.log(`CONTRACT OK (${verified.size} selectors verified)`);
+const missingRuntimeResources = checkRuntimeResourceCompleteness(repoRoot);
+if (missingRuntimeResources.length > 0) {
+  console.error(`CONTRACT BROKEN — ${missingRuntimeResources.length} masking runtime resource(s) missing from tauri.conf.json:`);
+  for (const source of missingRuntimeResources) console.error(`  - ${source}`);
+  process.exit(1);
+}
+
+if (corpusFailures.length > 0) {
+  console.error(`CONTRACT BROKEN — ${corpusFailures.length} real-corpus contract violation(s):`);
+  for (const failure of corpusFailures) console.error(`  - ${failure}`);
+  process.exit(1);
+}
+
+const transitionFailures = transitionDisciplineFailures({
+  config: convertedScreensConfig,
+  screenRoots,
+  compositionReferenceFiles,
+});
+if (transitionFailures.length > 0) {
+  console.error(`CONTRACT BROKEN — ${transitionFailures.length} transition discipline violation(s):`);
+  for (const failure of transitionFailures) console.error(`  - ${failure}`);
+  process.exit(1);
+}
+
+console.log(`CONTRACT OK (${verified.size} selectors, ${screenRoots.length} screen ownership roots, and masking runtime resources verified)`);

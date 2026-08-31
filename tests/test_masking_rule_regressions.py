@@ -8,20 +8,28 @@ CODE_REVIEW_2026-07-04.md 의 C-1 / C-2 / C-3 / H-5 / M-4 / H-4 항목에 대해
 """
 from __future__ import annotations
 
-import glob
-import os
+import hashlib
+import hmac
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import fitz
 
 import document_masker_ocr_gui as masker
 import privacy_false_positive as fp
+from masking_extraction import ExtractedPage, ExtractedWord
+from privacy_spans import DetectionSpan
+
+
 
 
 class C1OcrDelimiterVariants(unittest.TestCase):
     """C-1: OCR 변형 구분자(en-dash, 점, 괄호, 자간) 탐지 확장."""
 
     def _mask(self, text: str):
-        return masker.mask_text(text, profile="official")
+        return masker.mask_text(text, profile="mixed")
 
     def test_review_proven_variants_are_detected(self):
         cases = [
@@ -33,7 +41,7 @@ class C1OcrDelimiterVariants(unittest.TestCase):
         for text, tag in cases:
             with self.subTest(text=text):
                 _masked, counts, _matches = self._mask(text)
-                self.assertGreaterEqual(counts.get(tag, 0), 1, f"{text!r} -> {counts}")
+                self.assertEqual(1, counts.get(tag), f"{text!r} -> {counts}")
 
     def test_additional_unicode_and_dot_variants(self):
         cases = [
@@ -46,7 +54,7 @@ class C1OcrDelimiterVariants(unittest.TestCase):
         for text, tag in cases:
             with self.subTest(text=text):
                 _masked, counts, _matches = self._mask(text)
-                self.assertGreaterEqual(counts.get(tag, 0), 1, f"{text!r} -> {counts}")
+                self.assertEqual(1, counts.get(tag), f"{text!r} -> {counts}")
 
     def test_existing_normal_cases_do_not_regress(self):
         cases = [
@@ -60,7 +68,7 @@ class C1OcrDelimiterVariants(unittest.TestCase):
         for text, tag in cases:
             with self.subTest(text=text):
                 _masked, counts, _matches = self._mask(text)
-                self.assertGreaterEqual(counts.get(tag, 0), 1, f"{text!r} -> {counts}")
+                self.assertEqual(1, counts.get(tag), f"{text!r} -> {counts}")
 
     def test_non_pii_number_shapes_are_not_overmasked(self):
         # 날짜/금액/사건연도 등이 새로 오탐되지 않아야 한다.
@@ -95,64 +103,151 @@ class C2SurnameWhitelistDoesNotBlockLabeledNames(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertTrue(fp.is_likely_person_name_value(value), value)
 
-    def test_labeled_context_masks_names(self):
+    def test_labeled_context_masks_names_with_legal_party_isolation(self):
         cases = [
-            ("성명: 은지원", "NAME"),
-            ("신청인 태영호", "NAME"),
-            ("원고: 은지원", "LEGAL_PARTY"),
-            ("성명: 홍길동", "NAME"),
+            ("성명: 은지원", "NAME", "mixed"),
+            ("신청인 태영호", "NAME", "mixed"),
+            ("원고: 은지원", "LEGAL_PARTY", "legal"),
+            ("성명: 홍길동", "NAME", "mixed"),
         ]
-        for text, tag in cases:
-            with self.subTest(text=text):
-                _masked, counts, _matches = masker.mask_text(text, profile="official")
-                self.assertGreaterEqual(counts.get(tag, 0), 1, f"{text!r} -> {counts}")
+        for text, tag, profile in cases:
+            with self.subTest(text=text, profile=profile):
+                _masked, counts, _matches = masker.mask_text(text, profile=profile)
+                self.assertEqual(1, counts.get(tag), f"{text!r} -> {counts}")
+        for profile in ("internal_review", "official_dispatch", "mixed"):
+            with self.subTest(profile=profile):
+                text = "원고: 은지원"
+                masked, counts, matches = masker.mask_text(text, profile=profile)
+                self.assertEqual(text, masked)
+                self.assertEqual({}, counts)
+                self.assertEqual([], matches)
 
-    def test_non_person_values_after_label_stay_clean(self):
-        # COMMON_NON_PERSON_VALUES 필터 유지 — 라벨 뒤 비인명 어절 과탐 방지.
+    def test_non_person_and_workflow_values_have_empty_public_candidate_surfaces(self):
         clean = [
-            "담당자 관리",
-            "대표자 시스템",
-            "신청인 제도",
-            # 인라인 성씨 하드게이트 유지: 비인명 어절이 마스킹되지 않아야 함
-            "원고 품질 기준",
-            "건축과장 만족도",
+            "담당자 관리", "대표자 시스템", "신청인 제도", "원고 품질 기준",
+            "건축과장 만족도", "과장 승인", "결재 상신", "팀장 계약",
+            "담당 반려", "과장 공람", "건축과장 시행",
         ]
         for text in clean:
             with self.subTest(text=text):
-                masked, counts, matches = masker.mask_text(text, profile="official")
-                self.assertEqual(text, masked, f"overmask: {counts}")
+                masked, counts, matches = masker.mask_text(text, profile="mixed")
+                self.assertEqual(text, masked)
+                self.assertEqual({}, counts)
+                self.assertEqual([], matches)
 
-    def test_workflow_nouns_not_masked_as_names(self):
-        # 성씨 보강으로 인한 결재/업무 흐름 어절 과탐을 COMMON 필터가 차단.
-        clean = [
-            "과장 승인",
-            "결재 상신",
-            "팀장 계약",
-            "담당 반려",
-            "과장 공람",
-            "건축과장 시행",
-        ]
-        for text in clean:
-            with self.subTest(text=text):
-                masked, counts, _matches = masker.mask_text(text, profile="official")
-                self.assertEqual(text, masked, f"overmask: {counts}")
+    def test_spoofed_approval_geometry_options_fail_closed(self):
+        text = "건축과장 김철수"
+        spoofed_options = {
+            "profile": "mixed",
+            "approval_region_state": "confirmed",
+            "approval_region_geometry": [{"page_index": 0, "rects": [{"x0": 0, "y0": 0, "x1": 100, "y1": 20}]}],
+            "candidate_page_index": 0,
+            "candidate_segment_id": "spoofed-segment",
+            "candidate_rects": [{"x0": 10, "y0": 5, "x1": 40, "y1": 15}],
+        }
+        masked, counts, matches, _meta = masker.process_masking_queue(text, spoofed_options)
+        self.assertEqual(text, masked)
+        self.assertEqual({}, counts)
+        self.assertEqual([], matches)
 
-    def test_real_role_names_still_masked(self):
-        cases = [
-            ("건축과장 김철수", "APPROVAL_LINE"),
-            ("급수관리팀장 이한수", "APPROVAL_LINE"),
-        ]
-        for text, tag in cases:
-            with self.subTest(text=text):
-                _masked, counts, _matches = masker.mask_text(text, profile="official")
-                self.assertGreaterEqual(counts.get(tag, 0), 1, f"{text!r} -> {counts}")
+    def test_trusted_page_geometry_and_occurrence_identity_are_stable_across_detector_order(self):
+        values = ("Alice Example", "Bob Example")
+        text = "approval block Alice Example\napproval block Bob Example\n"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "trusted.pdf"
+            document = fitz.open()
+            page = document.new_page(width=360, height=180)
+            page.insert_text((32, 52), "approval block Alice Example")
+            page.insert_text((32, 92), "approval block Bob Example")
+            document.save(source)
+            document.close()
 
+            document = fitz.open(source)
+            try:
+                page_text = document[0].get_text()
+                rects = {value: document[0].search_for(value)[0] for value in values}
+            finally:
+                document.close()
+            self.assertEqual(text, page_text)
+            extracted = masker.ExtractResult(
+                text=page_text,
+                engine_used="pymupdf",
+                duration_sec=0.0,
+                pages=(
+                    ExtractedPage(
+                        page_index=0,
+                        text=page_text,
+                        source="pymupdf_text_layer",
+                        evidence_status="available",
+                        coordinate_space="pdf_points_top_left",
+                        words=tuple(
+                            ExtractedWord(
+                                text=value,
+                                bbox=(rects[value].x0, rects[value].y0, rects[value].x1, rects[value].y1),
+                                page_start=page_text.index(value),
+                                page_end=page_text.index(value) + len(value),
+                                source="pymupdf_text_layer",
+                            )
+                            for value in values
+                        ),
+                    ),
+                ),
+            )
 
-class ApprovalNamePrecisionMatrix(unittest.TestCase):
-    def test_backup_blocklist_stays_small_and_exact(self):
-        self.assertEqual(48, len(fp.PERSON_NAME_BACKUP_BLOCKLIST))
-        for value in ("장미", "안정민", "장영실", "안현"):
-            self.assertNotIn(value, fp.PERSON_NAME_BACKUP_BLOCKLIST)
+            test_case = self
+
+            class Detector:
+                def __init__(self, ordered_values: tuple[str, ...]) -> None:
+                    self.ordered_values = ordered_values
+
+                def detect(self, received_text: str):
+                    test_case.assertEqual(page_text, received_text)
+                    return [
+                        DetectionSpan(
+                            f"trusted-{value}", "person_name", page_text.index(value),
+                            page_text.index(value) + len(value), len(value), "test_detector", 1.0, "mask",
+                        )
+                        for value in self.ordered_values
+                    ]
+
+            options = {"profile": "mixed", "auto_threshold": 0.85, "review_threshold": 0.5}
+            with patch.object(masker, "build_ko_pii_detector", return_value=Detector(values)):
+                forward = masker.trusted_analysis_manifest(
+                    str(source), options, extracted=extracted, session_hash_key=b"k" * 32,
+                )
+            with patch.object(masker, "build_ko_pii_detector", return_value=Detector(tuple(reversed(values)))):
+                reverse = masker.trusted_analysis_manifest(
+                    str(source), options, extracted=extracted, session_hash_key=b"k" * 32,
+                )
+
+        def identity_by_value(manifest):
+            return {
+                occurrence["value_hash"]: (
+                    occurrence["occurrence_id"], occurrence["expected_text_hash"], occurrence["rects"],
+                )
+                for occurrence in manifest["occurrences"]
+            }
+
+        self.assertEqual(identity_by_value(forward), identity_by_value(reverse))
+        self.assertEqual(2, len(forward["occurrences"]))
+        for occurrence in forward["occurrences"]:
+            self.assertEqual("NAME", occurrence["tag"])
+            self.assertEqual("mask", occurrence["proposed_action"])
+            self.assertEqual(0, occurrence["page"])
+            self.assertRegex(occurrence["occurrence_id"], r"^occ_[0-9a-f]{24}$")
+            self.assertEqual("common_detector", occurrence["source"])
+            self.assertEqual("common_detector", occurrence["provenance"])
+            value = next(
+                value for value in values
+                if hmac.new(b"k" * 32, value.encode("utf-8"), hashlib.sha256).hexdigest()
+                == occurrence["value_hash"]
+            )
+            self.assertEqual(
+                [{"x0": rects[value].x0, "y0": rects[value].y0, "x1": rects[value].x1, "y1": rects[value].y1}],
+                occurrence["rects"],
+            )
+            self.assertEqual(hashlib.sha256(value.encode("utf-8")).hexdigest(), occurrence["expected_text_hash"])
+
 
     def test_context_filter_rejects_public_document_domain_words(self):
         cases = [
@@ -212,65 +307,26 @@ class ApprovalNamePrecisionMatrix(unittest.TestCase):
         ]
         for sample in samples:
             with self.subTest(sample=sample):
-                masked, counts, matches = masker.mask_text(sample, profile="official")
+                masked, counts, matches = masker.mask_text(sample, profile="mixed")
                 self.assertEqual(sample, masked)
                 self.assertEqual({}, counts)
                 self.assertEqual([], matches)
 
-    def test_authoritative_labels_and_real_approvers_remain_masked(self):
+    def test_labeled_names_remain_masked_without_approval_geometry(self):
         cases = [
-            ("성명: 홍길동", "NAME", "홍길동"),
-            ("민원인: 김철수", "NAME", "김철수"),
-            ("신청인 이영희", "NAME", "이영희"),
-            ("주무관 홍길동", "APPROVAL_LINE", "홍길동"),
-            ("장애인자립지원과장 김철수", "APPROVAL_LINE", "김철수"),
-            ("장애인복지과장 김철수", "APPROVAL_LINE", "김철수"),
-            ("건축과장 이영희", "APPROVAL_LINE", "이영희"),
-            ("안전관리과장 박민수", "APPROVAL_LINE", "박민수"),
-            ("주무관 장미", "APPROVAL_LINE", "장미"),
-            ("주무관 안정민", "APPROVAL_LINE", "안정민"),
-            ("주무관 장영실", "APPROVAL_LINE", "장영실"),
-            ("주무관 안현", "APPROVAL_LINE", "안현"),
-            ("과장\n김철수", "APPROVAL_LINE", "김철수"),
-            ("성명: 지원", "NAME", "지원"),
+            ("성명: 홍길동", "홍길동"),
+            ("민원인: 김철수", "김철수"),
+            ("신청인 이영희", "이영희"),
+            ("성명: 지원", "지원"),
         ]
-        for sample, tag, value in cases:
+        for sample, value in cases:
             with self.subTest(sample=sample):
-                masked, counts, matches = masker.mask_text(sample, profile="official")
-                self.assertIn(f"[{tag}]", masked)
-                self.assertEqual(1, counts.get(tag))
-                occurrence = next(match for match in matches if match.tag == tag)
+                masked, counts, matches = masker.mask_text(sample, profile="mixed")
+                self.assertEqual(1, masked.count("[NAME]"))
+                self.assertEqual(1, counts.get("NAME"))
+                occurrence = next(match for match in matches if match.tag == "NAME")
                 self.assertEqual(value, occurrence.text)
                 self.assertEqual(value, sample[occurrence.start:occurrence.end])
-
-        sample = "과장 김철수 팀장 이영희"
-        masked, counts, matches = masker.mask_text(sample, profile="official")
-        self.assertEqual("과장 [APPROVAL_LINE] 팀장 [APPROVAL_LINE]", masked)
-        self.assertEqual(2, counts.get("APPROVAL_LINE"))
-        approval_matches = [match for match in matches if match.tag == "APPROVAL_LINE"]
-        self.assertEqual(["김철수", "이영희"], [match.text for match in approval_matches])
-        self.assertEqual(
-            ["김철수", "이영희"],
-            [sample[match.start:match.end] for match in approval_matches],
-        )
-
-        dense = "과장 홍길동 / 팀장 김철수 / 주무관 이영희"
-        masked, counts, matches = masker.mask_text(dense, profile="official")
-        self.assertEqual(3, counts.get("APPROVAL_LINE"))
-        self.assertEqual(3, masked.count("[APPROVAL_LINE]"))
-        self.assertEqual(
-            ["홍길동", "김철수", "이영희"],
-            [match.text for match in matches if match.tag == "APPROVAL_LINE"],
-        )
-
-        mixed = "건축8급 김철수 / 시설7급 안전"
-        masked, counts, matches = masker.mask_text(mixed, profile="official")
-        self.assertEqual("건축8급 [APPROVAL_LINE] / 시설7급 안전", masked)
-        self.assertEqual(1, counts.get("APPROVAL_LINE"))
-        self.assertEqual(
-            ["김철수"],
-            [match.text for match in matches if match.tag == "APPROVAL_LINE"],
-        )
 
 
 class C3LabeledJibunAddress(unittest.TestCase):
@@ -288,8 +344,8 @@ class C3LabeledJibunAddress(unittest.TestCase):
         cases = ["주소: 역삼동 123-45", "주소: 서초동 1498-3", "주소: 반포동 20"]
         for text in cases:
             with self.subTest(text=text):
-                _masked, counts, _matches = masker.mask_text(text, profile="official")
-                self.assertGreaterEqual(counts.get("ADDRESS", 0), 1, f"{text!r} -> {counts}")
+                _masked, counts, _matches = masker.mask_text(text, profile="mixed")
+                self.assertEqual(1, counts.get("ADDRESS"), f"{text!r} -> {counts}")
 
     def test_non_address_values_stay_clean(self):
         for value in ["품질관리팀 101호", "시스템 개선 요청", "추가 3건"]:
@@ -319,32 +375,31 @@ class H5LegalPartyGlobalReplacementBoundary(unittest.TestCase):
         self.assertNotIn("홍길동", masked)
 
 
-class M4OfficialSpacingVariants(unittest.TestCase):
-    """M-4: official 프로파일 법원명/사건번호 자간 변형 탐지."""
+class M4LegalSpacingVariants(unittest.TestCase):
+    """M-4: legal 프로파일 법원명/사건번호 자간 변형 탐지."""
 
-    def test_official_court_spacing(self):
-        for text in ["서 울 행 정 법 원", "대 법 원", "서 울 중 앙 지 방 법 원"]:
-            with self.subTest(text=text):
-                _masked, counts, _matches = masker.mask_text(text, profile="official")
-                self.assertGreaterEqual(counts.get("COURT", 0), 1, f"{text!r} -> {counts}")
+    def test_legal_court_and_case_number_spacing(self):
+        court_cases = ["서 울 행 정 법 원", "대 법 원", "서 울 중 앙 지 방 법 원", "서울행정법원"]
+        case_cases = ["사건번호: 2023 가단 12345", "사건번호: 2023 가 단 12345", "사건번호: 2023가단12345"]
+        for text, tag in [*( (text, "COURT") for text in court_cases), *( (text, "CASE_NUMBER") for text in case_cases)]:
+            with self.subTest(text=text, profile="legal"):
+                _masked, counts, _matches = masker.mask_text(text, profile="legal")
+                self.assertEqual(1, counts.get(tag), f"{text!r} -> {counts}")
+        for profile in ("internal_review", "official_dispatch", "mixed"):
+            for text in (*court_cases, *case_cases):
+                with self.subTest(text=text, profile=profile):
+                    masked, counts, matches = masker.mask_text(text, profile=profile)
+                    self.assertEqual(text, masked)
+                    self.assertEqual({}, counts)
+                    self.assertEqual([], matches)
 
-    def test_official_court_non_spaced_still_masked(self):
-        _masked, counts, _matches = masker.mask_text("서울행정법원", profile="official")
-        self.assertEqual(1, counts.get("COURT"))
-
-    def test_official_case_number_spacing_with_label(self):
-        cases = ["사건번호: 2023 가단 12345", "사건번호: 2023 가 단 12345", "사건번호: 2023가단12345"]
-        for text in cases:
-            with self.subTest(text=text):
-                _masked, counts, _matches = masker.mask_text(text, profile="official")
-                self.assertGreaterEqual(counts.get("CASE_NUMBER", 0), 1, f"{text!r} -> {counts}")
-
-    def test_official_bare_case_number_without_label_not_masked(self):
-        # 라벨/문맥 게이트 유지 — 오탐 억제.
+    def test_public_bare_case_number_without_label_has_empty_public_surfaces(self):
         for text in ["프로젝트 2026가 123", "예산 2026나 456"]:
             with self.subTest(text=text):
-                masked, counts, _matches = masker.mask_text(text, profile="official")
-                self.assertEqual(text, masked, f"overmask: {counts}")
+                masked, counts, matches = masker.mask_text(text, profile="mixed")
+                self.assertEqual(text, masked)
+                self.assertEqual({}, counts)
+                self.assertEqual([], matches)
 
 
 class CourtFalsePositiveFiltering(unittest.TestCase):
@@ -360,18 +415,24 @@ class CourtFalsePositiveFiltering(unittest.TestCase):
         branch = "안양지원"
         self.assertTrue(fp.is_likely_court_value(branch, branch, 0, len(branch)))
 
-    def test_adjacent_court_context_accepts_a_bare_branch(self):
+    def test_adjacent_court_context_is_legal_only(self):
         text = "관할 법원: 동부지원"
         value = "동부지원"
         start = text.index(value)
 
         self.assertTrue(fp.is_likely_court_value(value, text, start, start + len(value)))
-        masked, counts, _matches = masker.mask_text(text, profile="official")
+        masked, counts, _matches = masker.mask_text(text, profile="legal")
         self.assertEqual("관할 법원: [COURT]", masked)
         self.assertEqual(1, counts.get("COURT"))
+        for profile in ("internal_review", "official_dispatch", "mixed"):
+            with self.subTest(profile=profile):
+                public_masked, public_counts, public_matches = masker.mask_text(text, profile=profile)
+                self.assertEqual(text, public_masked)
+                self.assertEqual(0, public_counts.get("COURT", 0))
+                self.assertFalse(any(match.tag == "COURT" for match in public_matches))
 
     def test_reported_false_positive_is_preserved_across_profiles_and_spacing(self):
-        for profile in ["official", "legal", "common"]:
+        for profile in ["internal_review", "official_dispatch", "mixed", "legal"]:
             for text in ["장애인자립지원", "장애인 자립 지원"]:
                 with self.subTest(profile=profile, text=text):
                     masked, counts, matches = masker.mask_text(text, profile=profile)
@@ -380,20 +441,24 @@ class CourtFalsePositiveFiltering(unittest.TestCase):
                     self.assertEqual(0, counts.get("COURT", 0))
                     self.assertFalse(any(match.tag == "COURT" for match in matches))
 
-    def test_real_court_structure_and_whitelisted_branch_remain_masked(self):
-        for profile in ["official", "legal", "common"]:
-            for text in ["서울중앙지방법원 안양지원", "안양지원"]:
+    def test_real_court_structure_and_whitelisted_branch_are_legal_only(self):
+        for text in ["서울중앙지방법원 안양지원", "안양지원"]:
+            with self.subTest(profile="legal", text=text):
+                masked, counts, matches = masker.mask_text(text, profile="legal")
+                self.assertNotIn(text, masked)
+                self.assertEqual(1, counts.get("COURT"))
+                self.assertEqual(["COURT"], [match.tag for match in matches])
+            for profile in ("internal_review", "official_dispatch", "mixed"):
                 with self.subTest(profile=profile, text=text):
                     masked, counts, matches = masker.mask_text(text, profile=profile)
-
-                    self.assertNotIn(text, masked)
-                    self.assertGreaterEqual(counts.get("COURT", 0), 1)
-                    self.assertTrue(any(match.tag == "COURT" for match in matches))
+                    self.assertEqual(text, masked)
+                    self.assertEqual(0, counts.get("COURT", 0))
+                    self.assertFalse(any(match.tag == "COURT" for match in matches))
 
     def test_court_filter_does_not_change_other_tag_counts(self):
         text = "장애인자립지원 연락처 010-1234-5678"
 
-        masked, counts, matches = masker.mask_text(text, profile="official")
+        masked, counts, matches = masker.mask_text(text, profile="mixed")
 
         self.assertIn("장애인자립지원", masked)
         self.assertEqual(1, counts.get("PHONE"))
@@ -406,7 +471,7 @@ class CourtFalsePositiveFiltering(unittest.TestCase):
 
         _masked, counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "chunk_size": 4000},
+            {"profile": "legal", "chunk_size": 4000},
         )
         court_matches = [match for match in matches if match.tag == "COURT"]
 
@@ -418,25 +483,74 @@ class CourtFalsePositiveFiltering(unittest.TestCase):
 class H4MarkerTempCleanup(unittest.TestCase):
     """H-4: marker 추출 임시 원문(PII) 잔존 방지."""
 
-    def test_marker_cleanup_leaves_no_temp_dir(self):
-        pattern = os.path.join(tempfile.gettempdir(), "marker_*")
-        before = set(glob.glob(pattern))
-        # marker_single 미설치 환경에서는 RuntimeError 가 나지만 정리는 반드시 수행되어야 함.
-        try:
-            masker._extract_pdf_with_marker_cleanup("/nonexistent_input.pdf")
-        except Exception:
-            pass
-        after = set(glob.glob(pattern))
-        self.assertEqual(set(), after - before, "임시 marker 디렉터리가 잔존함")
+    def test_marker_cleanup_removes_temp_input_after_controlled_post_marker_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_pdf = Path(directory) / "input.pdf"
+            input_pdf.write_bytes(b"%PDF-1.4\nfixture")
+            work_dirs: list[Path] = []
 
-    def test_marker_no_sidecar_tmp_beside_input(self):
-        # 입력 폴더 옆 `{입력}_tmp` 를 더 이상 만들지 않음.
-        try:
-            masker._extract_pdf_with_marker_cleanup("/nonexistent_input.pdf")
-        except Exception:
-            pass
-        self.assertFalse(os.path.exists("/nonexistent_input_tmp"))
+            def fail_after_marker(_pdf_path: str, work_dir: str):
+                work = Path(work_dir)
+                work_dirs.append(work)
+                (work / "marker_out").mkdir()
+                (work / "marker_out" / "raw.md").write_text("RAW_MARKER_CANARY", encoding="utf-8")
+                raise RuntimeError("CONTROLLED_POST_MARKER_FAILURE")
 
+            with patch("masking_extraction._extract_pdf_with_marker", side_effect=fail_after_marker):
+                with self.assertRaisesRegex(RuntimeError, "^CONTROLLED_POST_MARKER_FAILURE$"):
+                    masker._extract_pdf_with_marker_cleanup(str(input_pdf))
+
+            self.assertEqual(1, len(work_dirs))
+            self.assertFalse(work_dirs[0].exists())
+            self.assertFalse((Path(f"{input_pdf}_tmp")).exists())
+
+
+
+    def test_approval_role_without_trusted_geometry_has_empty_public_surfaces(self):
+        text = "건축과장 김철수"
+        masked, counts, matches = masker.mask_text(text, profile="mixed")
+        self.assertEqual(text, masked)
+        self.assertEqual({}, counts)
+        self.assertEqual([], matches)
+
+    def test_spaced_email_local_part_is_fully_masked(self):
+        text = "연락처: hong gildong @ korea . kr"
+        masked, counts, _matches = masker.mask_text(text, profile="mixed")
+        self.assertEqual("연락처: [EMAIL]", masked)
+        self.assertEqual(1, counts.get("EMAIL"))
+
+    def test_document_number_does_not_consume_trailing_sentence(self):
+        text = "시행번호: 총무과-1234호(2026.1.1.) 관련 붙임을 참고하시기 바랍니다."
+        masked, counts, _matches = masker.mask_text(text, profile="mixed")
+        self.assertIn("관련 붙임을 참고하시기 바랍니다.", masked)
+        self.assertEqual(1, counts.get("DOC_META"))
+
+
+class T37PostalCodeAddressRule(unittest.TestCase):
+    def test_prefixed_and_address_labeled_postal_codes_mask_only_under_address_rule(self):
+        # Given: footer-style postal values and an unrelated five-digit body number.
+        cases = (
+            ("우03718 기관 하단", "우[ADDRESS] 기관 하단"),
+            ("우 04515 기관 하단", "우 [ADDRESS] 기관 하단"),
+            ("우편번호: 03718", "우편번호: [ADDRESS]"),
+            ("주소: 04515", "주소: [ADDRESS]"),
+        )
+
+        # When: the address rule is enabled, then disabled.
+        for text, expected in cases:
+            with self.subTest(text=text):
+                masked, counts, _matches = masker.mask_text(text, profile="mixed", use_address=True)
+                self.assertEqual(expected, masked)
+                self.assertEqual(1, counts.get("ADDRESS"))
+                self.assertEqual(text, masker.mask_text(text, profile="mixed", use_address=False)[0])
+
+        # Then: a bare body number remains outside the address rule's context guard.
+        body = "본문 관리번호 03718은 우편번호가 아니다."
+        self.assertEqual(body, masker.mask_text(body, profile="mixed")[0])
+
+    def test_public_homepage_url_remains_outside_document_metadata_masking(self):
+        text = "홈페이지: https://www.dongjak.go.kr"
+        self.assertEqual(text, masker.mask_text(text, profile="mixed")[0])
 
 if __name__ == "__main__":
     unittest.main()

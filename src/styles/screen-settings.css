@@ -23,7 +23,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  width: min(100%, 880px);
+  width: min(100%, 1020px);
   min-width: 0;
   margin: 0 auto;
   padding: 40px 40px 24px;
@@ -90,6 +90,11 @@
   letter-spacing: -0.025rem;
 }
 
+.dm-settings-topbar__helper {
+  color: var(--dm-text-secondary);
+  font: 400 var(--dm-fs-caption) / 1.45 var(--dm-font);
+}
+
 .dm-settings-topbar__actions {
   display: flex;
   flex-wrap: wrap;
@@ -101,7 +106,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden auto;
-  padding: 0 40px 40px;
+  padding: 0 0 40px;
 }
 
 .dm-settings-footer {
@@ -142,68 +147,23 @@
 }
 
 .dm-settings-card--rules {
-  grid-row: auto;
-  order: 4;
-}
-
-.dm-settings-card--scope {
-  grid-column: auto;
-  order: 10;
-}
-
-.dm-settings-card--safety {
-  order: 9;
-}
-
-.dm-settings-card--document,
-.dm-settings-card--document > .dm-card__body {
-  display: contents;
-}
-
-.dm-settings-card--document > .dm-card__header {
-  display: none;
-}
-
-.dm-settings-card--document > .dm-card__body > .dm-field {
-  padding: 24px;
-  border: 1px solid var(--dm-border);
-  border-radius: var(--dm-radius-lg);
-  background: var(--dm-surface);
-  box-shadow: var(--dm-shadow-sm);
-}
-
-.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(1) {
-  order: 5;
-}
-
-.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(2) {
-  order: 6;
-}
-
-.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(3) {
   order: 1;
 }
 
-.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(4) {
-  order: 2;
+.dm-settings-card--scope {
+  order: 5;
 }
 
-.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(5) {
+.dm-settings-card--safety {
   order: 3;
 }
 
-.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(6) {
-  order: 7;
+.dm-settings-card--document {
+  order: 2;
 }
 
-.dm-settings-card--document > .dm-card__body > .dm-field:nth-child(7) {
-  order: 8;
-}
-
-.dm-settings-card--document > .dm-card__body > .dm-choice-field > label {
-  font-size: 20px;
-  line-height: 1.3;
-  letter-spacing: -0.0125rem;
+.dm-settings-card--advanced {
+  order: 4;
 }
 
 .dm-settings-grid--app {
@@ -235,7 +195,36 @@
  * -------------------------------------------------------------------------- */
 .dm-settings-fields {
   display: grid;
-  gap: 24px;
+  gap: 12px;
+}
+
+.dm-setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
+  align-items: center;
+  gap: 20px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--dm-border);
+}
+
+.dm-setting-row__copy {
+  display: grid;
+  gap: 4px;
+}
+
+.dm-setting-row__copy > label {
+  color: var(--dm-text);
+  font: 600 15px / 1.4 var(--dm-font);
+}
+
+.dm-setting-row__copy > p {
+  margin: 0;
+  color: var(--dm-text-secondary);
+  font: 400 var(--dm-fs-caption) / 1.45 var(--dm-font);
+}
+
+.dm-setting-row--segmented {
+  align-items: start;
 }
 
 .dm-field-hint {
@@ -261,7 +250,7 @@
 }
 
 .dm-choice-field {
-  gap: 12px;
+  gap: 10px;
 }
 .dm-choice-control {
   min-width: 0;
@@ -270,24 +259,24 @@
 .dm-choice-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  gap: 8px;
 }
 
 .dm-choice-grid--four {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .dm-choice-card {
   position: relative;
   display: grid;
-  align-content: start;
-  gap: 12px;
+  align-content: center;
+  gap: 6px;
   min-width: 0;
-  min-height: 160px;
-  padding: 16px;
+  min-height: 92px;
+  padding: 12px 14px;
   border: 1px solid var(--dm-border);
-  border-radius: var(--dm-radius-lg);
-  background: var(--dm-surface);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface-sunken);
   color: var(--dm-text);
   font-family: var(--dm-font);
   text-align: left;
@@ -298,10 +287,10 @@
 .dm-choice-card::after {
   content: "";
   position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 16px;
-  height: 16px;
+  top: 12px;
+  right: 12px;
+  width: 14px;
+  height: 14px;
   border: 1px solid var(--dm-border-strong);
   border-radius: 50%;
   background: var(--dm-surface);
@@ -309,7 +298,7 @@
 
 .dm-choice-card:hover {
   border-color: var(--dm-border-strong);
-  background: var(--dm-surface-sunken);
+  background: var(--dm-surface);
 }
 
 .dm-choice-card:focus-visible {
@@ -345,14 +334,14 @@
 }
 
 .dm-choice-card__title {
-  padding-right: 24px;
+  padding-right: 20px;
   color: var(--dm-text);
-  font: 600 15px / 1.35 var(--dm-font);
+  font: 600 14px / 1.35 var(--dm-font);
 }
 
 .dm-choice-card__description {
   color: var(--dm-text-secondary);
-  font: 400 14px / 1.5 var(--dm-font);
+  font: 400 12px / 1.45 var(--dm-font);
 }
 
 .dm-choice-preview {
@@ -360,10 +349,10 @@
   gap: 3px;
   align-self: end;
   margin-top: auto;
-  padding: 12px;
+  padding: 8px 10px;
   border: 1px solid var(--dm-border);
   border-radius: var(--dm-radius-sm);
-  background: var(--dm-bg);
+  background: var(--dm-surface);
   color: var(--dm-text-secondary);
   font: 500 12px / 1.5 var(--dm-font-mono);
 }
@@ -394,16 +383,17 @@
 .dm-rule-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 
 .dm-rule-card {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
   min-width: 0;
-  min-height: 44px;
-  padding: 10px 12px;
+  min-height: 40px;
+  padding: 8px 10px;
   border: 1px solid var(--dm-border);
   border-radius: var(--dm-radius);
   background: var(--dm-surface);
@@ -417,11 +407,11 @@
 }
 
 .dm-rule-card input[type="checkbox"] {
-  flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  margin: 0;
-  accent-color: var(--dm-accent);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .dm-rule-card__label {
@@ -431,6 +421,64 @@
   font: 500 15px / 1.35 var(--dm-font);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dm-rule-toggle,
+.dm-inline-segment {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-sm);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-rule-toggle button,
+.dm-inline-segment .dm-choice-card {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-xs) / 1 var(--dm-font);
+  cursor: pointer;
+}
+
+.dm-rule-toggle button + button,
+.dm-inline-segment .dm-choice-card + .dm-choice-card {
+  border-left: 1px solid var(--dm-border);
+}
+
+.dm-rule-toggle button[aria-pressed="true"],
+.dm-inline-segment .dm-choice-card[aria-pressed="true"] {
+  background: var(--dm-accent);
+  color: var(--dm-on-accent);
+}
+
+.dm-rule-toggle button:focus-visible,
+.dm-inline-segment .dm-choice-card:focus-visible {
+  position: relative;
+  outline: none;
+  box-shadow: var(--dm-focus-ring);
+}
+
+.dm-inline-segment {
+  flex-wrap: wrap;
+}
+
+.dm-inline-segment .dm-choice-card::after {
+  display: none;
+}
+
+.dm-inline-segment .dm-choice-card {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+}
+
+.dm-rule-card.is-disabled .dm-rule-toggle {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 /* 선택됨(기본 다수): 액센트 남용 금지(REDESIGN §2 화면당 1~2곳). 체크박스의 accent
@@ -780,6 +828,11 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .dm-setting-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
   .dm-settings-card .dm-card__header {
     padding: 20px 20px 8px;
   }
@@ -796,4 +849,114 @@
     align-items: flex-start;
   }
 
+}
+
+.dm-settings-layout {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: 32px;
+  width: min(100%, 1020px);
+  margin: 0 auto;
+}
+
+.dm-settings-subnav {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.dm-settings-subnav__item {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--dm-radius);
+  background: transparent;
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-caption) / 1 var(--dm-font);
+  text-decoration: none;
+}
+
+.dm-settings-subnav__item--disabled {
+  color: var(--dm-text-muted);
+}
+
+.dm-settings-subnav__item.is-active {
+  background: var(--dm-surface-sunken);
+  color: var(--dm-accent);
+}
+
+.dm-settings-anchor {
+  position: relative;
+  top: -24px;
+  display: block;
+}
+
+.dm-settings-grid--masking,
+.dm-settings-grid--app {
+  width: min(100%, 800px);
+  max-width: none;
+  margin: 0;
+}
+
+.dm-settings-grid--masking .dm-card,
+.dm-settings-grid--app .dm-card {
+  box-shadow: none;
+}
+
+.dm-settings-card--document > .dm-card__body {
+  display: grid;
+  gap: 10px;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field {
+  padding: 12px 0;
+  border-top: 1px solid var(--dm-border);
+  box-shadow: none;
+}
+
+.dm-settings-card--document > .dm-card__body > .dm-field:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.dm-settings-screen .dm-field {
+  gap: 6px;
+}
+
+.dm-settings-screen .dm-field > label,
+.dm-settings-screen .dm-field__label {
+  color: var(--dm-text);
+}
+
+.dm-settings-screen .dm-field-hint {
+  color: var(--dm-text-secondary);
+}
+
+.dm-settings-card .dm-card__header {
+  padding-bottom: 12px;
+}
+
+.dm-settings-card .dm-card__body {
+  padding-top: 0;
+}
+
+.dm-settings-footer {
+  padding-inline: max(24px, calc((100% - 1032px) / 2));
+}
+
+@media (max-width: 900px) {
+  .dm-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+
+  .dm-settings-subnav {
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    overflow: auto hidden;
+    padding-bottom: 4px;
+  }
 }

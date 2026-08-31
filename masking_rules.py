@@ -21,7 +21,7 @@ from typing import Any, Concatenate, ParamSpec, TypeVar
 
 from masking_context import DocumentContext, find_masking_context
 from privacy_false_positive import has_masked_token
-from privacy_spans import source_for_tag
+from privacy_spans import action_for_tag, source_for_tag
 from pdf_redaction_rendering import (
     MASK_TOKEN_LABELS,
     display_token,
@@ -85,9 +85,22 @@ def _tracked_sub(
     edits: list[tuple[int, int, int]] = []
 
     def replace_and_record(match: re.Match[str]) -> str:
+        original = match.group(0)
         value = replacement(match)
-        if value != match.group(0):
-            edits.append((base_offset + match.start(), base_offset + match.end(), len(value)))
+        if value != original:
+            prefix = 0
+            prefix_limit = min(len(original), len(value))
+            while prefix < prefix_limit and original[prefix] == value[prefix]:
+                prefix += 1
+            suffix = 0
+            suffix_limit = min(len(original) - prefix, len(value) - prefix)
+            while suffix < suffix_limit and original[-(suffix + 1)] == value[-(suffix + 1)]:
+                suffix += 1
+            edits.append((
+                base_offset + match.start() + prefix,
+                base_offset + match.end() - suffix,
+                len(value) - prefix - suffix,
+            ))
         return value
 
     result = pattern.sub(replace_and_record, text)
@@ -173,6 +186,10 @@ NAME_CONTEXT_PAT = re.compile(
 ADDRESS_CONTEXT_PAT = re.compile(
     r"(?P<label>\b주소\b\s*[:：]\s*)(?P<addr>[^\n,;]+)"
 )
+POSTAL_CODE_PREFIX_PAT = re.compile(r"(?P<label>\b우\s?)(?P<value>\d{5})(?!\d)")
+POSTAL_CODE_ADDRESS_LABEL_PAT = re.compile(
+    r"(?P<label>\b(?:우편\s*번호|우편번호|주소|소재지)\b\s*[:：]\s*)(?P<value>\d{5})(?!\d)"
+)
 
 SEOUL_GU_PAT = re.compile(
     r"(?:서울특별시|서울시|서울)\s*(?:종로구|중구|용산구|성동구|광진구|동대문구|중랑구|성북구|강북구|도봉구|노원구|은평구|서대문구|마포구|양천구|강서구|구로구|금천구|영등포구|동작구|관악구|서초구|강남구|송파구|강동구)"
@@ -187,7 +204,6 @@ SEOUL_GU_OFFICE_PAT = re.compile(
 PLACE_PATS = [
     SEOUL_GU_PAT,
     SEOUL_GU_ONLY_PAT,
-    SEOUL_GU_OFFICE_PAT,
     re.compile(r"(서울특별시|서울시|서울)\s*양천구"),
     re.compile(r"양천구"),
     re.compile(r"목\s*(?:[1-5]\s*)?동"),
@@ -217,9 +233,36 @@ LEGAL_PARTY_REP_INLINE_PAT = re.compile(
 COMPANY_LABEL_PAT = re.compile(
     r"(?P<label>\b(?:회사명|법인명|상호|업체명|기관명)\b(?:\s*[:：]\s*|\s+))(?P<value>[^\n]{2,80})"
 )
-COMPANY_INLINE_PAT = re.compile(
-    r"(?P<value>(?:주식회사|유한회사|합자회사|합명회사|의료법인|학교법인|사회복지법인|재단법인|사단법인)\s*[A-Za-z0-9가-힣&.,()\- ]{1,60}|[(（]주[)）]\s*[A-Za-z0-9가-힣&.,()\- ]{1,60})"
+COMPANY_NAME_PREFIXES = (
+    "주식회사", "유한회사", "합자회사", "합명회사", "의료법인",
+    "학교법인", "사회복지법인", "재단법인", "사단법인",
 )
+INSTITUTION_NAME_SUFFIXES = (
+    "행정복지센터", "동주민센터", "주민센터", "교육청", "시의회", "도의회",
+    "구의회", "시청", "군청", "구청", "도청", "보건소", "경찰서", "소방서",
+    "우체국", "공단", "공사", "재단", "진흥원", "연구원", "문화원", "복지관",
+    "의료원", "센터",
+)
+_COMPANY_NAME_TOKEN = r"[A-Za-z0-9가-힣&.,()\-]{1,30}"
+# 회사명 뒤의 본문을 통째로 먹지 않도록 법인 접두어 다음에는 한 토큰만
+# 허용한다. 기관명·부서명 후보의 본문 확장은 public_detection의 독립적인
+# 경계/문맥 판정에서만 수행한다.
+COMPANY_INLINE_PAT = re.compile(
+    rf"(?P<value>(?<![가-힣A-Za-z0-9])(?:{'|'.join(COMPANY_NAME_PREFIXES)}|[(（]주[)）])"
+    rf"\s*{_COMPANY_NAME_TOKEN}(?![가-힣A-Za-z0-9]))"
+)
+PUBLIC_INSTITUTION_INLINE_PAT = re.compile(
+    rf"(?P<value>(?<![가-힣A-Za-z0-9])(?:"
+    rf"(?:{'|'.join(COMPANY_NAME_PREFIXES)}|[(（]주[)）])\s*{_COMPANY_NAME_TOKEN}"
+    rf"|[가-힣A-Za-z0-9·&\-]{{2,24}}"
+    rf"(?:{'|'.join(INSTITUTION_NAME_SUFFIXES)})"
+    rf")(?:에서|에게|에|은|는|이|가|을|를|의|와|과|도|로|으로|만|까지|부터)?"
+    rf"(?![가-힣A-Za-z0-9]))"
+)
+PUBLIC_INSTITUTION_LABELS = frozenset({
+    "기관명", "법인명", "회사명", "상호", "업체명",
+    "소속기관", "발신기관", "수신기관", "담당부서", "부서명",
+})
 COURT_PAT = re.compile(
     r"(?<![가-힣])(?P<value>(?:대법원|특허법원|회생법원|행정법원|가정법원|고등법원|[가-힣]{2,12}(?:지방법원|고등법원|가정법원|행정법원|회생법원|지원))(?:\s*[가-힣0-9]{1,12}(?:지원|재판부))?)(?![가-힣])"
 )
@@ -285,13 +328,11 @@ DOC_META_PAT = re.compile(
     r"접수\s*번호|접수번호|접수|"
     r"결재\s*일자|결재일자|작성\s*일자|작성일자|시행\s*일자|시행일자|"
     r"공개\s*여부|공개여부|공개\s*구분|공개구분|공개\s*등급|공개등급|"
-    r"우편\s*번호|우편번호|우\.?|"
     r"전송|팩스|FAX|"
-    r""
-    r"홈페이지|누리집|웹사이트|"
     r"담당\s*부서|담당부서|부서|"
     r"담당자(?:\s*\(\s*직통(?:전화)?\s*\))?|담당자\s*직통(?:전화)?"
-    r")\s*(?:[:：]\s*|\s+))(?P<value>[^\n]{1,140})"
+    r")\s*(?:[:：]\s*|\s+))(?P<value>[^\n]{1,140}?)"
+    r"(?=\s+(?:관련|붙임|문서|사항|내용|참고|확인|바랍니다)\b|[\r\n]|$)"
 )
 # 본문 내 공문 참조표현 확장:
 # - "건축과-1526(2026.4.22.)호", "건축과-1526호"
@@ -309,9 +350,20 @@ SIHAENG_DOCNO_PAT = re.compile(
     r"(?:[가-힣A-Za-z0-9]{1,24}(?:과|팀|국|실|센터|사업소)?\s*[-–—]\s*\d{1,8}(?:-\d{1,8})?)"
     r"(?:\s*\(\s*(?:(?:19|20)\d{2}|['’]?\d{2})\.\s*\d{1,2}\.\s*\d{1,2}\.?\s*\))?)"
 )
+SIHAENG_DOCNO_VALUE_PAT = re.compile(
+    r"(?P<value>[가-힣A-Za-z0-9]{1,24}(?:과|팀|국|실|센터|사업소)?\s*"
+    r"[-–—]\s*\d{1,8}(?:-\d{1,8})?"
+    r"(?:\s*\(\s*(?:(?:19|20)\d{2}|['’]?\d{2})\.\s*\d{1,2}\.\s*\d{1,2}\.?\s*\))?"
+    r"\s*호?)"
+)
 
-# 이메일
-EMAIL_PAT = re.compile(r"(?P<value>[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+# 이메일. PDF 글자 단위 추출/OCR이 구분자 주위에 넣은 공백도 값의
+# 일부로 잡아 원래 위치 기반 레닥션이 모든 글자를 덮도록 한다.
+EMAIL_PAT = re.compile(
+    r"(?P<value>(?<![A-Za-z0-9])(?!(?:[Ee]-?mail|[Cc]ontact)\s)"
+    r"[A-Za-z0-9._%+-]+(?:\s+[A-Za-z0-9._%+-]+)?\s*@\s*"
+    r"[A-Za-z0-9-]+(?:\s*\.\s*[A-Za-z0-9-]+)+)"
+)
 
 # 공개등급 단독 표기 (예: 부분공개(5), 비공개(6), 공개)
 PUBLIC_LEVEL_PAT = re.compile(r"(?P<value>(?:부분공개\s*\(\s*\d{1,2}\s*\)|비공개\s*\(\s*\d{1,2}\s*\)|전부공개))")
@@ -434,9 +486,7 @@ DOC_META_OCR_PAT = re.compile(
     r"접수\s*번호|접수|"
     r"결재\s*일자|작성\s*일자|시행\s*일자|"
     r"공개\s*여부|공개\s*구분|공개\s*등급|"
-    r"우\.?|우편\s*번호|"
     r"전\s*송|팩\s*스|fax|FAX|"
-    r""
     r"담당\s*부서|담당자\s*직통(?:전화)?"
     r")\s*(?:[:：]\s*|\s+))(?P<value>[^\n]{1,140})"
 )
@@ -490,6 +540,18 @@ class RedactionMatch:
     end: int = field(default=-1, compare=False)
     occurrence_id: str = field(default="", compare=False)
     source: str = field(default="", compare=False)
+    sources: tuple[str, ...] = field(default=(), compare=False)
+    action: str = field(default="mask", compare=False)
+    document_sha256: str = field(default="", compare=False)
+    run_id: str = field(default="", compare=False)
+    page: int | None = field(default=None, compare=False)
+    analysis_revision: int | None = field(default=None, compare=False)
+    bbox: tuple[float, float, float, float] | None = field(default=None, compare=False)
+    rects: tuple[tuple[float, float, float, float], ...] = field(default=(), compare=False)
+    evidence: tuple[str, ...] = field(default=(), compare=False)
+    provenance: tuple[str, ...] = field(default=(), compare=False)
+    coordinate_space: str = field(default="text_offsets", compare=False)
+    confidence: float | None = field(default=None, compare=False)
 
 
 def _record_redaction_match(
@@ -498,6 +560,7 @@ def _record_redaction_match(
     value: str,
     start: int = -1,
     end: int = -1,
+    action: str | None = None,
 ) -> None:
     tracker = _SOURCE_OFFSET_TRACKER.get()
     if tracker is not None:
@@ -513,7 +576,8 @@ def _record_redaction_match(
             text=cleaned,
             start=start,
             end=end,
-            occurrence_id=f"occ_{len(matches) + 1:06d}",
+            occurrence_id="",
+            action=action or action_for_tag(tag),
             source=source_for_tag(tag),
         )
     )
@@ -523,7 +587,10 @@ def _display_token(tag: str, mode: str = "label_en") -> str:
     return display_token(tag, mode)
 
 
-REVIEW_REQUIRED_TAGS = {"ACCOUNT", "ADDRESS", "NAME", "LEGAL_PARTY", "WEAK_PLACE", "CASE_NUMBER", "DOC_META"}
+REVIEW_REQUIRED_TAGS = {
+    "ACCOUNT", "ADDRESS", "NAME", "LEGAL_PARTY", "PLACE", "WEAK_PLACE",
+    "CASE_NUMBER", "DOC_META", "INSTITUTION_VALUE",
+}
 
 
 def _review_tag(tag: str) -> str:
@@ -793,15 +860,18 @@ def _sub_simple(
     report: dict[str, int],
     matches: list[RedactionMatch] | None = None,
     value_group: str | None = None,
+    *,
+    action: str | None = None,
+    transform: bool = True,
 ) -> str:
     def repl(_m: re.Match[str]) -> str:
         if matches is not None:
             value = _m.group(value_group) if value_group else _m.group(0)
             start = _m.start(value_group) if value_group else _m.start()
             end = _m.end(value_group) if value_group else _m.end()
-            _record_redaction_match(matches, tag, value, start, end)
+            _record_redaction_match(matches, tag, value, start, end, action)
         _count_up(report, tag)
-        return f"[{tag}]"
+        return f"[{tag}]" if transform else _m.group(0)
 
     return _tracked_sub(pat, repl, text)
 

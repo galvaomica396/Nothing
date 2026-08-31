@@ -1,10 +1,11 @@
-// Final-save advisory flow QA (v4.2.0 정책 전환 회귀 가드).
+// Final-save advisory flow and failed-restore blocking QA.
 //
 // 확정된 정책(사용자 지시): **최종 저장은 항상 사용자 재량이다.** 검증(잔존 감지·
 // 품질 게이트·복원 재검증)은 내부에서 계속 수행·기록되지만 결과는 "권고"로만
 // 노출된다. 이전의 "하드 차단 3종 우회 불가" 정책은 폐기됐다. 마스킹본이 존재하면
-// 저장 버튼은 항상 활성이고, 경고 유무와 관계없이 저장 직전 확인 다이얼로그가 1회
-// 뜬다("무시하고 그대로 저장"/"취소하고 검토하기").
+// 저장 버튼은 활성이고, 경고 유무와 관계없이 저장 직전 확인 다이얼로그가 1회
+// 뜬다("무시하고 그대로 저장"/"취소하고 검토하기"). 단, 복원 재검증 실패는
+// 마스킹된 내용을 다시 노출할 수 있으므로 확인으로 우회할 수 없는 차단 상태다.
 //
 // 이 스크립트는 구성 가능한 Tauri IPC mock 위에서 전체 흐름(PDF → 기본 마스킹 →
 // 저장)을 구동하며, 리포트 조합별로 다음을 단언한다:
@@ -17,23 +18,69 @@
 //     경우에만 호출된다(경고 상태에서 미확인/취소 시 미호출).
 //   - 리포트 내부화: 저장이 성공해도 safe_report 는 사용자 폴더에 절대 복사되지 않는다.
 //
-// Usage: node scripts/qa_save_flow.mjs [--url http://localhost:1420/]
-
-import { spawn } from "node:child_process";
+// Public native evidence is captured directly from the packaged executable:
+//   node scripts/qa_save_flow.mjs --scenario public-document-all --native-app-path /absolute/path/to/release.app --receipt-nonce <nonce> --threshold-artifact thresholds.json --threshold-digest <sha256>
+//
+// --runtime-receipt-channel is optional and only receives a validated durable copy.
+// Browser IPC mocks remain advisory-only and cannot satisfy public scenarios.
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { unresolvedGeometryManifestForQa } from "./qa_tauri_mock.mjs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-
-const args = new Map();
-for (let index = 2; index < process.argv.length; index += 2) {
-  args.set(process.argv[index], process.argv[index + 1]);
+function parseCliArgs(argv) {
+  const allowed = new Set([
+    "--scenario",
+    "--native-app-path",
+    "--runtime-receipt-channel",
+    "--receipt-nonce",
+    "--threshold-artifact",
+    "--threshold-digest",
+    "--url",
+  ]);
+  const args = new Map();
+  for (let index = 2; index < argv.length; index += 2) {
+    const name = argv[index];
+    const value = argv[index + 1];
+    if (!allowed.has(name)) throw new Error(`QA_CLI_UNKNOWN_ARGUMENT:${name}`);
+    if (args.has(name)) throw new Error(`QA_CLI_DUPLICATE_ARGUMENT:${name}`);
+    if (!value || value.startsWith("--")) throw new Error(`QA_CLI_MISSING_VALUE:${name}`);
+    args.set(name, value);
+  }
+  return args;
 }
 
-const url = args.get("--url") ?? "http://localhost:1420/";
+const args = parseCliArgs(process.argv);
+
+const scenarioSelection = args.get("--scenario") ?? "legal-advisory";
+const PUBLIC_SCENARIOS = new Set(["public-document-plumbing", "public-document-all"]);
+if (scenarioSelection !== "legal-advisory" && !PUBLIC_SCENARIOS.has(scenarioSelection)) {
+  throw new Error(`Unsupported --scenario: ${scenarioSelection}`);
+}
+if (PUBLIC_SCENARIOS.has(scenarioSelection)) {
+  for (const obsoleteFlag of [
+    "--native-lifecycle-receipt",
+    "--native-receipt-nonce",
+    "--native-binary-hash",
+    "--native-receipt-auth-hash",
+  ]) {
+    if (args.has(obsoleteFlag)) throw new Error(`${obsoleteFlag} is not accepted for public native evidence`);
+  }
+}
+
+const requestedUrl = args.get("--url");
+if (requestedUrl) {
+  const target = new URL(requestedUrl);
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(target.hostname)) {
+    throw new Error("QA_URL_MUST_TARGET_LOCAL_CHECKOUT");
+  }
+}
+let url;
 const viewport = { width: 1440, height: 1080 };
 const evidenceDir = path.join(repoRoot, "build", "save-flow-evidence");
 const fixturePath = path.join(repoRoot, "tests", "fixtures", "phase6_non_sensitive.pdf");
@@ -61,28 +108,6 @@ const WARN = {
 // Safe-report scenarios. Each varies the product_checks / redaction / review
 // combination the engine would return so we can prove the advisory flow behaves.
 // ---------------------------------------------------------------------------
-function baseOutputs() {
-  return {
-    preview_pdf_source_file: null,
-    masked_pdf_file: null,
-    safe_report_path: null,
-    extracted_file: null,
-    masked_file: null,
-  };
-}
-
-function reviewItems(count) {
-  const items = [];
-  for (let index = 0; index < count; index += 1) {
-    items.push({
-      tag: "KEYWORD",
-      display_token: "[KEYWORD]",
-      status: "needs_review",
-      count: 1,
-    });
-  }
-  return items;
-}
 
 const SCENARIOS = [
   {
@@ -91,7 +116,6 @@ const SCENARIOS = [
     label: "자동 검증 통과 (경고 0건) — 준비 완료 확인 후 저장",
     productChecks: { quality_gate_passed: true, needs_manual_review: false },
     redaction: { status: "ok", verification: { residual_hits: 0 }, missing_targets_count: 0 },
-    reviewItemCount: 0,
     expect: { warns: false, warnings: [], saves: true },
   },
   {
@@ -101,7 +125,6 @@ const SCENARIOS = [
     label: "잔존 개인정보 후보(경고 1) — 확인 다이얼로그 경유 그대로 저장",
     productChecks: { quality_gate_passed: true, needs_manual_review: false },
     redaction: { status: "unverified", verification: { residual_hits: 2 }, missing_targets_count: 0 },
-    reviewItemCount: 2,
     expect: { warns: true, warnings: [WARN.residual(2)], saves: true },
   },
   {
@@ -111,7 +134,6 @@ const SCENARIOS = [
     label: "품질 게이트 실패(경고 3) — 확인 다이얼로그 경유 그대로 저장",
     productChecks: { quality_gate_passed: false, needs_manual_review: false },
     redaction: { status: "unverified", verification: { residual_hits: 0 }, missing_targets_count: 0 },
-    reviewItemCount: 1,
     expect: { warns: true, warnings: [WARN.quality], saves: true },
   },
   {
@@ -123,8 +145,25 @@ const SCENARIOS = [
     productChecks: { quality_gate_passed: true, needs_manual_review: true },
     omitFinalSubmissionAllowed: true,
     redaction: { status: "ok", verification: { residual_hits: 0 }, missing_targets_count: 0 },
-    reviewItemCount: 2,
     expect: { warns: true, warnings: [WARN.advisory], saves: true },
+  },
+  {
+    // T36: 미해결 검토는 저장 전 확인으로만 진행한다. 이 시나리오는 경고가
+    // 표시된 상태에서 확인 버튼을 눌러야 finalize가 호출되는 경로를 고정한다.
+    id: "unresolved-review-confirm-save",
+    label: "미해결 검토 경고 — 확인 버튼 경유 최종 저장",
+    publicConfirmSave: true,
+    productChecks: { quality_gate_passed: true, needs_manual_review: true },
+    omitFinalSubmissionAllowed: true,
+    redaction: { status: "ok", verification: { residual_hits: 0 }, missing_targets_count: 0 },
+    expect: {
+      warns: true,
+      warnings: [
+        "미가림 가능성: 결재선 · 2쪽 — 결재란 영역 자동확인 미완료 — 확인하고 저장",
+        "미가림 가능성: staff · 2쪽 — 결재란 영역 자동확인 미완료 — 확인하고 저장",
+      ],
+      saves: true,
+    },
   },
   {
     // 경고 상태에서 "취소" → finalize 미호출, 저장되지 않음. 저장은 사용자의
@@ -133,7 +172,6 @@ const SCENARIOS = [
     label: "경고 상태에서 취소 — finalize 미호출·미저장",
     productChecks: { quality_gate_passed: true, needs_manual_review: false },
     redaction: { status: "unverified", verification: { residual_hits: 3 }, missing_targets_count: 0 },
-    reviewItemCount: 1,
     expect: { warns: true, warnings: [WARN.residual(3)], cancel: true, saves: false },
   },
   {
@@ -143,7 +181,6 @@ const SCENARIOS = [
     label: "리포트 내부화 — 저장 성공 시에도 safe_report 는 사용자 폴더에 미복사",
     productChecks: { quality_gate_passed: true, needs_manual_review: false },
     redaction: { status: "ok", verification: { residual_hits: 0 }, missing_targets_count: 0 },
-    reviewItemCount: 0,
     assertReportNotCopied: true,
     expect: { warns: false, warnings: [], saves: true },
   },
@@ -163,19 +200,426 @@ function buildProductChecks(scenario) {
 }
 
 function buildReport(scenario) {
-  const report = {
-    extract: { engine_used: "auto" },
-    outputs: baseOutputs(),
+  return {
     product_checks: buildProductChecks(scenario),
     document_redaction: scenario.redaction,
     pdf_redaction: scenario.redaction,
-    review_items: reviewItems(scenario.reviewItemCount),
-    warnings: [],
   };
-  // v4.1: 산출물 선택이 삭제되어 엔진 rules.output_artifacts 는 내부 고정
-  // ("pdf_safe_report")이다. 저장 흐름은 이 필드를 읽지 않고 product_checks 만 본다.
-  report.rules = { output_artifacts: ["pdf", "pdf_safe_report"] };
-  return report;
+}
+const PUBLIC_DOCUMENT_STEPS = [
+  "public_analyze_completed",
+  "public_mixed_boundary_blocked",
+  "public_ambiguous_common_only_blocked",
+  "public_scan_manual_review_required",
+  "public_repeated_occurrence_scoped",
+  "public_review_cards_resolved",
+  "public_manual_combined_resolved",
+  "public_legal_advisory_isolated",
+  "public_unresolved_review_blocked",
+  "public_unresolved_review_confirmed",
+  "public_stale_revision_blocked",
+  "public_stale_manifest_hash_blocked",
+  "public_tampered_manifest_blocked",
+  "public_forged_resolution_blocked",
+  "public_intrinsic_failure_blocked",
+  "public_destination_bypass_blocked",
+  "public_destination_authorized",
+  "public_destination_token_issued",
+  "public_threshold_hash_bound",
+  "public_clean_document_verified",
+  "public_atomic_promotion_failure_blocked",
+  "public_finalize_promoted",
+];
+const PUBLIC_DOCUMENT_PLUMBING_STEPS = [
+  "public_analyze_completed",
+  "public_unresolved_review_blocked",
+  "public_unresolved_review_confirmed",
+  "public_stale_revision_blocked",
+  "public_stale_manifest_hash_blocked",
+  "public_tampered_manifest_blocked",
+  "public_forged_resolution_blocked",
+  "public_destination_bypass_blocked",
+  "public_destination_authorized",
+  "public_destination_token_issued",
+  "public_threshold_hash_bound",
+  "public_atomic_promotion_failure_blocked",
+  "public_finalize_promoted",
+];
+
+function isHash(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+function publicReceiptPiiSafe(value) {
+  const forbiddenKeys = new Set([
+    "inputFile", "outputPath", "destination", "finalPath", "path", "locator",
+    "runtime_channel", "stderr", "stdout", "error", "details", "app_path", "executable",
+  ]);
+  const forbiddenText = /(?:\b(?:\d{6}-?\d{7}|01\d-?\d{3,4}-?\d{4}|[^\s@]+@[^\s@]+\.[^\s@]+\b)|(?:^|[\s"'])\/(?:[^\s"']+)|(?:[A-Za-z]:[\\/]))/;
+  if (Array.isArray(value)) return value.every((item) => publicReceiptPiiSafe(item));
+  if (value && typeof value === "object") {
+    return Object.entries(value).every(([name, item]) => (
+      !forbiddenKeys.has(name) && publicReceiptPiiSafe(item)
+    ));
+  }
+  if (typeof value === "string") {
+    if (isHash(value)) return true;
+    return !forbiddenText.test(value);
+  }
+  return value === null || ["boolean", "number"].includes(typeof value);
+}
+
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function canonicalHash(value) {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+function publicReceiptAuth(receipt) {
+  return canonicalHash({
+    domain: "DocumentMaskerNativeQaReceiptAuthV1",
+    nonce: receipt.nonce,
+    binaryHash: receipt.binaryHash,
+    canonicalReceiptHash: receipt.canonicalReceiptHash,
+    actions: receipt.actions.map((action) => ({
+      requestHash: action.requestHash,
+      resultHash: action.resultHash,
+      requestEvidence: action.requestEvidence,
+      resultEvidence: action.resultEvidence,
+    })),
+  });
+}
+
+
+function requiredPublicSteps(selection) {
+  return selection === "public-document-all" ? PUBLIC_DOCUMENT_STEPS : PUBLIC_DOCUMENT_PLUMBING_STEPS;
+}
+
+function validateThresholdArtifact(thresholdArtifact, pinnedDigest, receipt) {
+  if (!thresholdArtifact) return { ok: false, reason: "THRESHOLD_ARTIFACT_UNAVAILABLE" };
+  if (!isHash(pinnedDigest)) return { ok: false, reason: "THRESHOLD_DIGEST_UNPINNED" };
+  let artifactBytes;
+  let artifact;
+  try {
+    artifactBytes = readFileSync(thresholdArtifact);
+    artifact = JSON.parse(artifactBytes.toString("utf8"));
+  } catch {
+    return { ok: false, reason: "THRESHOLD_ARTIFACT_INVALID" };
+  }
+  if (createHash("sha256").update(artifactBytes).digest("hex") !== pinnedDigest) return { ok: false, reason: "THRESHOLD_DIGEST_MISMATCH" };
+  if (!artifact || artifact.schemaVersion !== 1 || typeof artifact.thresholdVersion !== "string" || !isHash(artifact.thresholdHash) || !isHash(artifact.thresholdValueHash)) return { ok: false, reason: "THRESHOLD_ARTIFACT_INVALID" };
+  if (
+    receipt.thresholdVersion !== artifact.thresholdVersion
+    || receipt.thresholdHash !== artifact.thresholdHash
+    || receipt.thresholdValueHash !== artifact.thresholdValueHash
+  ) return { ok: false, reason: "THRESHOLD_BINDING_MISMATCH" };
+  return { ok: true };
+}
+
+const PUBLIC_ACTION_SEMANTICS = {
+  public_analyze_completed: { outcome: "pass", errorCode: null },
+  public_mixed_boundary_blocked: { outcome: "blocked", errorCode: "MIXED_BOUNDARY_REVIEW_REQUIRED" },
+  public_ambiguous_common_only_blocked: { outcome: "blocked", errorCode: "AMBIGUOUS_COMMON_ONLY_REVIEW_REQUIRED" },
+  public_scan_manual_review_required: { outcome: "pass", errorCode: null },
+  public_repeated_occurrence_scoped: { outcome: "pass", errorCode: null },
+  public_review_cards_resolved: { outcome: "pass", errorCode: null },
+  public_manual_combined_resolved: { outcome: "pass", errorCode: null },
+  public_legal_advisory_isolated: { outcome: "pass", errorCode: null },
+  public_unresolved_review_blocked: { outcome: "blocked", errorCode: "UNRESOLVED_REVIEW" },
+  public_unresolved_review_confirmed: { outcome: "pass", errorCode: null },
+  public_stale_revision_blocked: { outcome: "blocked", errorCode: "STALE_OR_FORGED_PUBLIC_REQUEST_REJECTED" },
+  public_stale_manifest_hash_blocked: { outcome: "blocked", errorCode: "STALE_OR_FORGED_PUBLIC_REQUEST_REJECTED" },
+  public_tampered_manifest_blocked: { outcome: "blocked", errorCode: "PUBLIC_FINALIZE_REJECTED" },
+  public_forged_resolution_blocked: { outcome: "blocked", errorCode: "REVIEW_RESOLUTION_REJECTED" },
+  public_intrinsic_failure_blocked: { outcome: "blocked", errorCode: "INTRINSIC_VERIFICATION_FAILED" },
+  public_destination_bypass_blocked: { outcome: "blocked", errorCode: "PUBLIC_FINALIZE_REJECTED" },
+  public_destination_authorized: { outcome: "pass", errorCode: null },
+  public_destination_token_issued: { outcome: "pass", errorCode: null },
+  public_threshold_hash_bound: { outcome: "pass", errorCode: null },
+  public_clean_document_verified: { outcome: "pass", errorCode: null },
+  public_atomic_promotion_failure_blocked: { outcome: "blocked", errorCode: "ATOMIC_PROMOTION_FAILED" },
+  public_finalize_promoted: { outcome: "pass", errorCode: null },
+};
+
+function expectedActionHash(phase, receipt, action) {
+  return canonicalHash({
+    phase,
+    scenario: receipt.scenario,
+    name: action.name,
+    outcome: action.outcome,
+    errorCode: action.errorCode,
+    requestEvidence: action.requestEvidence,
+    resultEvidence: action.resultEvidence,
+    nonce: receipt.nonce,
+    binaryHash: receipt.binaryHash,
+    runId: receipt.runId,
+    analysisRevision: receipt.analysisRevision,
+    manifestHash: receipt.manifestHash,
+    thresholdVersion: receipt.thresholdVersion,
+    thresholdHash: receipt.thresholdHash,
+    thresholdValueHash: receipt.thresholdValueHash,
+  });
+}
+
+function validPublicAction(action, expectedName, receipt) {
+  const expectedKeys = ["errorCode", "name", "outcome", "requestEvidence", "requestHash", "resultEvidence", "resultHash"];
+  const semantics = PUBLIC_ACTION_SEMANTICS[expectedName];
+  const request = action?.requestEvidence;
+  const result = action?.resultEvidence;
+  const validHash = (value) => isHash(value);
+  return Boolean(
+    semantics
+    && action
+    && typeof action === "object"
+    && Object.keys(action).sort().join(",") === expectedKeys.join(",")
+    && action.name === expectedName
+    && action.outcome === semantics.outcome
+    && action.errorCode === semantics.errorCode
+    && request && typeof request === "object"
+    && Object.keys(request).sort().join(",") === ["actualRequest", "fixtureHash", "operationCode", "requestEvidenceHash"].join(",")
+    && request.operationCode === expectedName
+    && validHash(request.fixtureHash)
+    && request.actualRequest && typeof request.actualRequest === "object"
+    && request.requestEvidenceHash === canonicalHash(request.actualRequest)
+    && result && typeof result === "object"
+    && Object.keys(result).sort().join(",") === ["actualResult", "count", "observed", "resultCode", "resultEvidenceHash"].join(",")
+    && result.observed === true
+    && Number.isInteger(result.count) && result.count >= 0
+    && result.actualResult && typeof result.actualResult === "object"
+    && result.resultEvidenceHash === canonicalHash(result.actualResult)
+    && isHash(action.requestHash)
+    && isHash(action.resultHash)
+    && action.requestHash === expectedActionHash("request", receipt, action)
+    && action.resultHash === expectedActionHash("result", receipt, action)
+    && action.requestHash !== action.resultHash
+  );
+}
+
+function validPublicReceipt(receipt, selection) {
+  const requiredSteps = requiredPublicSteps(selection);
+  const expectedKeys = [
+    "actions", "analysisRevision", "binaryHash", "canonicalReceiptHash", "manifestHash", "nonce",
+    "receiptAuth", "runId", "scenario", "scenarioSteps", "schema", "schemaVersion", "thresholdHash",
+    "thresholdValueHash", "thresholdVersion",
+  ];
+  if (!receipt || typeof receipt !== "object" || Object.keys(receipt).sort().join(",") !== expectedKeys.join(",")) {
+    return { ok: false, reason: "runtime receipt schema is invalid" };
+  }
+  if (
+    receipt.schema !== "PublicActionReceiptV1"
+    || receipt.schemaVersion !== 1
+    || receipt.scenario !== selection
+    || typeof receipt.nonce !== "string"
+    || receipt.nonce.length < 32
+    || !isHash(receipt.binaryHash)
+    || typeof receipt.runId !== "string"
+    || receipt.runId.length === 0
+    || !Number.isInteger(receipt.analysisRevision)
+    || receipt.analysisRevision < 1
+    || !isHash(receipt.manifestHash)
+    || typeof receipt.thresholdVersion !== "string"
+    || receipt.thresholdVersion.length === 0
+    || !isHash(receipt.thresholdHash)
+    || !isHash(receipt.thresholdValueHash)
+    || !Array.isArray(receipt.scenarioSteps)
+    || !Array.isArray(receipt.actions)
+    || receipt.scenarioSteps.length !== requiredSteps.length
+    || receipt.scenarioSteps.some((step, index) => step !== requiredSteps[index])
+    || !publicReceiptPiiSafe(receipt)
+    || !isHash(receipt.receiptAuth)
+    || !isHash(receipt.canonicalReceiptHash)
+    || receipt.canonicalReceiptHash !== canonicalHash(Object.fromEntries(Object.entries(receipt).filter(([key]) => key !== "canonicalReceiptHash" && key !== "receiptAuth")))
+    || receipt.receiptAuth !== publicReceiptAuth(receipt)
+  ) return { ok: false, reason: "runtime receipt identity, threshold binding, or scenario steps are invalid" };
+  if (
+    receipt.actions.length !== requiredSteps.length
+    || receipt.actions.some((action, index) => !validPublicAction(action, requiredSteps[index], receipt))
+    || new Set(receipt.actions.map((action) => action.name)).size !== requiredSteps.length
+  ) return { ok: false, reason: "runtime receipt actions are malformed, substituted, duplicated, or out of scenario order" };
+  return { ok: true };
+}
+function validHarnessReceipt(receipt, selection, harnessReceiptHash) {
+  return validPublicReceipt(receipt, selection).ok
+    && isHash(harnessReceiptHash)
+    && canonicalHash(receipt) === harnessReceiptHash;
+}
+
+
+
+function sealPublicReceipt(receipt) {
+  const unsigned = Object.fromEntries(
+    Object.entries(receipt).filter(([key]) => key !== "canonicalReceiptHash" && key !== "receiptAuth"),
+  );
+  receipt.canonicalReceiptHash = canonicalHash(unsigned);
+  receipt.receiptAuth = publicReceiptAuth(receipt);
+  return receipt;
+}
+
+function publicReceiptNegativeCases() {
+  const receipt = {
+    schema: "PublicActionReceiptV1", schemaVersion: 1, scenario: "public-document-plumbing",
+    nonce: "harness-issued-nonce-with-sufficient-length", binaryHash: "a".repeat(64),
+    runId: "run-1", analysisRevision: 1, manifestHash: "b".repeat(64),
+    thresholdVersion: "threshold-v1", thresholdHash: "c".repeat(64), thresholdValueHash: "d".repeat(64),
+    scenarioSteps: requiredPublicSteps("public-document-plumbing"),
+    actions: [],
+  };
+  receipt.actions = receipt.scenarioSteps.map((name) => {
+    const [outcome, errorCode] = [PUBLIC_ACTION_SEMANTICS[name].outcome, PUBLIC_ACTION_SEMANTICS[name].errorCode];
+    const requestEvidence = {
+      operationCode: name, fixtureHash: "e".repeat(64), actualRequest: {},
+      requestEvidenceHash: canonicalHash({}),
+    };
+    const resultEvidence = {
+      resultCode: errorCode ?? "OBSERVATION_CONFIRMED", observed: true, count: 0,
+      actualResult: {}, resultEvidenceHash: canonicalHash({}),
+    };
+    const action = { name, outcome, errorCode, requestEvidence, resultEvidence, requestHash: "", resultHash: "" };
+    action.requestHash = expectedActionHash("request", receipt, action);
+    action.resultHash = expectedActionHash("result", receipt, action);
+    return action;
+  });
+  sealPublicReceipt(receipt);
+  const fullyResignedForgery = {
+    ...receipt,
+    runId: "forged-run",
+    actions: receipt.actions.map((action) => ({ ...action })),
+  };
+  fullyResignedForgery.actions = fullyResignedForgery.actions.map((action) => ({
+    ...action,
+    requestHash: expectedActionHash("request", fullyResignedForgery, action),
+    resultHash: expectedActionHash("result", fullyResignedForgery, action),
+  }));
+  sealPublicReceipt(fullyResignedForgery);
+  const evidenceSubstitution = {
+    ...receipt,
+    actions: receipt.actions.map((action, index) => index === 0 ? {
+      ...action,
+      requestEvidence: { ...action.requestEvidence, fixtureHash: "f".repeat(64) },
+    } : { ...action }),
+  };
+  evidenceSubstitution.actions[0].requestHash = expectedActionHash(
+    "request", evidenceSubstitution, evidenceSubstitution.actions[0],
+  );
+  evidenceSubstitution.actions[0].resultHash = expectedActionHash(
+    "result", evidenceSubstitution, evidenceSubstitution.actions[0],
+  );
+  sealPublicReceipt(evidenceSubstitution);
+  const replay = {
+    ...receipt,
+    nonce: "different-harness-issued-nonce-with-sufficient-length",
+    actions: receipt.actions.map((action) => ({ ...action })),
+  };
+  replay.actions = replay.actions.map((action) => ({
+    ...action,
+    requestHash: expectedActionHash("request", replay, action),
+    resultHash: expectedActionHash("result", replay, action),
+  }));
+  sealPublicReceipt(replay);
+  const expectedHarnessHash = canonicalHash(receipt);
+  return validHarnessReceipt(receipt, "public-document-plumbing", expectedHarnessHash)
+    && publicReceiptPiiSafe("0".repeat(64))
+    && !publicReceiptPiiSafe("01012345678")
+    && !validHarnessReceipt(fullyResignedForgery, "public-document-plumbing", expectedHarnessHash)
+    && !validHarnessReceipt(evidenceSubstitution, "public-document-plumbing", expectedHarnessHash)
+    && !validHarnessReceipt(replay, "public-document-plumbing", expectedHarnessHash);
+}
+
+
+function publicLifecycleEvidence(selection) {
+  const appPath = args.get("--native-app-path");
+  const runtimeReceiptChannel = args.get("--runtime-receipt-channel");
+  const receiptNonce = args.get("--receipt-nonce");
+  const thresholdArtifact = args.get("--threshold-artifact");
+  const thresholdDigest = args.get("--threshold-digest");
+  const result = {
+    scenario: selection,
+    status: "fail",
+    evidenceAuthority: "native_app_emitted_receipt",
+    piiSafe: true,
+    runtimeReceiptPresent: false,
+    directNativeReceiptCaptured: false,
+    thresholdArtifactPresent: false,
+    requiredSteps: requiredPublicSteps(selection),
+    provenSteps: [],
+    failure: "native app receipt evidence unavailable",
+  };
+  if (
+    typeof appPath !== "string" || !path.isAbsolute(appPath)
+    || typeof receiptNonce !== "string" || receiptNonce.length < 32
+  ) return result;
+  if (runtimeReceiptChannel !== undefined && !path.isAbsolute(runtimeReceiptChannel)) {
+    result.failure = "runtime receipt channel must be an absolute durable-copy path";
+    return result;
+  }
+  const harnessArgs = [
+    path.join(repoRoot, "scripts", "e2e_tauri_local_smoke.py"),
+    "--repo-root", repoRoot,
+    "--app-path", appPath,
+    "--scenario", selection,
+    "--receipt-nonce", receiptNonce,
+    "--threshold-artifact", thresholdArtifact ?? "",
+    "--threshold-digest", thresholdDigest ?? "",
+  ];
+  if (typeof runtimeReceiptChannel === "string" && path.isAbsolute(runtimeReceiptChannel)) {
+    harnessArgs.push("--runtime-receipt-channel", runtimeReceiptChannel);
+  }
+  const harnessTimeoutMs = selection === "public-document-all" ? 600_000 : 300_000;
+  const harness = spawnSync(
+    "python3",
+    harnessArgs,
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: harnessTimeoutMs,
+      killSignal: "SIGKILL",
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  if (harness.error || harness.status !== 0) {
+    result.failure = "native Analyze→Resolve→Finalize harness did not produce successful evidence";
+    return result;
+  }
+  let harnessResult;
+  try {
+    harnessResult = JSON.parse(harness.stdout);
+  } catch {
+    result.failure = "trusted native harness emitted malformed evidence";
+    return result;
+  }
+  if (
+    !harnessResult
+    || typeof harnessResult !== "object"
+    || harnessResult.status !== "pass"
+    || harnessResult.scenario !== selection
+    || harnessResult.runtime?.status !== "pass"
+    || harnessResult.public_document_lifecycle?.status !== "pass"
+    || harnessResult.pii_safe !== true
+  ) {
+    result.failure = "trusted native harness lifecycle evidence is incomplete";
+    return result;
+  }
+  const receipt = harnessResult.public_action_receipt;
+  if (!validHarnessReceipt(receipt, selection, harnessResult.harness_receipt_hash)) {
+    result.failure = "trusted native harness receipt is invalid or substituted";
+    return result;
+  }
+  result.runtimeReceiptPresent = true;
+  result.directNativeReceiptCaptured = true;
+  result.provenSteps = receipt.actions.map((action) => action.name);
+
+  const threshold = validateThresholdArtifact(thresholdArtifact, thresholdDigest, receipt);
+  result.thresholdArtifactPresent = threshold.ok;
+  if (!threshold.ok) {
+    result.failure = threshold.reason;
+    return result;
+  }
+  result.status = "pass";
+  result.failure = null;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,20 +627,20 @@ function buildReport(scenario) {
 // ---------------------------------------------------------------------------
 async function isDevServerUp(target) {
   try {
-    const response = await fetch(target, { signal: AbortSignal.timeout(1500) });
-    return response.ok;
+    return (await fetch(target, { signal: AbortSignal.timeout(1500) })).ok;
   } catch {
     return false;
   }
 }
 
-async function ensureDevServer(target) {
-  if (await isDevServerUp(target)) {
-    console.log(`[dev] reusing dev server at ${target}`);
-    return null;
-  }
-  console.log("[dev] starting vite dev server (port 1420, strictPort)...");
-  const child = spawn("npx", ["vite", "--port", "1420", "--strictPort"], {
+function childViteUrl(output) {
+  const match = output.match(/Local:\s+(https?:\/\/[^\s]+)/);
+  return match?.[1] ?? null;
+}
+
+async function ensureDevServer() {
+  console.log("[dev] starting isolated checkout-owned vite dev server...");
+  const child = spawn("npx", ["vite", "--host", "127.0.0.1", "--port", "0", "--strictPort"], {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
@@ -205,21 +649,51 @@ async function ensureDevServer(target) {
   child.stdout.on("data", (chunk) => { output += chunk; });
   child.stderr.on("data", (chunk) => { output += chunk; });
   const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`vite dev exited early (code ${child.exitCode}):\n${output}`);
-    if (await isDevServerUp(target)) return child;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+  try {
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(`vite dev exited early (code ${child.exitCode}):\n${output}`);
+      const childUrl = childViteUrl(output);
+      if (childUrl && await isDevServerUp(childUrl)) return { child, url: childUrl };
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(`vite dev did not publish a ready child-bound URL within 60s:\n${output}`);
+  } catch (error) {
+    if (child.exitCode === null) child.kill("SIGTERM");
+    throw error;
   }
-  child.kill("SIGTERM");
-  throw new Error(`vite dev did not become ready within 60s:\n${output}`);
+}
+
+function isMissingSystemChrome(error) {
+  return error instanceof Error && /(executable (does not exist|was not found)|browserType\.launch: Executable)/i.test(error.message);
+}
+
+function launchDiagnostic(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function launchBrowser() {
   try {
-    return await chromium.launch({ channel: "chrome", headless: true });
-  } catch {
-    return await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    return { browser, selection: "system-chrome" };
+  } catch (systemChromeError) {
+    if (!isMissingSystemChrome(systemChromeError)) {
+      throw new Error(`system Chrome launch failed: ${launchDiagnostic(systemChromeError)}`);
+    }
+    try {
+      const browser = await chromium.launch({ headless: true });
+      return { browser, selection: "bundled-chromium", systemChromeDiagnostic: launchDiagnostic(systemChromeError) };
+    } catch (bundledChromiumError) {
+      throw new Error(`browser launch failed; system Chrome: ${launchDiagnostic(systemChromeError)}; bundled Chromium: ${launchDiagnostic(bundledChromiumError)}`);
+    }
   }
+}
+async function createQaPage(browser, errors) {
+  const page = await browser.newPage({ viewport });
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console:${message.text()}`);
+  });
+  page.on("pageerror", (error) => errors.push(`pageerror:${error.message}`));
+  return page;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,28 +756,24 @@ async function installMock(page, report, options = {}) {
   let failManualPreviewLoad = options.failManualPreviewLoad === true;
   const finalizeDelayMs = options.finalizeDelayMs ?? 0;
   const applyDelayMs = options.applyDelayMs ?? 0;
+  const publicManifest = options.publicManifest ?? null;
   // The restore-revalidation safe report this scenario's backend would have
   // written. Hoisted so read_text_file (frontend adoption) reads the SAME report
   // bytes the real backend produced. A failed restore report keeps blocking
-  // fields (residual/missing/quality) — under v4.2.0 these become advisory
-  // warnings, never a hard block.
+  // fields (residual/missing/quality) and must not reach finalization.
   const manualRevalReport =
     manualOutcome === "failed"
       ? {
-          manual_revalidation: { status: "failed", verified: false },
           product_checks: { quality_gate_passed: false, needs_manual_review: true, final_submission_allowed: false },
           document_redaction: {
             status: "manual_revalidation_failed",
             missing_targets_count: 1,
             verification: { verified: false, residual_hits: 1, reason_code: "manual_restore_reexposure" },
           },
-          review_items: [{ page: null, tag: "MANUAL", display_token: "[MASK]", status: "needs_review", count: 1, raw_value_saved: false }],
         }
       : {
-          manual_revalidation: { status: "passed", verified: true },
           product_checks: { quality_gate_passed: true, needs_manual_review: false, final_submission_allowed: true },
           document_redaction: { status: "manual_revalidated", missing_targets_count: 0, verification: { verified: true, residual_hits: 0 } },
-          review_items: [],
         };
   const invokeLog = [];
   const finalizeCalls = [];
@@ -316,10 +786,13 @@ async function installMock(page, report, options = {}) {
         return fixturePath;
       case "pick_input_documents":
         return [fixturePath];
+      case "default_output_dir_for_document":
+      case "pick_output_dir":
+        return outputDir;
       case "choose_final_pdf_path":
         selectedFinalTarget = {
           outputPath: `${outputDir}/${String(payload.defaultFileName || "masked")}.pdf`,
-          saveToken: `qa-save-${++mockState.saveTokenCounter}`,
+          saveToken: (++mockState.saveTokenCounter).toString(16).padStart(32, "0"),
         };
         return { ...selectedFinalTarget };
       case "get_preview_workdir":
@@ -331,6 +804,9 @@ async function installMock(page, report, options = {}) {
           // Mirrors the real backend contract: a restore-bearing apply performs
           // an actual revalidation and writes a passing OR blocking safe report.
           return JSON.stringify(manualRevalReport);
+        }
+        if (String(payload.path || "").includes("safe_report.json")) {
+          return JSON.stringify(report);
         }
         return "원문 REVIEW TOKEN\n마스킹 [KEYWORD]";
       case "run_masking_pipeline": {
@@ -352,6 +828,76 @@ async function installMock(page, report, options = {}) {
             },
           },
           report,
+        };
+      }
+      case "analyze_masking_run":
+        if (!publicManifest) throw new Error("QA_PUBLIC_ANALYZE_UNAVAILABLE");
+        return publicManifest;
+      case "finalize_masking_run": {
+        const request = payload.request;
+        if (
+          !publicManifest
+          || request?.runId !== publicManifest.runId
+          || request?.analysisRevision !== publicManifest.analysisRevision
+          || request?.manifestHash !== publicManifest.manifestHash
+          || request?.warningsConfirmed !== true
+          || !selectedFinalTarget
+          || request?.destination !== selectedFinalTarget.outputPath
+          || request?.saveToken !== selectedFinalTarget.saveToken
+        ) throw new Error("QA_PUBLIC_FINALIZE_REQUEST_REJECTED");
+        const finalOutput = selectedFinalTarget.outputPath;
+        selectedFinalTarget = null;
+        mockState.finalizationCount += 1;
+        mockState.existingPaths.add(path.resolve(finalOutput));
+        mockState.finalizedPaths.push(path.resolve(finalOutput));
+        finalizeCalls.push({ cmd, finalOutput, rawPayload: { ...payload }, copied_files: [], copyReport: false });
+        const manuallyReplacedOccurrences = new Set(
+          publicManifest.manualActions.flatMap((action) => action.linkedOccurrenceId === null ? [] : [action.linkedOccurrenceId]),
+        );
+        const finalizedMaskCount = new Set(publicManifest.occurrences
+          .filter((occurrence) => occurrence.proposedAction === "mask"
+            && (occurrence.state === "confirmed" || occurrence.state === "user_confirmed")
+            && !manuallyReplacedOccurrences.has(occurrence.occurrenceId))
+          .map((occurrence) => occurrence.occurrenceId)).size
+          + publicManifest.manualActions.filter((action) => action.mode === "mask").length;
+        const manualMaskCount = publicManifest.manualActions.filter((action) => action.mode === "mask").length;
+        const restoreCount = publicManifest.manualActions.filter((action) => action.mode === "restore").length;
+        const unresolvedReviews = publicManifest.reviewItems
+          .filter((item) => item.status === "pending")
+          .map((item) => {
+            const occurrence = publicManifest.occurrences.find((candidate) => candidate.occurrenceId === item.targetId);
+            const region = publicManifest.regions.find((candidate) => candidate.regionId === item.targetId);
+            return {
+              kind: item.kind,
+              targetId: item.targetId,
+              category: occurrence?.category ?? region?.kind ?? item.kind,
+              pageStart: item.pageStart,
+              pageEnd: item.pageEnd,
+              reasonCodes: item.reasonCodes,
+            };
+          });
+        return {
+          runId: publicManifest.runId,
+          analysisRevision: publicManifest.analysisRevision,
+          manifestHash: publicManifest.manifestHash,
+          finalPath: finalOutput,
+          finalHash: "6".repeat(64),
+          finalHashAttested: true,
+          occurrenceCount: finalizedMaskCount,
+          appliedMaskCount: finalizedMaskCount,
+          manualMaskCount,
+          restoreCount,
+          effectiveMaskCount: finalizedMaskCount,
+          restoreAuthorization: {
+            actionIdHash: restoreCount > 0 ? "c".repeat(64) : "0".repeat(64),
+            targetOccurrenceIdHash: restoreCount > 0 ? "d".repeat(64) : "0".repeat(64),
+            authorizationEvent: "none",
+          },
+          saveConfirmation: {
+            status: unresolvedReviews.length === 0 ? "not_required" : "user_confirmed",
+            unresolvedReviews,
+          },
+          status: "promoted",
         };
       }
       case "apply_manual_boxes": {
@@ -395,8 +941,11 @@ async function installMock(page, report, options = {}) {
         return result;
       }
       case "finalize_manual_output_to_selected_path": {
-        // Rust의 exact-path 최종 저장과 동일하게, 검증 리포트는 저장을 막지 않고
-        // 네이티브 저장 창에서 선택한 정확한 PDF 경로만 허용한다.
+        if (manualOutcome === "failed") {
+          throw new Error("RESTORE_REVALIDATION_FAILED");
+        }
+        // Rust의 exact-path 최종 저장과 동일하게 네이티브 저장 창에서 선택한
+        // 정확한 PDF 경로만 허용한다.
         const previewPdf = String(payload.previewPdf || "");
         const selectedOutputPath = String(payload.outputPath || "");
         const selectedSaveToken = String(payload.saveToken || "");
@@ -481,7 +1030,7 @@ async function installMock(page, report, options = {}) {
       case "open_mask_canvas_window":
         return "ok";
       default:
-        return null;
+        throw new Error(`QA_UNKNOWN_IPC:${cmd}`);
     }
   });
   await page.exposeFunction("__qaSaveCheckPdfPath", async (requestedPath = "") => {
@@ -540,8 +1089,8 @@ async function waitForStatus(page, pattern, timeout = 60_000) {
   return page.locator("#status").innerText();
 }
 
-async function pickPdfAndMask(page) {
-  // React markup can be attached a few ticks before startLegacyApp finishes
+async function pickPdfAndMask(page, profile = "legal") {
+  // React markup can be attached a few ticks before the composition root finishes
   // binding its handlers. Waiting for the bootstrap terminal status makes each
   // isolated scenario deterministic instead of racing the first click.
   await page.waitForFunction(
@@ -549,13 +1098,29 @@ async function pickPdfAndMask(page) {
     undefined,
     { timeout: 20_000 },
   );
-  await page.locator("#btn-pick-pdf").click();
+  const deskPicker = page.locator("#btn-desk-open-pdf");
+  if (await deskPicker.isVisible()) await deskPicker.click();
+  else await page.locator("#btn-pick-pdf").click();
   await page.waitForFunction((expected) => document.querySelector("#input-path")?.value === expected, fixturePath, { timeout: 20_000 });
+  // This suite exercises the legacy legal-report advisory/manual-redaction flow.
+  // Desk selection may synchronize its own profile, so set legal after picking.
+  await page.locator("#profile").evaluate((element, selectedProfile) => {
+    element.value = selectedProfile;
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, profile);
   const loadStatus = await waitForStatus(page, /원문 PDF 로드 완료|문서 로드 실패/, 20_000);
   if (loadStatus.includes("실패")) throw new Error(`document load failed: ${loadStatus}`);
   await page.locator("#btn-run-masking").click();
-  const status = await waitForStatus(page, /마스킹 완료|마스킹 실패/);
+  // 완료 문구는 프로필별로 다르다. legal 리포트는 "마스킹 완료(...)"로 끝나고,
+  // 공공(official_dispatch) 분석은 "마스킹 분석 완료: 검토 항목 N건"으로 끝난다.
+  // 실패 문구는 두 경로 모두 "마스킹 실패 (...)"로 동일하다.
+  const completionPattern = profile === "official_dispatch"
+    ? /마스킹 분석 완료|마스킹 실패/
+    : /마스킹 완료|마스킹 실패/;
+  const status = await waitForStatus(page, completionPattern);
   if (status.includes("실패")) throw new Error(`base masking failed: ${status}`);
+  // 후속 보정 도구 활성화는 두 경로 공통으로 성립한다. 공공 분석도 resultDoc
+  // (원문 PDF)을 세우므로 canEdit=true 가 되어 마스크 도구가 활성화된다.
   await page.waitForFunction(
     () => document.querySelector("#btn-canvas-tool-mask")?.disabled === false,
     undefined,
@@ -565,11 +1130,25 @@ async function pickPdfAndMask(page) {
 
 
 async function saveButtonState(page) {
-  return page.evaluate(() => ({
-    disabled: document.querySelector("#btn-save")?.disabled === true,
-    title: document.querySelector("#btn-save")?.getAttribute("title") ?? "",
-    readiness: document.querySelector("#final-save-readiness")?.textContent ?? "",
-  }));
+  return page.evaluate(() => {
+    const controls = ["#btn-save"].map((selector) => {
+      const element = document.querySelector(selector);
+      const visible = element instanceof HTMLElement && getComputedStyle(element).display !== "none"
+        && getComputedStyle(element).visibility !== "hidden" && element.getClientRects().length > 0;
+      return {
+        selector,
+        visible,
+        disabled: element instanceof HTMLButtonElement ? element.disabled : true,
+        title: element?.getAttribute("title") ?? "",
+      };
+    });
+    const visible = controls.filter((control) => control.visible);
+    return {
+      disabled: visible.length === 0 || visible.some((control) => control.disabled),
+      title: visible.length > 0 ? visible[0].title : `no-visible-controls:${JSON.stringify(controls)}`,
+      readiness: document.querySelector("#final-save-readiness")?.textContent ?? "",
+    };
+  });
 }
 
 // 저장 전 확인 다이얼로그의 현재 상태를 읽는다. 신설 ID(final-save-warning-list,
@@ -603,18 +1182,46 @@ async function finalSaveDialogState(page) {
   });
 }
 
+async function publicConfirmSaveSnapshot(page, invokeLog, stage) {
+  return {
+    stage,
+    controls: await page.evaluate(() => ["#btn-save", "#btn-dialog-save-all"].map((selector) => {
+      const element = document.querySelector(selector);
+      return {
+        selector,
+        present: element instanceof HTMLElement,
+        disabled: element instanceof HTMLButtonElement ? element.disabled : null,
+        text: element?.textContent?.trim() ?? "",
+      };
+    })),
+    readiness: await page.evaluate(() => document.querySelector("#final-save-readiness")?.textContent ?? ""),
+    dialog: await finalSaveDialogState(page),
+    invokes: [...invokeLog],
+  };
+}
+
 // 저장 버튼을 클릭하고, 경고 유무와 관계없이 확인 다이얼로그가 열리거나
 // 전제 미충족 상태 문구가 렌더될 때까지 결정적으로 기다린다.
-async function clickSaveAndSettle(page) {
-  const disabled = await page.locator("#btn-save").isDisabled();
-  if (disabled) return { clicked: false };
-  await page.locator("#btn-save").evaluate((element) => element.click());
+async function clickSaveAndSettle(page, expectedSelector) {
+  const controls = await page.evaluate(() => ["#btn-save"].map((selector) => {
+    const element = document.querySelector(selector);
+    const visible = element instanceof HTMLElement && getComputedStyle(element).display !== "none"
+      && getComputedStyle(element).visibility !== "hidden" && element.getClientRects().length > 0;
+    return { selector, visible, disabled: element instanceof HTMLButtonElement ? element.disabled : null };
+  }));
+  const expected = controls.find((control) => control.selector === expectedSelector);
+  const visible = controls.filter((control) => control.visible);
+  if (!expected?.visible || visible.some((control) => control.disabled !== expected.disabled)) {
+    throw new Error(`Expected a visible, state-consistent final-save control (${expectedSelector}), got ${JSON.stringify(controls)}`);
+  }
+  if (expected.disabled) return { clicked: false };
+  await page.locator(expectedSelector).click();
   await page.waitForFunction(
     () => {
       const dialog = document.querySelector("#final-save-dialog");
       const open = Boolean(dialog) && !dialog.classList.contains("is-hidden");
       const status = document.querySelector("#status")?.textContent ?? "";
-      return open || /최종 저장 완료|최종 저장 실패|파일은 저장되었으나|저장할 마스킹본이 없습니다/.test(status);
+      return open || /최종 저장 완료|최종 저장 실패|파일은 저장되었으나|저장할 마스킹본이 없습니다|차단되었습니다|재검증.*실패|복원.*재검증/.test(status);
     },
     undefined,
     { timeout: 40_000 },
@@ -625,11 +1232,16 @@ async function clickSaveAndSettle(page) {
 async function confirmDialogSave(page) {
   await page.locator("#btn-dialog-save-all").click();
   const status = await waitForStatus(page, /최종 저장 완료|최종 저장 실패|파일은 저장되었으나/, 40_000);
+  const successDialog = page.locator("#finalization-success-dialog");
+  if (status.includes("완료") && await successDialog.isVisible()) {
+    await page.locator("#btn-close-finalization-success-dialog").click();
+    await successDialog.waitFor({ state: "hidden" });
+  }
   return { saved: status.includes("완료"), status };
 }
 
-async function clickAndConfirmSave(page) {
-  const result = await clickSaveAndSettle(page);
+async function clickAndConfirmSave(page, expectedSelector) {
+  const result = await clickSaveAndSettle(page, expectedSelector);
   if (result.clicked) await confirmDialogSave(page);
   return result;
 }
@@ -667,9 +1279,13 @@ async function selectCanvasTool(page, toolId) {
 }
 
 async function totalBoxCount(page) {
-  const text = (await page.locator("#box-info").textContent()) ?? "";
-  const match = text.match(/전체\s+(\d+)\s*개/);
-  return match ? Number(match[1]) : NaN;
+  const counts = await Promise.all(
+    ["#review-summary-mask-count", "#review-summary-restore-count"].map(async (selector) => {
+      const text = (await page.locator(selector).textContent()) ?? "";
+      return Number(text.match(/(\d+)\s*개/)?.[1] ?? Number.NaN);
+    }),
+  );
+  return counts.every(Number.isFinite) ? counts.reduce((sum, count) => sum + count, 0) : Number.NaN;
 }
 
 async function waitForInvoke(invokeLog, cmd, timeout = 30_000) {
@@ -683,13 +1299,22 @@ async function waitForInvoke(invokeLog, cmd, timeout = 30_000) {
 
 async function waitForApplyComplete(page, invokeLog) {
   await waitForInvoke(invokeLog, "apply_manual_boxes");
-  // 성공 미리보기 "(미리보기):" 는 복원 재검증 실패 시 곧바로 "복원 반영됨 — …"
-  // 종결 문구로 동기 덮어써지므로(레이스), 그 종결 문구도 대기 대상에 포함한다.
-  await waitForStatus(page, /\(미리보기\):|재검증 필요|복원 반영됨|실패/, 30_000);
+  await page.waitForFunction(
+    () => {
+      const status = document.querySelector("#status")?.textContent ?? "";
+      const terminalStatus = /\(미리보기\):|재검증 필요|복원 반영됨|실패/.test(status);
+      const applyReady = document.querySelector("#btn-canvas-apply")?.disabled === false;
+      const saveReady = document.querySelector("#btn-save")?.disabled === false;
+      const saveBlocked = document.querySelector("#final-save-readiness")?.getAttribute("data-state") === "blocked";
+      return terminalStatus && (applyReady || saveReady || saveBlocked);
+    },
+    undefined,
+    { timeout: 30_000 },
+  );
 }
 
 function finalizeCount(invokeLog) {
-  return invokeLog.filter((cmd) => cmd === "finalize_manual_output_to_selected_path").length;
+  return invokeLog.filter((cmd) => cmd === "finalize_manual_output_to_selected_path" || cmd === "finalize_masking_run").length;
 }
 
 function saveDialogCount(invokeLog) {
@@ -697,12 +1322,11 @@ function saveDialogCount(invokeLog) {
 }
 
 // ---------------------------------------------------------------------------
-// Manual-correction save scenarios (v4.2.0 advisory model). After applying a
+// Manual-correction save scenarios. After applying a
 // manual correction:
 //   · mask-only add   → no revalidation needed, no warnings → ready confirmation.
 //   · restore add (passed) → revalidation auto-runs, clean report adopted → confirmation.
-//   · restore add (failed) → 재검증 실패해도 하드 차단하지 않는다: 경고 5(복원
-//     재노출 가능)와 함께 확인 다이얼로그가 뜨고, "그대로 저장" 으로 저장할 수 있다.
+//   · restore add (failed) → 재노출 가능성이므로 저장과 native 경로 선택을 차단한다.
 // saveVia distinguishes the two ways an apply reaches the save flow:
 //   · "button-apply" — the user clicks 반영(apply) first, then 저장(save).
 //   · "auto-apply"   — the user skips apply and clicks 저장 directly; saveFinalOutput
@@ -734,27 +1358,26 @@ const MANUAL_SCENARIOS = [
     expect: { warns: false, saves: true },
   },
   {
-    id: "manual-restore-reexposure-confirm-save",
-    label: "복원 재노출(반영 후 저장) → 재검증 실패해도 경고 5와 함께 확인 다이얼로그 경유 저장 가능",
+    id: "manual-restore-reexposure-blocked",
+    label: "복원 재노출(반영 후 저장) → 재검증 실패로 저장 차단",
     tool: "restore",
     manualOutcome: "failed",
     saveVia: "button-apply",
-    expect: { warns: true, expectRestoreWarning: true, saves: true },
+    expect: { blocked: true, saves: false },
   },
   {
-    id: "manual-restore-reexposure-autoapply-confirm-save",
-    label: "복원 재노출(반영 없이 바로 저장) → 자동 반영 경로가 경고 5 다이얼로그를 띄우고 확인 시 저장",
+    id: "manual-restore-reexposure-autoapply-blocked",
+    label: "복원 재노출(반영 없이 바로 저장) → 자동 반영 후 저장 차단",
     tool: "restore",
     manualOutcome: "failed",
     saveVia: "auto-apply",
-    expect: { warns: true, expectRestoreWarning: true, saves: true },
+    expect: { blocked: true, saves: false },
   },
 ];
 
 async function runManualScenario(browser, scenario) {
-  const page = await browser.newPage({ viewport });
   const consoleErrors = [];
-  page.on("pageerror", (error) => consoleErrors.push(error.message));
+  const page = await createQaPage(browser, consoleErrors);
   const result = { id: scenario.id, label: scenario.label, checks: [], pass: true };
   const check = (name, ok, detail) => {
     result.checks.push({ name, ok, detail });
@@ -797,8 +1420,12 @@ async function runManualScenario(browser, scenario) {
     }
 
     const finalizeBeforeSave = finalizeCount(invokeLog);
-    const clickRes = await clickSaveAndSettle(page);
-    check("save-click-registered", clickRes.clicked === true, `clicked=${clickRes.clicked}`);
+    const clickRes = await clickSaveAndSettle(page, "#btn-save");
+    check(
+      "save-click-state",
+      clickRes.clicked === (scenario.saveVia === "auto-apply" || !scenario.expect.blocked),
+      `clicked=${clickRes.clicked}`,
+    );
 
     if (scenario.saveVia === "auto-apply") {
       check("autoapply-invoked", invokeLog.includes("apply_manual_boxes"), "auto-apply ran during save");
@@ -806,7 +1433,16 @@ async function runManualScenario(browser, scenario) {
       check("no-base-masking-rerun", baseRunsAfterSave === baseRunsBeforeApply, `before=${baseRunsBeforeApply} after=${baseRunsAfterSave}`);
     }
 
-    if (scenario.expect.warns) {
+    if (scenario.expect.blocked) {
+      const dialog = await finalSaveDialogState(page);
+      const saveState = await saveButtonState(page);
+      const status = await page.locator("#status").innerText();
+      check("failed-restore-save-disabled", saveState.disabled === true, JSON.stringify(saveState));
+      check("failed-restore-dialog-not-opened", dialog.open === false, JSON.stringify(dialog));
+      check("failed-restore-status-blocking", /차단|재검증|복원/.test(`${status} ${saveState.readiness}`), `status=${status} readiness=${saveState.readiness}`);
+      check("failed-restore-finalize-not-called", finalizeCount(invokeLog) === finalizeBeforeSave, `count=${finalizeCount(invokeLog)}`);
+      check("failed-restore-native-dialog-not-called", saveDialogCount(invokeLog) === 0, `count=${saveDialogCount(invokeLog)}`);
+    } else if (scenario.expect.warns) {
       const dialog = await finalSaveDialogState(page);
       check("warning-dialog-opened", dialog.open === true, `open=${dialog.open}`);
       if (scenario.expect.expectRestoreWarning) {
@@ -828,12 +1464,23 @@ async function runManualScenario(browser, scenario) {
     // finalize(=사용자 확정 저장)는 저장이 실제로 완료된 경우에만 호출되어야 한다.
     const expectedFinalizeCount = scenario.expect.saves ? 1 : 0;
     check("finalize-called-exactly-once", finalizeCount(invokeLog) === expectedFinalizeCount, `count=${finalizeCount(invokeLog)} expected=${expectedFinalizeCount}`);
+    if (scenario.id === "manual-mask-only-keeps-gate" && scenario.expect.saves) {
+      await page.locator("#btn-new-document").click();
+      await page.waitForFunction(() => !document.querySelector("#canvas-wrap-result")?.classList.contains("has-rendered-pdf"));
+      const resetState = await page.evaluate(() => ({
+        title: document.querySelector("#current-document-title")?.textContent,
+        path: document.querySelector("#input-path")?.value,
+        queue: document.querySelectorAll("#batch-queue .batch-item").length,
+        heroVisible: getComputedStyle(document.querySelector(".dm-canvas__hero")).display !== "none",
+      }));
+      check("new-work-reset-restores-empty-hero", resetState.title === "문서를 선택하세요" && resetState.path === "" && resetState.queue === 0 && resetState.heroVisible, JSON.stringify(resetState));
+    }
 
     check("no-page-errors", consoleErrors.length === 0, consoleErrors.join(" | "));
     await page.screenshot({ path: path.join(evidenceDir, `${scenario.id}.png`), fullPage: true });
   } catch (error) {
     check("scenario-threw", false, error instanceof Error ? error.message : String(error));
-    await page.screenshot({ path: path.join(evidenceDir, `${scenario.id}-error.png`), fullPage: true }).catch(() => {});
+    await page.screenshot({ path: path.join(evidenceDir, `${scenario.id}-error.png`), fullPage: true });
   } finally {
     await page.close();
   }
@@ -841,63 +1488,76 @@ async function runManualScenario(browser, scenario) {
 }
 
 async function runScenario(browser, scenario) {
-  const page = await browser.newPage({ viewport });
   const consoleErrors = [];
-  page.on("pageerror", (error) => consoleErrors.push(error.message));
+  const page = await createQaPage(browser, consoleErrors);
   const result = { id: scenario.id, label: scenario.label, checks: [], pass: true };
+  const publicConfirmSaveTrace = [];
+  let publicConfirmSaveInvokeLog = [];
+  let publicConfirmSaveStage = "mock installation";
   const check = (name, ok, detail) => {
     result.checks.push({ name, ok, detail });
     if (!ok) result.pass = false;
   };
   try {
     const doubleSaveProbe = scenario.id === "clean-pass";
+    const publicManifest = scenario.publicConfirmSave ? unresolvedGeometryManifestForQa() : null;
     const { invokeLog, finalizeCalls } = await installMock(page, buildReport(scenario), {
       finalizeDelayMs: doubleSaveProbe ? 800 : 0,
+      publicManifest,
     });
+    publicConfirmSaveInvokeLog = invokeLog;
+    if (scenario.publicConfirmSave) publicConfirmSaveTrace.push(await publicConfirmSaveSnapshot(page, invokeLog, publicConfirmSaveStage));
+    publicConfirmSaveStage = "workspace bootstrap";
     await page.goto(url, { waitUntil: "networkidle" });
     await page.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
+    if (scenario.publicConfirmSave) publicConfirmSaveTrace.push(await publicConfirmSaveSnapshot(page, invokeLog, publicConfirmSaveStage));
 
-    await pickPdfAndMask(page);
+    publicConfirmSaveStage = "public analysis completed";
+    await pickPdfAndMask(page, scenario.publicConfirmSave ? "official_dispatch" : "legal");
+    if (scenario.publicConfirmSave) publicConfirmSaveTrace.push(await publicConfirmSaveSnapshot(page, invokeLog, publicConfirmSaveStage));
 
     // v4.2.0: 마스킹본이 존재하면 저장 버튼은 검증 결과와 무관하게 항상 활성이다.
+    publicConfirmSaveStage = "confirm-save action available";
     const saveBefore = await saveButtonState(page);
     check("save-enabled-when-masked", saveBefore.disabled === false, `disabled=${saveBefore.disabled} title=${saveBefore.title}`);
+    if (scenario.publicConfirmSave) publicConfirmSaveTrace.push(await publicConfirmSaveSnapshot(page, invokeLog, publicConfirmSaveStage));
 
     // 저장 클릭: 경고 유무와 관계없이 확인 다이얼로그가 열린다.
+    publicConfirmSaveStage = "warning dialog opened";
     let clickRes;
     if (doubleSaveProbe) {
-      await page.locator("#btn-save").click();
-      await page.locator("#final-save-dialog").waitFor({ state: "visible", timeout: 8_000 });
+      clickRes = await clickSaveAndSettle(page, "#btn-save");
       const readyDialog = await finalSaveDialogState(page);
       check("ready-dialog-opened", readyDialog.open === true && readyDialog.badge === "저장 준비 완료", JSON.stringify(readyDialog));
       await page.locator("#btn-dialog-save-all").click();
       await waitForInvoke(invokeLog, "finalize_manual_output_to_selected_path");
       const disabledDuringSave = await page.evaluate(() => ({
         primary: document.querySelector("#btn-save")?.disabled === true,
-        canvas: document.querySelector("#btn-canvas-final-save")?.disabled === true,
         maskTool: document.querySelector("#btn-canvas-tool-mask")?.disabled === true,
         restoreTool: document.querySelector("#btn-canvas-tool-restore")?.disabled === true,
         deleteTool: document.querySelector("#btn-canvas-tool-delete")?.disabled === true,
       }));
       await page.evaluate(() => {
-        document.querySelector("#btn-canvas-final-save")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        document.querySelector("#btn-save")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await page.waitForTimeout(50);
       const boxesBeforeConcurrentDrag = await totalBoxCount(page);
       await dragOnPdf(page, { x: 0.2, y: 0.2 }, { x: 0.45, y: 0.35 });
       const boxesAfterConcurrentDrag = await totalBoxCount(page);
-      check("save-buttons-disabled-during-finalize", disabledDuringSave.primary && disabledDuringSave.canvas, JSON.stringify(disabledDuringSave));
+      check("save-button-disabled-during-finalize", disabledDuringSave.primary, JSON.stringify(disabledDuringSave));
       check("canvas-edits-locked-during-finalize", boxesAfterConcurrentDrag === boxesBeforeConcurrentDrag, `before=${boxesBeforeConcurrentDrag} after=${boxesAfterConcurrentDrag}`);
       check("canvas-tools-disabled-during-finalize", disabledDuringSave.maskTool && disabledDuringSave.restoreTool && disabledDuringSave.deleteTool, JSON.stringify(disabledDuringSave));
       check("concurrent-save-finalizes-once", finalizeCount(invokeLog) === 1, `count=${finalizeCount(invokeLog)}`);
       await waitForStatus(page, /최종 저장 완료|최종 저장 실패/, 40_000);
       clickRes = { clicked: true };
     } else {
-      clickRes = await clickSaveAndSettle(page);
+      clickRes = await clickSaveAndSettle(page, "#btn-save");
     }
     check("save-click-registered", clickRes.clicked === true, `clicked=${clickRes.clicked}`);
+    if (scenario.publicConfirmSave) publicConfirmSaveTrace.push(await publicConfirmSaveSnapshot(page, invokeLog, publicConfirmSaveStage));
 
     if (scenario.expect.warns) {
+      publicConfirmSaveStage = "warning dialog verified";
       const dialog = await finalSaveDialogState(page);
       check("warning-dialog-opened", dialog.open === true, `open=${dialog.open}`);
       check(
@@ -905,10 +1565,15 @@ async function runScenario(browser, scenario) {
         JSON.stringify(dialog.warnings) === JSON.stringify(scenario.expect.warnings),
         `got=${JSON.stringify(dialog.warnings)} expected=${JSON.stringify(scenario.expect.warnings)}`,
       );
-      check("dialog-badge-shows-count", dialog.badge === `확인 권장 ${scenario.expect.warnings.length}건`, `badge=${dialog.badge}`);
+      const expectedBadge = scenario.publicConfirmSave
+        ? `확인 후 저장 가능 ${scenario.expect.warnings.length}건`
+        : `확인 권장 ${scenario.expect.warnings.length}건`;
+      check("dialog-badge-shows-count", dialog.badge === expectedBadge, `badge=${dialog.badge}`);
       // 권고형 선택 카피("취소하고 검토하기"/"무시하고 그대로 저장") 가드.
-      check("cancel-control-present", dialog.cancelPresent && dialog.cancelText === "취소하고 검토하기", `cancelText=${dialog.cancelText}`);
-      check("confirm-control-label", dialog.confirmText === "무시하고 그대로 저장" && dialog.confirmDisabled === false, `confirmText=${dialog.confirmText} disabled=${dialog.confirmDisabled}`);
+      const expectedCancel = scenario.publicConfirmSave ? "검토로 돌아가기" : "취소하고 검토하기";
+      const expectedConfirm = scenario.publicConfirmSave ? "경고 확인 후 부분 마스킹본 저장" : "무시하고 그대로 저장";
+      check("cancel-control-present", dialog.cancelPresent && dialog.cancelText === expectedCancel, `cancelText=${dialog.cancelText}`);
+      check("confirm-control-label", dialog.confirmText === expectedConfirm && dialog.confirmDisabled === false, `confirmText=${dialog.confirmText} disabled=${dialog.confirmDisabled}`);
       check("cancel-control-hierarchy", dialog.cancelSecondary === true, `secondary=${dialog.cancelSecondary}`);
       check("confirm-control-hierarchy", dialog.confirmPrimary === true, `primary=${dialog.confirmPrimary}`);
       // 불변식: 다이얼로그가 미확인 상태일 때 finalize 는 호출되지 않아야 한다.
@@ -920,9 +1585,24 @@ async function runScenario(browser, scenario) {
         const status = await page.locator("#status").innerText();
         check("not-saved-after-cancel", /최종 저장 완료/.test(status) === false, `status=${status}`);
       } else {
+        publicConfirmSaveStage = "warning confirmation submitted";
         const confirm = await confirmDialogSave(page);
         check("saved-after-confirm", confirm.saved === scenario.expect.saves, `saved=${confirm.saved} expected=${scenario.expect.saves} status=${confirm.status}`);
+        if (scenario.publicConfirmSave) {
+          const completion = await page.evaluate(() => ({
+            status: document.querySelector("#final-save-result-status")?.textContent ?? "",
+            warnings: [...document.querySelectorAll("#final-save-result-warnings li")].map((item) => item.textContent ?? ""),
+          }));
+          check("partial-save-status-is-prominent", completion.status.includes("확인 저장"), JSON.stringify(completion));
+          check(
+            "partial-save-warning-category-pages-visible",
+            completion.warnings.length === scenario.expect.warnings.length
+              && completion.warnings.every((warning) => /미가림 가능성: .+ · \d+(?:–\d+)?쪽/.test(warning)),
+            JSON.stringify(completion),
+          );
+        }
       }
+      if (scenario.publicConfirmSave) publicConfirmSaveTrace.push(await publicConfirmSaveSnapshot(page, invokeLog, publicConfirmSaveStage));
     } else if (!doubleSaveProbe) {
       const dialog = await finalSaveDialogState(page);
       check("ready-dialog-opened", dialog.open === true, `open=${dialog.open}`);
@@ -940,10 +1620,10 @@ async function runScenario(browser, scenario) {
     check("finalize-called-exactly-once", finalizeCount(invokeLog) === expectedFinalizeCount, `count=${finalizeCount(invokeLog)} expected=${expectedFinalizeCount}`);
     check("native-save-dialog-called-once", saveDialogCount(invokeLog) === expectedFinalizeCount, `count=${saveDialogCount(invokeLog)} expected=${expectedFinalizeCount}`);
     if (scenario.expect.saves) {
-      const outputPath = String(finalizeCalls[0]?.rawPayload?.outputPath || "");
+      const outputPath = String(finalizeCalls[0]?.rawPayload?.outputPath || finalizeCalls[0]?.rawPayload?.request?.destination || "");
       check(
         "native-default-filename-used",
-        path.basename(outputPath) === "phase6_non_sensitive_masked.pdf",
+        path.basename(outputPath) === `phase6_non_sensitive_${scenario.publicConfirmSave ? "partial" : "masked"}.pdf`,
         `outputPath=${outputPath}`,
       );
       check(
@@ -954,20 +1634,9 @@ async function runScenario(browser, scenario) {
       const completionActions = await page.evaluate(() => ({
         newWorkVisible: !document.querySelector("#btn-new-document")?.classList.contains("is-hidden"),
         applyHidden: document.querySelector("#btn-canvas-apply")?.classList.contains("is-hidden") === true,
-        saveHidden: document.querySelector("#btn-canvas-final-save")?.classList.contains("is-hidden") === true,
+        saveHidden: document.querySelector("#btn-save")?.classList.contains("is-hidden") === true,
       }));
       check("saved-session-replaces-commit-actions", completionActions.newWorkVisible && completionActions.applyHidden && completionActions.saveHidden, JSON.stringify(completionActions));
-      if (scenario.id === "manual-mask-only-keeps-gate") {
-        await page.locator("#btn-new-document").click();
-        await page.waitForFunction(() => !document.querySelector("#canvas-wrap-result")?.classList.contains("has-rendered-pdf"));
-        const resetState = await page.evaluate(() => ({
-          title: document.querySelector("#current-document-title")?.textContent,
-          path: document.querySelector("#input-path")?.value,
-          queue: document.querySelectorAll("#batch-queue .batch-item").length,
-          heroVisible: getComputedStyle(document.querySelector(".dm-canvas__hero")).display !== "none",
-        }));
-        check("new-work-reset-restores-empty-hero", resetState.title === "문서를 선택하세요" && resetState.path === "" && resetState.queue === 0 && resetState.heroVisible, JSON.stringify(resetState));
-      }
     }
 
     // report-never-copied: 저장이 성공한 경우에도 finalize 는 copyReport:false 로
@@ -989,8 +1658,15 @@ async function runScenario(browser, scenario) {
     check("no-page-errors", consoleErrors.length === 0, consoleErrors.join(" | "));
     await page.screenshot({ path: path.join(evidenceDir, `${scenario.id}.png`), fullPage: true });
   } catch (error) {
-    check("scenario-threw", false, error instanceof Error ? error.message : String(error));
-    await page.screenshot({ path: path.join(evidenceDir, `${scenario.id}-error.png`), fullPage: true }).catch(() => {});
+    const diagnostic = scenario.publicConfirmSave
+      ? await publicConfirmSaveSnapshot(page, publicConfirmSaveInvokeLog, publicConfirmSaveStage)
+      : null;
+    check(
+      "scenario-threw",
+      false,
+      `${error instanceof Error ? error.message : String(error)}; stage=${publicConfirmSaveStage}; trace=${JSON.stringify(publicConfirmSaveTrace)}; diagnostic=${JSON.stringify(diagnostic)}`,
+    );
+    await page.screenshot({ path: path.join(evidenceDir, `${scenario.id}-error.png`), fullPage: true });
   } finally {
     await page.close();
   }
@@ -998,7 +1674,8 @@ async function runScenario(browser, scenario) {
 }
 
 async function runManualClearRaceScenario(browser) {
-  const page = await browser.newPage({ viewport });
+  const consoleErrors = [];
+  const page = await createQaPage(browser, consoleErrors);
   const result = { id: "manual-apply-clear-race", label: "수동 반영 중 Clear 차단 및 세션 소유권 유지", checks: [], pass: true };
   const check = (name, ok, detail) => {
     result.checks.push({ name, ok, detail });
@@ -1013,17 +1690,49 @@ async function runManualClearRaceScenario(browser) {
     await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
     await page.locator("#btn-canvas-apply").click();
     await waitForInvoke(invokeLog, "apply_manual_boxes");
-    const disabled = await page.evaluate(() => ({
-      primary: document.querySelector("#btn-clear")?.disabled === true,
-      canvas: document.querySelector("#btn-canvas-clear")?.disabled === true,
+    const disabled = await page.evaluate(
+      () => document.querySelector("#btn-canvas-clear")?.disabled === true,
+    );
+    check("clear-control-disabled-during-apply", disabled, JSON.stringify(disabled));
+    const beforeClear = await page.evaluate(() => ({
+      documentPath: document.querySelector("#input-path")?.value,
+      rendered: document.querySelector("#canvas-wrap-result")?.classList.contains("has-rendered-pdf") === true,
+      status: document.querySelector("#status")?.textContent,
     }));
-    check("clear-controls-disabled-during-apply", disabled.primary && disabled.canvas, JSON.stringify(disabled));
     await page.evaluate(() => {
-      document.querySelector("#btn-clear")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      document.querySelector("#btn-canvas-clear")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
+    const duringApply = await page.evaluate(() => {
+      const counts = ["#review-summary-mask-count", "#review-summary-restore-count"].map((selector) => {
+        const text = document.querySelector(selector)?.textContent ?? "";
+        return Number(text.match(/(\d+)\s*개/)?.[1] ?? Number.NaN);
+      });
+      return {
+        boxes: counts.every(Number.isFinite) ? counts.reduce((sum, count) => sum + count, 0) : Number.NaN,
+        documentPath: document.querySelector("#input-path")?.value,
+        status: document.querySelector("#status")?.textContent,
+        applyDisabled: document.querySelector("#btn-canvas-apply")?.disabled === true,
+      };
+    });
+    check(
+      "forced-clear-preserves-pending-box-and-session-in-flight",
+      duringApply.boxes === 1
+        && duringApply.documentPath === beforeClear.documentPath
+        && duringApply.applyDisabled
+        && /실행 중입니다/.test(duringApply.status ?? ""),
+      JSON.stringify({ beforeClear, duringApply }),
+    );
     await waitForApplyComplete(page, invokeLog);
+    const afterClear = await page.evaluate(() => ({
+      documentPath: document.querySelector("#input-path")?.value,
+      rendered: document.querySelector("#canvas-wrap-result")?.classList.contains("has-rendered-pdf") === true,
+      status: document.querySelector("#status")?.textContent,
+    }));
     check("manual-result-commits-after-blocked-clear", (await totalBoxCount(page)) === 0, `boxes=${await totalBoxCount(page)}`);
+    check("blocked-clear-preserves-document-and-applied-preview", afterClear.documentPath === beforeClear.documentPath && afterClear.rendered && /미리보기|수동/.test(afterClear.status ?? ""), JSON.stringify({ beforeClear, afterClear }));
     check("apply-finalized-once", invokeLog.filter((cmd) => cmd === "apply_manual_boxes").length === 1, `count=${invokeLog.filter((cmd) => cmd === "apply_manual_boxes").length}`);
+    check("no-page-errors", consoleErrors.length === 0, consoleErrors.join(" | "));
   } catch (error) {
     check("scenario-threw", false, error instanceof Error ? error.message : String(error));
   } finally {
@@ -1031,11 +1740,12 @@ async function runManualClearRaceScenario(browser) {
   }
   return result;
 }
-async function runPostSaveContinuationScenario(browser, mode) {
-  const page = await browser.newPage({ viewport });
+async function runPostSaveContinuationScenario(browser) {
+  const consoleErrors = [];
+  const page = await createQaPage(browser, consoleErrors);
   const result = {
-    id: mode === "inline" ? "post-save-inline-final-successor" : "post-save-detached-final-successor",
-    label: mode === "inline" ? "최종 저장 뒤 인라인 복원은 확정본에서 계속" : "최종 저장 뒤 독립 캔버스 복원은 확정본에서 계속",
+    id: "post-save-inline-final-successor",
+    label: "최종 저장 뒤 인라인 복원은 확정본에서 계속",
     checks: [],
     pass: true,
   };
@@ -1043,7 +1753,6 @@ async function runPostSaveContinuationScenario(browser, mode) {
     result.checks.push({ name, ok, detail });
     if (!ok) result.pass = false;
   };
-  let detachedPage = null;
   try {
     const mockState = createMockState();
     const firstMock = await installMock(page, buildReport(SCENARIOS[0]), { mockState });
@@ -1054,7 +1763,7 @@ async function runPostSaveContinuationScenario(browser, mode) {
     await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
     await page.locator("#btn-canvas-apply").click();
     await waitForApplyComplete(page, firstMock.invokeLog);
-    await clickAndConfirmSave(page);
+    await clickAndConfirmSave(page, "#btn-save");
     const firstFinalize = firstMock.finalizeCalls[0];
     const firstSubmittedPreview = path.resolve(firstFinalize?.previewPdf || "");
     const firstFinal = mockState.finalizedPaths[0];
@@ -1062,27 +1771,9 @@ async function runPostSaveContinuationScenario(browser, mode) {
     check("first-final-exists-in-mock-state", Boolean(firstFinal) && mockState.existingPaths.has(firstFinal), `final=${firstFinal}`);
     check("first-save-keeps-wire-and-privacy-contract", isExactFinalizePayload(firstFinalize?.rawPayload) && firstFinalize?.copied_files.length === 0, JSON.stringify(firstFinalize ?? {}));
 
-    let continuationPage = page;
-    let continuationLog = firstMock.invokeLog;
-    let continuationFinalizes = firstMock.finalizeCalls;
-    if (mode === "detached") {
-      await page.locator("#btn-mask-canvas").evaluate((element) => element.click());
-      await waitForInvoke(firstMock.invokeLog, "create_canvas_launch_token");
-      const [token] = [...mockState.tokens.keys()];
-      const launchPayload = mockState.tokens.get(token);
-      check("detached-token-targets-first-final", launchPayload?.targetPath === firstFinal, `target=${launchPayload?.targetPath} firstFinal=${firstFinal}`);
-      check("detached-no-stale-canvas-candidates", mockState.canvasLaunchAttempts.length === 1 && mockState.canvasLaunchAttempts[0] === firstFinal, `attempts=${JSON.stringify(mockState.canvasLaunchAttempts)} deleted=${JSON.stringify([...mockState.deletedPaths])}`);
-      detachedPage = await browser.newPage({ viewport });
-      const detachedMock = await installMock(detachedPage, buildReport(SCENARIOS[0]), { mockState });
-      await detachedPage.goto(`${url}${url.includes("?") ? "&" : "?"}mode=canvas&token=${encodeURIComponent(token)}`, { waitUntil: "networkidle" });
-      await detachedPage.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
-      await waitForStatus(detachedPage, /독립 작업창 로드 완료|자동 로드 실패/, 20_000);
-      const detachedStatus = await detachedPage.locator("#status").innerText();
-      check("detached-final-load-succeeds", /독립 작업창 로드 완료/.test(detachedStatus), `status=${detachedStatus}`);
-      continuationPage = detachedPage;
-      continuationLog = detachedMock.invokeLog;
-      continuationFinalizes = detachedMock.finalizeCalls;
-    }
+    const continuationPage = page;
+    const continuationLog = firstMock.invokeLog;
+    const continuationFinalizes = firstMock.finalizeCalls;
 
     await selectCanvasTool(continuationPage, "btn-canvas-tool-restore");
     await dragOnPdf(continuationPage, { x: 0.22, y: 0.24 }, { x: 0.55, y: 0.38 });
@@ -1107,7 +1798,20 @@ async function runPostSaveContinuationScenario(browser, mode) {
       JSON.stringify(mockState.applyOperations),
     );
 
-    await clickAndConfirmSave(continuationPage);
+    const secondSaveAttempt = await clickAndConfirmSave(
+      continuationPage,
+      "#btn-save",
+    );
+    const secondSaveControls = await continuationPage.evaluate(() => ["#btn-save"].map((selector) => {
+      const element = document.querySelector(selector);
+      return {
+        selector,
+        disabled: element instanceof HTMLButtonElement ? element.disabled : null,
+        hidden: element instanceof HTMLElement ? element.classList.contains("is-hidden") : null,
+        title: element instanceof HTMLElement ? element.getAttribute("title") : null,
+      };
+    }));
+    check("second-final-save-control-clicked", secondSaveAttempt.clicked, JSON.stringify(secondSaveControls));
     const secondFinalize = continuationFinalizes.at(-1);
     const secondSubmittedPreview = path.resolve(secondFinalize?.previewPdf || "");
     const secondFinal = mockState.finalizedPaths[1];
@@ -1115,47 +1819,7 @@ async function runPostSaveContinuationScenario(browser, mode) {
     check("second-save-overwrites-selected-path", Boolean(secondFinal) && secondFinal === firstFinal, `first=${firstFinal} second=${secondFinal}`);
     check("second-final-keeps-wire-and-privacy-contract", isExactFinalizePayload(secondFinalize?.rawPayload) && secondFinalize?.copied_files.length === 0, JSON.stringify(secondFinalize ?? {}));
     check("second-submitted-preview-deleted", isDeletedMockPath(mockState, secondSubmittedPreview), `preview=${secondSubmittedPreview}`);
-  } catch (error) {
-    check("scenario-threw", false, error instanceof Error ? error.message : String(error));
-  } finally {
-    await detachedPage?.close();
-    await page.close();
-  }
-  return result;
-}
-
-async function runDetachedNoFallbackFailureScenario(browser) {
-  const page = await browser.newPage({ viewport });
-  const result = {
-    id: "post-save-detached-final-candidate-failure",
-    label: "확정본 작업창 실패 시 옛 미리보기나 원본으로 폴백하지 않음",
-    checks: [],
-    pass: true,
-  };
-  const check = (name, ok, detail) => {
-    result.checks.push({ name, ok, detail });
-    if (!ok) result.pass = false;
-  };
-  try {
-    const mockState = createMockState();
-    const { invokeLog } = await installMock(page, buildReport(SCENARIOS[0]), { mockState });
-    await page.goto(url, { waitUntil: "networkidle" });
-    await page.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
-    await pickPdfAndMask(page);
-    await selectCanvasTool(page, "btn-canvas-tool-mask");
-    await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
-    await page.locator("#btn-canvas-apply").click();
-    await waitForApplyComplete(page, invokeLog);
-    await clickAndConfirmSave(page);
-    const firstFinal = mockState.finalizedPaths[0];
-
-    mockState.failCanvasTokenPending = true;
-    await page.locator("#btn-mask-canvas").evaluate((element) => element.click());
-    await waitForInvoke(invokeLog, "create_canvas_launch_token");
-    const status = await waitForStatus(page, /마스킹 작업창 열기 실패|마스킹 작업창을 열었습니다/, 10_000);
-    check("detached-failed-final-does-not-fallback", mockState.canvasLaunchAttempts.length === 1 && mockState.canvasLaunchAttempts[0] === firstFinal, `attempts=${JSON.stringify(mockState.canvasLaunchAttempts)}`);
-    check("detached-failed-final-does-not-open-window", /마스킹 작업창 열기 실패/.test(status) && !invokeLog.includes("open_mask_canvas_window"), `status=${status} log=${invokeLog.join(",")}`);
-    check("detached-failed-final-does-not-mint-stale-token", mockState.tokens.size === 0, `tokens=${JSON.stringify([...mockState.tokens.keys()])}`);
+    check("no-page-errors", consoleErrors.length === 0, consoleErrors.join(" | "));
   } catch (error) {
     check("scenario-threw", false, error instanceof Error ? error.message : String(error));
   } finally {
@@ -1163,9 +1827,11 @@ async function runDetachedNoFallbackFailureScenario(browser) {
   }
   return result;
 }
+
 
 async function runFinalLoadFailureScenario(browser) {
-  const page = await browser.newPage({ viewport });
+  const consoleErrors = [];
+  const page = await createQaPage(browser, consoleErrors);
   const result = { id: "post-save-final-load-failure", label: "확정본 로드 실패는 파일 기록과 무결성 실패를 분리", checks: [], pass: true };
   const check = (name, ok, detail) => {
     result.checks.push({ name, ok, detail });
@@ -1181,13 +1847,12 @@ async function runFinalLoadFailureScenario(browser) {
     await dragOnPdf(page, { x: 0.15, y: 0.2 }, { x: 0.6, y: 0.4 });
     await page.locator("#btn-canvas-apply").click();
     await waitForApplyComplete(page, invokeLog);
-    await clickAndConfirmSave(page);
+    await clickAndConfirmSave(page, "#btn-save");
     const status = await page.locator("#status").innerText();
     const statusDetail = await page.locator("#status-detail").innerText();
     const controls = await page.evaluate(() => ({
       apply: document.querySelector("#btn-canvas-apply")?.disabled === true,
       save: document.querySelector("#btn-save")?.disabled === true,
-      canvasSave: document.querySelector("#btn-canvas-final-save")?.disabled === true,
       mask: document.querySelector("#btn-canvas-tool-mask")?.disabled === true,
       restore: document.querySelector("#btn-canvas-tool-restore")?.disabled === true,
       baseMasking: document.querySelector("#btn-run-masking")?.disabled === true,
@@ -1199,8 +1864,9 @@ async function runFinalLoadFailureScenario(browser) {
     check("finalize-completed-before-load-failure", finalizeCalls.length === 1 && mockState.finalizedPaths.length === 1, `finalize=${finalizeCalls.length} finals=${JSON.stringify(mockState.finalizedPaths)}`);
     check("final-load-failure-separates-written-file-from-integrity-failure", /파일은 저장되었으나/.test(status) && /무결성 확인/.test(status) && /다시 열/.test(status) && !/최종 저장 완료/.test(status) && !/최종 저장 실패/.test(status), `status=${status}`);
     check("final-load-failure-does-not-record-verified-save-time", /저장 -/.test(statusDetail), `statusDetail=${statusDetail}`);
-    check("final-load-failure-disables-edit-and-save-controls", controls.apply && controls.save && controls.canvasSave && controls.mask && controls.restore, JSON.stringify(controls));
+    check("final-load-failure-disables-edit-and-save-controls", controls.apply && controls.save && controls.mask && controls.restore, JSON.stringify(controls));
     check("final-load-failure-disables-base-remasking", controls.baseMasking && maskingRunsAfterRetry === maskingRunsBeforeRetry, `controls=${JSON.stringify(controls)} before=${maskingRunsBeforeRetry} after=${maskingRunsAfterRetry}`);
+    check("no-page-errors", consoleErrors.length === 0, consoleErrors.join(" | "));
   } catch (error) {
     check("scenario-threw", false, error instanceof Error ? error.message : String(error));
   } finally {
@@ -1212,10 +1878,35 @@ async function runFinalLoadFailureScenario(browser) {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-const devServer = await ensureDevServer(url);
-const browser = await launchBrowser();
+if (PUBLIC_SCENARIOS.has(scenarioSelection)) {
+  const negativeCasesPassed = publicReceiptNegativeCases();
+  const lifecycle = publicLifecycleEvidence(scenarioSelection);
+  if (!negativeCasesPassed) {
+    lifecycle.status = "fail";
+    lifecycle.failure = "public receipt adversarial rejection contract failed";
+  }
+  const summary = {
+    status: lifecycle.status,
+    scenario: scenarioSelection,
+    piiSafe: true,
+    evidenceAuthority: "native_app_emitted_receipt",
+    negativeCasesPassed,
+    lifecycle,
+  };
+  writeFileSync(path.join(evidenceDir, "save_flow_summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+  console.log(`PUBLIC-DOCUMENT ${summary.status.toUpperCase()} — ${scenarioSelection}`);
+  process.exit(summary.status === "pass" ? 0 : 1);
+}
+let devServer;
+let browser;
 const results = [];
 try {
+  const server = await ensureDevServer();
+  devServer = server.child;
+  url = server.url;
+  const launched = await launchBrowser();
+  browser = launched.browser;
+  console.log(`[browser] ${launched.selection}${launched.systemChromeDiagnostic ? `; system Chrome unavailable: ${launched.systemChromeDiagnostic}` : ""}`);
   for (const scenario of SCENARIOS) {
     const result = await runScenario(browser, scenario);
     results.push(result);
@@ -1240,18 +1931,10 @@ try {
   for (const check of clearRaceResult.checks) {
     if (!check.ok) console.log(`    ✗ ${check.name}: ${check.detail}`);
   }
-  for (const mode of ["inline", "detached"]) {
-    const continuationResult = await runPostSaveContinuationScenario(browser, mode);
-    results.push(continuationResult);
-    console.log(`[${continuationResult.pass ? "PASS" : "FAIL"}] ${continuationResult.id} — ${continuationResult.label}`);
-    for (const check of continuationResult.checks) {
-      if (!check.ok) console.log(`    ✗ ${check.name}: ${check.detail}`);
-    }
-  }
-  const detachedNoFallbackResult = await runDetachedNoFallbackFailureScenario(browser);
-  results.push(detachedNoFallbackResult);
-  console.log(`[${detachedNoFallbackResult.pass ? "PASS" : "FAIL"}] ${detachedNoFallbackResult.id} — ${detachedNoFallbackResult.label}`);
-  for (const check of detachedNoFallbackResult.checks) {
+  const continuationResult = await runPostSaveContinuationScenario(browser);
+  results.push(continuationResult);
+  console.log(`[${continuationResult.pass ? "PASS" : "FAIL"}] ${continuationResult.id} — ${continuationResult.label}`);
+  for (const check of continuationResult.checks) {
     if (!check.ok) console.log(`    ✗ ${check.name}: ${check.detail}`);
   }
   const finalLoadFailureResult = await runFinalLoadFailureScenario(browser);
@@ -1261,7 +1944,7 @@ try {
     if (!check.ok) console.log(`    ✗ ${check.name}: ${check.detail}`);
   }
 } finally {
-  await browser.close();
+  await browser?.close();
   if (devServer) {
     devServer.kill("SIGTERM");
     console.log("[dev] stopped vite dev server");
@@ -1272,6 +1955,7 @@ const summary = {
   status: results.every((result) => result.pass) ? "pass" : "fail",
   url,
   scenarios: results,
+  evidenceAuthority: "mock_ui_non_authoritative",
 };
 writeFileSync(path.join(evidenceDir, "save_flow_summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
 console.log(`\nSAVE-FLOW ${summary.status.toUpperCase()} — ${results.filter((r) => r.pass).length}/${results.length} scenarios`);

@@ -18,4 +18,7 @@ fi
 mkdir -p "$runtime_bin_dir"
 cp "$dist_bin" "$runtime_bin_dir/masking_engine"
 chmod +x "$runtime_bin_dir/masking_engine"
+node "$repo_root/scripts/prepare_package_fingerprint.mjs" \
+  --repo "$repo_root" \
+  --record-engine-build "masking_runtime/bin/masking_engine"
 echo "masking_engine copied to $runtime_bin_dir"

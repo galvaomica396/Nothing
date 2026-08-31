@@ -3,7 +3,7 @@
 릴리즈 게이트는 아래 세트로 고정됐다(REDESIGN_V4_DARK §4). 구조가 바뀌면 이 세트와
 `docs/RUNTIME_CONTRACT.md`, Python 테스트를 **한 세트로** 갱신한다.
 
-## 8중 게이트
+## 9중 게이트
 
 | # | 명령 | 검증 |
 |---|---|---|
@@ -15,11 +15,16 @@
 | 6 | `npm run qa:save` | 저장 흐름 4시나리오(정상/데드엔드/잔여 하드블록/품질 게이트 실패) |
 | 7 | `npm run qa:options` | 비식별 TXT 선택과 token/partial/pseudonym IPC 옵션 연결 |
 | 8 | `cargo test` (`src-tauri/`, Rust 변경 시) | Tauri IPC 커맨드 |
+| 9 | `npm run accept:real` | 해시 매니페스트 15종의 외부 실앱 픽셀·저장 PDF 수용 시험 |
 
 브라우저 게이트(4~7)는 `npm run qa:all` 로 한 번에 실행한다. vite dev 서버(1420,
 strictPort)가 떠 있으면 재사용하고, 없으면 각 게이트가 자체 기동 후 종료한다.
 네 게이트 모두 `http://localhost:1420/` 호스트를 기본값으로 공유한다(IPv6 `::1`
 재사용). 개별 실행: `npm run qa:smoke|qa:canvas|qa:save|qa:options`.
+
+실앱 완료 근거의 위계는 외부 `screencapture` 픽셀, 실앱 `dump-state`, CLI 매니페스트,
+목/픽스처 QA 순이며, 마지막 항목은 완료 근거로 사용할 수 없다. `accept:real`이
+`PASS`가 아니면 실앱 작업은 미완료 또는 `PENDING`이다.
 
 ## 그 외 스크립트
 

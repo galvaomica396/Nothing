@@ -1,0 +1,58 @@
+{
+  "_comment": "역할별 모델 체인과 샌드박스 티어의 단일 소스. dispatch.sh가 이 파일만 읽는다. 체인 순서 = 폴백 순서. 기존 공급자와 opencode-go 체인이 전멸하면 마지막으로 gjc:gpt-5.6-luna(max)가 대행한다. 여기 없는 모델은 품질 하한선 미달로 사용 금지.",
+  "write": {
+    "sandbox": "workspace-write",
+    "chain": [
+      "gpt-5.6-terra",
+      "gpt-5.6-sol",
+      "gpt-5.6-luna",
+      "opencode-go/gpt-5.6-luna",
+      "gjc:gpt-5.6-luna"
+    ],
+    "schema": null,
+    "_floor": "gpt-5.6-luna 미만 금지. 오케스트레이터(Claude)의 직접 코드 작성도 금지 — 코드 변경은 이 체인으로만."
+  },
+  "write-light": {
+    "sandbox": "workspace-write",
+    "chain": [
+      "opencode-go/deepseek-v4-flash",
+      "opencode-go/ox-alpha-free",
+      "opencode-go/kimi-k3",
+      "gjc:gpt-5.6-luna"
+    ],
+    "schema": null,
+    "_floor": "단순·기계적 코드 작업 전용(라벨 추가, 상수 이동, 소규모 테스트 보강 등). 프롬프트 신뢰 금지 - 반드시 오케스트레이터가 실행 게이트(테스트/QA/스크린샷)로 검증 후 커밋. 설계 판단이 필요한 작업은 write 체인으로."
+  },
+  "audit": {
+    "sandbox": "read-only",
+    "chain": [
+      "opencode-go/deepseek-v4-flash",
+      "opencode-go/ox-alpha-free",
+      "opencode-go/kimi-k3",
+      "opencode-go/qwen3.8-max",
+      "agy:gemini-3.6-flash-medium",
+      "gjc:gpt-5.6-luna"
+    ],
+    "schema": "schemas/audit.json",
+    "_floor": "감사는 보고만 한다. read-only 샌드박스로 파일 수정이 OS 수준에서 차단됨."
+  },
+  "investigate": {
+    "sandbox": "read-only",
+    "chain": [
+      "opencode-go/deepseek-v4-flash",
+      "opencode-go/ox-alpha-free",
+      "opencode-go/kimi-k3",
+      "gjc:gpt-5.6-luna"
+    ],
+    "schema": null,
+    "_floor": "읽기 전용 코드/데이터 조사. 보고서만 산출, 수정 금지."
+  },
+  "design-verify": {
+    "sandbox": "read-only",
+    "chain": [
+      "opencode-go/deepseek-v4-flash-vision-exp"
+    ],
+    "schema": null,
+    "_floor": "스크린샷/이미지 OCR 검증 전용. 코드 작성 금지(read-only). 체인 소진 시 오케스트레이터가 이미지를 직접 판독."
+  }
+}

@@ -42,7 +42,7 @@ export default defineConfig(async () => ({
     // option is build.rolldownOptions.output.codeSplitting.groups.
     //
     // Note: pdfjs' web worker (pdf.worker.min-*.mjs, ~1.2 MB) is imported via
-    // `?url` in startLegacyApp.ts, so it is emitted as a standalone asset, not a
+    // `?url` in compositionRoot.ts, so it is emitted as a standalone asset, not a
     // JS chunk — asset size does not count toward chunkSizeWarningLimit, and the
     // worker is the minified pdfjs worker that cannot be split further anyway.
     // This is a Tauri desktop app that loads every asset from the local bundle

@@ -1,6 +1,8 @@
 use rfd::FileDialog;
 use serde::{de::DeserializeOwned, de::Error as _, Deserialize, Serialize};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -11,33 +13,48 @@ use tauri::Manager;
 // were split into `path_security`, `runtime_paths`, and `platform_macos`
 // (R3 module separation); the IPC commands and app builder remain here.
 
+#[allow(dead_code)]
+mod contracts_generated;
 mod coordinate_batch;
 mod coordinate_templates;
 mod manual_revalidation;
+mod masking_run_session;
+mod native_qa;
 mod path_security;
 mod platform_macos;
 mod process_util;
+mod qa_drive;
 mod runtime_paths;
 
 use manual_revalidation::{
     report_allows_final_save, restore_reexposes_masked_region, write_manual_revalidation_report,
     ApplyResult, RestoreRect,
 };
+use masking_run_session::{
+    finalization_save_confirmation, AnalysisManifestV1, AnalyzeMaskingRunRequest,
+    FinalizeDisposition, FinalizeMaskingRunRequest, FinalizeMaskingRunResult,
+    ManualActionV1Request, MaskingRunSessions, ResolveMaskingReviewRequest,
+    RestoreCapabilityRequest,
+};
 
 // Re-exported for the commands below and their path-security checks.
 pub(crate) use path_security::{
     canonicalize_existing_dir, canonicalize_existing_file, has_extension, AllowedFileAccess,
 };
-pub(crate) use runtime_paths::{resolve_python, resolve_runtime_paths};
+pub(crate) use runtime_paths::{
+    resolve_lifecycle_runtime_paths, resolve_python, resolve_runtime_paths,
+};
 
 #[cfg(test)]
 use path_security::safe_copy_new_at;
 use path_security::{
     canonicalize_registered_artifact_dir, canonicalize_registered_document,
     canonicalize_registered_native_save_target, canonicalize_registered_pdf,
-    copy_optional_artifact, optional_registered_artifact, optional_registered_masked_text_artifact,
-    optional_registered_report_artifact, remove_intermediate_file_if_outside_dir, safe_copy_new,
-    stage_copy_overwrite_exact, ExactOverwriteTransaction, SaveError,
+    consume_registered_native_save_target, copy_optional_artifact, optional_registered_artifact,
+    optional_registered_masked_text_artifact, optional_registered_report_artifact,
+    remove_intermediate_file_if_outside_dir, safe_copy_new, stage_copy_overwrite_exact,
+    stage_copy_overwrite_exact_from_file, ExactOverwriteTransaction, NativeSaveTargetBinding,
+    NativeSaveTargetRegistration, SaveError,
 };
 use platform_macos::{activate_macos_app, set_macos_activation_policy, show_macos_application};
 
@@ -56,6 +73,13 @@ struct ManualBoxPayload {
 struct FinalizeResult {
     final_output_file: String,
     copied_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QaFileStat {
+    exists: bool,
+    size: u64,
 }
 
 #[derive(Debug)]
@@ -147,12 +171,20 @@ impl<'de, R: tauri::Runtime> tauri::ipc::CommandArg<'de, R> for FinalizeManualOu
 #[derive(Debug)]
 pub struct ChooseFinalPdfPathRequest {
     default_file_name: String,
+    mode: Option<String>,
+    run_id: Option<String>,
+    analysis_revision: Option<u64>,
+    manifest_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChooseFinalPdfPathPayload {
     default_file_name: String,
+    mode: Option<String>,
+    run_id: Option<String>,
+    analysis_revision: Option<u64>,
+    manifest_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,10 +194,40 @@ struct FinalPdfSaveTarget {
     save_token: String,
 }
 
+#[derive(Clone, Copy)]
+struct QaDriveEnabled(bool);
+
 impl From<ChooseFinalPdfPathPayload> for ChooseFinalPdfPathRequest {
     fn from(payload: ChooseFinalPdfPathPayload) -> Self {
         Self {
             default_file_name: payload.default_file_name,
+            mode: payload.mode,
+            run_id: payload.run_id,
+            analysis_revision: payload.analysis_revision,
+            manifest_hash: payload.manifest_hash,
+        }
+    }
+}
+
+impl ChooseFinalPdfPathRequest {
+    fn binding(&self) -> Result<NativeSaveTargetBinding, String> {
+        match (
+            self.mode.as_deref(),
+            self.run_id.as_deref(),
+            self.analysis_revision,
+            self.manifest_hash.as_deref(),
+        ) {
+            (None, Some(run_id), Some(analysis_revision), Some(manifest_hash))
+                if !run_id.trim().is_empty() && !manifest_hash.trim().is_empty() =>
+            {
+                Ok(NativeSaveTargetBinding::Public {
+                    run_id: run_id.to_string(),
+                    analysis_revision,
+                    manifest_hash: manifest_hash.to_string(),
+                })
+            }
+            (Some("legacy_direct"), None, None, None) => Ok(NativeSaveTargetBinding::LegacyManual),
+            _ => Err("MASKING_SESSION_DESTINATION_REJECTED".to_string()),
         }
     }
 }
@@ -268,6 +330,7 @@ struct MaskingOptions {
     approval_line: bool,
     region_context: bool,
     doc_meta: bool,
+    email: bool,
     pdf_redaction: bool,
     custom_keywords: String,
     extract_engine: String,
@@ -278,6 +341,8 @@ struct MaskingOptions {
     region_scope: String,
     custom_regions: String,
     return_text_preview: bool,
+    auto_mask_threshold: f64,
+    review_threshold: f64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -292,31 +357,17 @@ struct MaskingResult {
     masked_text: String,
 }
 
+fn normalize_masking_profile(profile: &str) -> Result<&'static str, String> {
+    masking_run_session::canonical_profile(profile)
+        .map_err(|_| "MASKING_OPTIONS_REJECTED: 지원하지 않는 문서 유형입니다.".to_string())
+}
+
 fn validate_masking_options(opts: &MaskingOptions) -> Result<(), String> {
-    if !matches!(
-        opts.output_artifacts.as_str(),
-        "pdf_safe_report" | "pdf_masked_txt_safe_report"
-    ) {
-        return Err("MASKING_OPTIONS_REJECTED: 지원하지 않는 산출물 옵션입니다.".to_string());
-    }
-    if !matches!(
-        opts.deidentification_policy.as_str(),
-        "token" | "partial" | "pseudonym"
-    ) {
-        return Err("MASKING_OPTIONS_REJECTED: 지원하지 않는 비식별 정책입니다.".to_string());
-    }
-    if !matches!(
-        opts.display_mode.as_str(),
-        "black" | "label_en" | "label_ko" | "pseudonym"
-    ) {
-        return Err("MASKING_OPTIONS_REJECTED: 지원하지 않는 표시 모드입니다.".to_string());
-    }
-    if opts.return_text_preview {
-        return Err(
-            "MASKING_OPTIONS_REJECTED: 원문 텍스트 미리보기는 허용되지 않습니다.".to_string(),
-        );
-    }
-    Ok(())
+    let options = serde_json::to_value(opts)
+        .map_err(|_| "MASKING_OPTIONS_REJECTED: 옵션을 확인할 수 없습니다.".to_string())?;
+    masking_run_session::canonical_public_options(options, &opts.profile)
+        .map(|_| ())
+        .map_err(|_| "MASKING_OPTIONS_REJECTED: 안전하지 않은 옵션입니다.".to_string())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -415,6 +466,13 @@ fn register_copied_outputs(access: &AllowedFileAccess, result: &FinalizeResult) 
         access.allow_final_output_path(&copied_path);
     }
 }
+pub(crate) fn register_native_save_target_core(
+    access: &AllowedFileAccess,
+    path: &Path,
+    binding: NativeSaveTargetBinding,
+) -> Result<NativeSaveTargetRegistration, String> {
+    access.register_native_save_target(path, binding)
+}
 
 #[tauri::command]
 fn pick_input_pdf(access: tauri::State<'_, AllowedFileAccess>) -> Option<String> {
@@ -428,9 +486,36 @@ fn pick_input_pdf(access: tauri::State<'_, AllowedFileAccess>) -> Option<String>
 }
 #[tauri::command]
 fn choose_final_pdf_path(
+    qa_drive: tauri::State<'_, QaDriveEnabled>,
     access: tauri::State<'_, AllowedFileAccess>,
     request: ChooseFinalPdfPathRequest,
 ) -> Result<Option<FinalPdfSaveTarget>, String> {
+    let binding = request.binding()?;
+    if qa_drive.0 {
+        if let Some(configured_path) = std::env::var_os("MASK_TOOL_QA_FINAL_OUTPUT_PATH") {
+            let configured_path = PathBuf::from(configured_path);
+            let parent = configured_path
+                .parent()
+                .filter(|value| !value.as_os_str().is_empty())
+                .ok_or_else(|| "QA_DRIVE_OUTPUT_INVALID".to_string())?;
+            let canonical_parent = canonicalize_existing_dir(parent)
+                .map_err(|_| "QA_DRIVE_OUTPUT_INVALID".to_string())?;
+            let allowed = std::env::var_os("MASK_TOOL_ALLOWED_DIRS")
+                .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|root| canonicalize_existing_dir(&root).ok())
+                .any(|root| canonical_parent.starts_with(root));
+            if !allowed {
+                return Err("QA_DRIVE_OUTPUT_OUTSIDE_ALLOWED_DIRS".to_string());
+            }
+            let target = register_native_save_target_core(&*access, &configured_path, binding)?;
+            return Ok(Some(FinalPdfSaveTarget {
+                output_path: target.output_path.display().to_string(),
+                save_token: target.save_token,
+            }));
+        }
+    }
     access.clear_native_save_target()?;
     let default_file_name = request
         .default_file_name
@@ -446,7 +531,7 @@ fn choose_final_pdf_path(
     else {
         return Ok(None);
     };
-    let target = access.register_native_save_target(&path)?;
+    let target = register_native_save_target_core(&access, &path, binding)?;
     Ok(Some(FinalPdfSaveTarget {
         output_path: target.output_path.display().to_string(),
         save_token: target.save_token,
@@ -462,6 +547,53 @@ fn pick_input_document(access: tauri::State<'_, AllowedFileAccess>) -> Option<St
             access.allow_document_path(&p);
             p.display().to_string()
         })
+}
+
+#[tauri::command]
+fn qa_register_input_document(
+    qa_drive: tauri::State<'_, QaDriveEnabled>,
+    access: tauri::State<'_, AllowedFileAccess>,
+    path: String,
+) -> Result<String, String> {
+    if !qa_drive.0 {
+        return Err("QA_DRIVE_DISABLED".to_string());
+    }
+    let path = qa_drive::allowed_document_path(&path)?;
+    access.allow_document_path(&path);
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn qa_stat_final_output(
+    qa_drive: tauri::State<'_, QaDriveEnabled>,
+    path: String,
+) -> Result<QaFileStat, String> {
+    if !qa_drive.0 {
+        return Err("QA_DRIVE_DISABLED".to_string());
+    }
+    let path = qa_drive::allowed_document_path(&path)
+        .map_err(|_| "QA_DRIVE_FINAL_OUTPUT_STAT_FAILED".to_string())?;
+    let metadata =
+        std::fs::metadata(path).map_err(|_| "QA_DRIVE_FINAL_OUTPUT_STAT_FAILED".to_string())?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err("QA_DRIVE_FINAL_OUTPUT_STAT_FAILED".to_string());
+    }
+    Ok(QaFileStat {
+        exists: true,
+        size: metadata.len(),
+    })
+}
+
+#[tauri::command]
+fn qa_drive_response(
+    qa_drive: tauri::State<'_, QaDriveEnabled>,
+    bridge: tauri::State<'_, qa_drive::Bridge>,
+    response: qa_drive::Response,
+) -> Result<(), String> {
+    if !qa_drive.0 {
+        return Err("QA_DRIVE_DISABLED".to_string());
+    }
+    bridge.receive(response)
 }
 
 #[tauri::command]
@@ -554,6 +686,1199 @@ fn read_pdf_bytes(
         return Err("PDF 파일이 미리보기 제한보다 큽니다.".to_string());
     }
     std::fs::read(&canonical).map_err(|e| format!("PDF 파일 읽기 실패: {e}"))
+}
+fn configure_mask_tool_allowed_dirs(
+    command: &mut std::process::Command,
+    roots: &[&Path],
+) -> Result<(), String> {
+    let canonical_roots = roots
+        .iter()
+        .map(|root| canonicalize_existing_dir(root))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "MASKING_SESSION_PATH_CAPABILITY_INVALID".to_string())?;
+    let joined = std::env::join_paths(canonical_roots)
+        .map_err(|_| "MASKING_SESSION_PATH_CAPABILITY_INVALID".to_string())?;
+    command.env("MASK_TOOL_ALLOWED_DIRS", joined);
+    Ok(())
+}
+
+fn configure_direct_pipeline_allowed_dirs(
+    command: &mut std::process::Command,
+    input_path: &Path,
+    output_dir: &Path,
+) -> Result<(), String> {
+    let input_dir = input_path
+        .parent()
+        .ok_or_else(|| "MASKING_SESSION_PATH_CAPABILITY_INVALID".to_string())?;
+    configure_mask_tool_allowed_dirs(command, &[input_dir, output_dir])
+}
+
+fn stable_pipeline_failure(stderr: &[u8]) -> Option<String> {
+    let payload: serde_json::Value = serde_json::from_slice(stderr).ok()?;
+    if payload.get("event").and_then(serde_json::Value::as_str) != Some("pipeline_failure")
+        || payload
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+        || payload
+            .get("rawTextReturned")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+    {
+        return None;
+    }
+    let code = payload
+        .pointer("/error/code")
+        .and_then(serde_json::Value::as_str)?;
+    if !code.starts_with("MASKING_PIPELINE_")
+        || !code
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return None;
+    }
+    Some(code.to_string())
+}
+
+fn safe_pipeline_diagnostic_token(value: Option<&serde_json::Value>) -> Option<&str> {
+    let value = value?.as_str()?;
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 64
+        || !bytes[0].is_ascii_lowercase()
+        || !bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+    {
+        return None;
+    }
+    Some(value)
+}
+
+fn safe_pipeline_diagnostic_hash(value: Option<&serde_json::Value>) -> Option<&str> {
+    let value = value?.as_str()?;
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn safe_pipeline_diagnostic_occurrence_id(
+    value: Option<&serde_json::Value>,
+) -> Option<&str> {
+    let value = value?.as_str()?;
+    if value.len() == 28
+        && value.starts_with("occ_")
+        && value[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn safe_pipeline_diagnostic_page(value: Option<&serde_json::Value>) -> Option<u64> {
+    value?.as_u64().filter(|page| *page <= 2_000)
+}
+
+fn stable_pipeline_failure_detail(stderr: &[u8], code: &str) -> String {
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(stderr) else {
+        return code.to_string();
+    };
+    let Some(diagnostics) = payload
+        .pointer("/error/diagnostics")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return code.to_string();
+    };
+    if diagnostics.is_empty() || diagnostics.len() > 16 {
+        return code.to_string();
+    }
+    let mut safe_diagnostics: Vec<serde_json::Value> = diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            let object = diagnostic.as_object()?;
+            let allowed = [
+                "kind",
+                "reason_code",
+                "count",
+                "occurrence_id",
+                "category",
+                "page",
+                "rect_fingerprint",
+                "expected_text_hash",
+                "observed_text_hash",
+            ];
+            if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+                return None;
+            }
+            let kind = safe_pipeline_diagnostic_token(object.get("kind"))?;
+            let reason_code = safe_pipeline_diagnostic_token(object.get("reason_code"))?;
+            let count = object.get("count")?.as_u64()?;
+            if count == 0 || count > 10_000 {
+                return None;
+            }
+            let mut safe = serde_json::Map::from_iter([
+                (
+                    "kind".to_string(),
+                    serde_json::Value::String(kind.to_string()),
+                ),
+                (
+                    "reason_code".to_string(),
+                    serde_json::Value::String(reason_code.to_string()),
+                ),
+                ("count".to_string(), serde_json::json!(count)),
+            ]);
+            if object.get("occurrence_id").is_some() {
+                safe.insert(
+                    "occurrence_id".to_string(),
+                    serde_json::Value::String(
+                        safe_pipeline_diagnostic_occurrence_id(object.get("occurrence_id"))?
+                            .to_string(),
+                    ),
+                );
+            }
+            if object.get("category").is_some() {
+                safe.insert(
+                    "category".to_string(),
+                    serde_json::Value::String(
+                        safe_pipeline_diagnostic_token(object.get("category"))?.to_string(),
+                    ),
+                );
+            }
+            if object.get("page").is_some() {
+                safe.insert(
+                    "page".to_string(),
+                    serde_json::json!(safe_pipeline_diagnostic_page(object.get("page"))?),
+                );
+            }
+            for field in ["rect_fingerprint", "expected_text_hash", "observed_text_hash"] {
+                if object.get(field).is_some() {
+                    safe.insert(
+                        field.to_string(),
+                        serde_json::Value::String(
+                            safe_pipeline_diagnostic_hash(object.get(field))?.to_string(),
+                        ),
+                    );
+                }
+            }
+            Some(serde_json::Value::Object(safe))
+        })
+        .collect();
+    if safe_diagnostics.len() != diagnostics.len() {
+        return code.to_string();
+    }
+    if safe_diagnostics.len() > 4 {
+        let final_diagnostic = safe_diagnostics.pop().expect("diagnostics is non-empty");
+        safe_diagnostics.truncate(3);
+        safe_diagnostics.push(final_diagnostic);
+    }
+    let Ok(serialized) = serde_json::to_string(&safe_diagnostics) else {
+        return code.to_string();
+    };
+    let detail = format!("{code};diagnostics={serialized}");
+    if detail.len() > 2048 {
+        code.to_string()
+    } else {
+        detail
+    }
+}
+
+const MASKING_DEBUG_LOG_MAX_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MaskingIpcError {
+    code: String,
+    stage: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone)]
+struct MaskingFailureMetadata {
+    error: MaskingIpcError,
+    exit_code: Option<i32>,
+    stdout_bytes: usize,
+    stderr_bytes: usize,
+    stderr_tail: String,
+}
+
+thread_local! {
+    static MASKING_FAILURE_METADATA: RefCell<Option<MaskingFailureMetadata>> = const { RefCell::new(None) };
+}
+
+fn session_guard_error(code: &str) -> MaskingIpcError {
+    let stable_code = code
+        .split(|character: char| !character.is_ascii_uppercase() && character != '_')
+        .find(|candidate| {
+            candidate.starts_with("MASKING_")
+                || candidate.starts_with("PROCESS_")
+                || candidate.starts_with("SAVE_")
+        })
+        .unwrap_or("MASKING_SESSION_REQUEST_REJECTED");
+    MaskingIpcError {
+        code: stable_code.to_string(),
+        stage: "session_guard".to_string(),
+        detail: stable_code.to_string(),
+    }
+}
+
+fn remember_masking_failure(metadata: MaskingFailureMetadata) {
+    MASKING_FAILURE_METADATA.with(|slot| *slot.borrow_mut() = Some(metadata));
+}
+
+fn clear_masking_failure() {
+    MASKING_FAILURE_METADATA.with(|slot| *slot.borrow_mut() = None);
+}
+
+fn take_masking_failure(code: &str) -> MaskingFailureMetadata {
+    MASKING_FAILURE_METADATA.with(|slot| {
+        slot.borrow_mut()
+            .take()
+            .unwrap_or_else(|| MaskingFailureMetadata {
+                error: session_guard_error(code),
+                exit_code: None,
+                stdout_bytes: 0,
+                stderr_bytes: 0,
+                stderr_tail: String::new(),
+            })
+    })
+}
+
+fn sanitized_stderr_tail(stderr: &[u8]) -> String {
+    let tail_start = stderr.len().saturating_sub(2048);
+    process_util::sanitize_stderr(&String::from_utf8_lossy(&stderr[tail_start..]))
+}
+
+fn lifecycle_spawn_failure(code: &str, error: &std::io::Error) -> MaskingIpcError {
+    let stable_code = if error.kind() == std::io::ErrorKind::NotFound {
+        "MASKING_SESSION_ANALYZER_UNAVAILABLE"
+    } else {
+        code
+    };
+    MaskingIpcError {
+        code: stable_code.to_string(),
+        stage: "spawn".to_string(),
+        detail: format!("io_kind={:?}", error.kind()),
+    }
+}
+
+fn lifecycle_capture_failure(
+    fallback_code: &str,
+    captured: &process_util::CapturedOutput,
+) -> Option<MaskingIpcError> {
+    if captured.timed_out {
+        return Some(MaskingIpcError {
+            code: fallback_code.to_string(),
+            stage: "timeout".to_string(),
+            detail: sanitized_stderr_tail(&captured.stderr),
+        });
+    }
+    if captured.stdout_truncated || captured.stderr_truncated {
+        return Some(MaskingIpcError {
+            code: fallback_code.to_string(),
+            stage: "output_parse".to_string(),
+            detail: format!(
+                "stdout_bytes={}; stderr_bytes={}; output_truncated",
+                captured.stdout.len(),
+                captured.stderr.len(),
+            ),
+        });
+    }
+    if !captured.status.success() {
+        if let Some(code) = stable_pipeline_failure(&captured.stderr) {
+            let detail = stable_pipeline_failure_detail(&captured.stderr, &code);
+            return Some(MaskingIpcError {
+                detail,
+                code,
+                stage: "pipeline_failure_code".to_string(),
+            });
+        }
+        return Some(MaskingIpcError {
+            code: fallback_code.to_string(),
+            stage: "nonzero_exit".to_string(),
+            detail: sanitized_stderr_tail(&captured.stderr),
+        });
+    }
+    None
+}
+
+fn lifecycle_output_parse_failure(
+    code: &str,
+    captured: &process_util::CapturedOutput,
+) -> MaskingIpcError {
+    MaskingIpcError {
+        code: code.to_string(),
+        stage: "output_parse".to_string(),
+        detail: process_util::summarize_parse_failure(&String::from_utf8_lossy(&captured.stdout)),
+    }
+}
+
+fn remember_lifecycle_failure(
+    error: MaskingIpcError,
+    captured: Option<&process_util::CapturedOutput>,
+) {
+    let metadata = match captured {
+        None => MaskingFailureMetadata {
+            error,
+            exit_code: None,
+            stdout_bytes: 0,
+            stderr_bytes: 0,
+            stderr_tail: String::new(),
+        },
+        Some(captured) => MaskingFailureMetadata {
+            stderr_tail: sanitized_stderr_tail(&captured.stderr),
+            exit_code: captured.status.code(),
+            stdout_bytes: captured.stdout.len(),
+            stderr_bytes: captured.stderr.len(),
+            error,
+        },
+    };
+    remember_masking_failure(metadata);
+}
+
+fn append_masking_debug_log(app: &tauri::AppHandle, metadata: &MaskingFailureMetadata) {
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    if std::fs::create_dir_all(&app_data_dir).is_err() {
+        return;
+    }
+    let path = app_data_dir.join("masking-debug.log");
+    if std::fs::metadata(&path)
+        .map(|metadata| metadata.len() >= MASKING_DEBUG_LOG_MAX_BYTES)
+        .unwrap_or(false)
+        && std::fs::File::create(&path).is_err()
+    {
+        return;
+    }
+    let record = serde_json::json!({
+        "code": metadata.error.code,
+        "stage": metadata.error.stage,
+        "detail": metadata.error.detail,
+        "exitCode": metadata.exit_code,
+        "stdoutBytes": metadata.stdout_bytes,
+        "stderrBytes": metadata.stderr_bytes,
+        "stderrTail": metadata.stderr_tail,
+    });
+    let Ok(line) = serde_json::to_string(&record) else {
+        return;
+    };
+    use std::io::Write as _;
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = writeln!(file, "{line}");
+}
+fn create_private_staging_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(path)
+    }
+}
+
+pub(crate) fn analyze_masking_run_core(
+    app: &tauri::AppHandle,
+    access: &AllowedFileAccess,
+    sessions: &MaskingRunSessions,
+    request: AnalyzeMaskingRunRequest,
+) -> Result<AnalysisManifestV1, String> {
+    if request.input_file.trim().is_empty() {
+        return Err("MASKING_SESSION_INVALID_INPUT".to_string());
+    }
+    let input_path = canonicalize_registered_document(access, &request.input_file, "입력 파일")
+        .map_err(|_| "MASKING_SESSION_INPUT_ACCESS_DENIED".to_string())?;
+    let input_size = std::fs::metadata(&input_path)
+        .map_err(|_| "MASKING_SESSION_INPUT_READ_FAILED".to_string())?
+        .len();
+    if input_size > 100 * 1024 * 1024 {
+        return Err("MASKING_SESSION_INPUT_TOO_LARGE".to_string());
+    }
+    let original =
+        std::fs::read(&input_path).map_err(|_| "MASKING_SESSION_INPUT_READ_FAILED".to_string())?;
+    let runtime = resolve_lifecycle_runtime_paths(app)
+        .map_err(|_| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
+    let options = masking_run_session::canonical_public_options(request.options, &request.profile)
+        .map_err(|_| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
+    let analyzer_options = masking_run_session::with_server_profile_authority(
+        options.clone(),
+        &masking_run_session::document_hash(&original),
+        1,
+    )
+    .map_err(|_| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
+    let analyzer_request = serde_json::to_vec(&serde_json::json!({
+        "input": input_path.clone(),
+        "options": analyzer_options,
+    }))
+    .map_err(|_| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
+    let mut command = runtime_paths::lifecycle_command(&runtime, "analyze")?;
+    command.arg("--request-stdin");
+    let mut session_hash_key = [0_u8; 32];
+    getrandom::getrandom(&mut session_hash_key)
+        .map_err(|_| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
+    let session_hash_key_hex = session_hash_key
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    command.env("MASKING_SESSION_HASH_KEY_HEX", session_hash_key_hex);
+    configure_mask_tool_allowed_dirs(
+        &mut command,
+        &[input_path
+            .parent()
+            .ok_or_else(|| "MASKING_SESSION_INPUT_ACCESS_DENIED".to_string())?],
+    )?;
+    let captured = process_util::run_capturing_with_timeout_and_stdin(
+        command,
+        process_util::SINGLE_RUN_TIMEOUT,
+        analyzer_request,
+    )
+    .map_err(|error| {
+        let failure = lifecycle_spawn_failure("MASKING_SESSION_ANALYZER_FAILED", &error);
+        remember_lifecycle_failure(failure, None);
+        "MASKING_SESSION_ANALYZER_FAILED".to_string()
+    })?;
+    if let Some(failure) = lifecycle_capture_failure("MASKING_SESSION_ANALYZER_FAILED", &captured) {
+        remember_lifecycle_failure(failure, Some(&captured));
+        return Err("MASKING_SESSION_ANALYZER_FAILED".to_string());
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&captured.stdout).map_err(|_| {
+        let failure = lifecycle_output_parse_failure("MASKING_SESSION_ANALYZER_INVALID", &captured);
+        remember_lifecycle_failure(failure, Some(&captured));
+        "MASKING_SESSION_ANALYZER_INVALID".to_string()
+    })?;
+    let trusted = payload.get("analysis_manifest").ok_or_else(|| {
+        let failure = lifecycle_output_parse_failure("MASKING_SESSION_ANALYZER_INVALID", &captured);
+        remember_lifecycle_failure(failure, Some(&captured));
+        "MASKING_SESSION_ANALYZER_INVALID".to_string()
+    })?;
+    let manifest =
+        sessions.create_from_trusted(&original, &request.profile, options.clone(), trusted)?;
+    sessions.bind_private_context(&manifest.run_id, input_path, options)?;
+    Ok(manifest)
+}
+#[tauri::command]
+fn analyze_masking_run(
+    app: tauri::AppHandle,
+    access: tauri::State<'_, AllowedFileAccess>,
+    sessions: tauri::State<'_, MaskingRunSessions>,
+    request: AnalyzeMaskingRunRequest,
+) -> Result<AnalysisManifestV1, MaskingIpcError> {
+    clear_masking_failure();
+    analyze_masking_run_core(&app, &access, &sessions, request).map_err(|code| {
+        let metadata = take_masking_failure(&code);
+        append_masking_debug_log(&app, &metadata);
+        metadata.error
+    })
+}
+
+fn reanalysis_profile_authority_revision(
+    resolution: &masking_run_session::ReviewResolution,
+    current_revision: u64,
+    successor_revision: u64,
+) -> Option<u64> {
+    match resolution {
+        masking_run_session::ReviewResolution::Boundary { .. } => Some(current_revision),
+        masking_run_session::ReviewResolution::Ocr { accepted: true } => Some(successor_revision),
+        _ => None,
+    }
+}
+
+pub(crate) fn resolve_masking_review_core(
+    app: &tauri::AppHandle,
+    sessions: &MaskingRunSessions,
+    request: ResolveMaskingReviewRequest,
+) -> Result<AnalysisManifestV1, String> {
+    let requires_reanalysis = matches!(
+        &request.resolution,
+        masking_run_session::ReviewResolution::Boundary { .. }
+            | masking_run_session::ReviewResolution::Ocr { accepted: true }
+    );
+    if !requires_reanalysis {
+        return sessions.resolve(request);
+    }
+    let context = sessions
+        .reanalysis_context(&request)
+        .map_err(|_| "MASKING_SESSION_REANALYSIS_UNAVAILABLE".to_string())?;
+    let original = std::fs::read(&context.original)
+        .map_err(|_| "MASKING_SESSION_REANALYSIS_INPUT_READ_FAILED".to_string())?;
+    let revision = request
+        .analysis_revision
+        .checked_add(1)
+        .ok_or_else(|| "MASKING_SESSION_REANALYSIS_FAILED".to_string())?;
+    let authority_revision = reanalysis_profile_authority_revision(
+        &request.resolution,
+        request.analysis_revision,
+        revision,
+    )
+    .ok_or_else(|| "MASKING_SESSION_REANALYSIS_REQUIRED".to_string())?;
+    let analyzer_options = masking_run_session::with_server_profile_authority(
+        context.options.clone(),
+        &context.original_document_hash,
+        authority_revision,
+    )
+    .map_err(|_| "MASKING_SESSION_REANALYSIS_FAILED".to_string())?;
+    let reanalysis = match &request.resolution {
+        masking_run_session::ReviewResolution::Boundary {
+            page_start,
+            page_end,
+            segment_kind,
+        } => {
+            serde_json::json!({
+                "kind": "boundary", "page_start": page_start, "page_end": page_end,
+                "segment_kind": segment_kind, "analysis_revision": revision,
+            })
+        }
+        masking_run_session::ReviewResolution::Ocr { accepted: true } => serde_json::json!({
+            "kind": "ocr", "page_start": 0, "page_end": 0, "analysis_revision": revision,
+        }),
+        _ => return Err("MASKING_SESSION_REANALYSIS_REQUIRED".to_string()),
+    };
+    let runtime = resolve_lifecycle_runtime_paths(app)
+        .map_err(|_| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
+    let analyzer_request = serde_json::to_vec(&serde_json::json!({
+        "input": context.original,
+        "options": analyzer_options,
+        "reanalysis": reanalysis,
+    }))
+    .map_err(|_| "MASKING_SESSION_REANALYSIS_FAILED".to_string())?;
+    let mut command = runtime_paths::lifecycle_command(&runtime, "analyze")?;
+    command.arg("--request-stdin");
+    configure_mask_tool_allowed_dirs(
+        &mut command,
+        &[context
+            .original
+            .parent()
+            .ok_or_else(|| "MASKING_SESSION_REANALYSIS_INPUT_READ_FAILED".to_string())?],
+    )?;
+    let captured = process_util::run_capturing_with_timeout_and_stdin(
+        command,
+        process_util::SINGLE_RUN_TIMEOUT,
+        analyzer_request,
+    )
+    .map_err(|error| {
+        let failure = lifecycle_spawn_failure("MASKING_SESSION_ANALYZER_FAILED", &error);
+        remember_lifecycle_failure(failure, None);
+        "MASKING_SESSION_ANALYZER_FAILED".to_string()
+    })?;
+    if let Some(failure) = lifecycle_capture_failure("MASKING_SESSION_ANALYZER_FAILED", &captured) {
+        remember_lifecycle_failure(failure, Some(&captured));
+        return Err("MASKING_SESSION_ANALYZER_FAILED".to_string());
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&captured.stdout).map_err(|_| {
+        let failure = lifecycle_output_parse_failure("MASKING_SESSION_ANALYZER_INVALID", &captured);
+        remember_lifecycle_failure(failure, Some(&captured));
+        "MASKING_SESSION_ANALYZER_INVALID".to_string()
+    })?;
+    let trusted = payload.get("analysis_manifest").ok_or_else(|| {
+        let failure = lifecycle_output_parse_failure("MASKING_SESSION_ANALYZER_INVALID", &captured);
+        remember_lifecycle_failure(failure, Some(&captured));
+        "MASKING_SESSION_ANALYZER_INVALID".to_string()
+    })?;
+    sessions
+        .replace_from_trusted_reanalysis(request, &original, trusted)
+        .map_err(|_| "MASKING_SESSION_REANALYSIS_REJECTED".to_string())
+}
+#[tauri::command]
+fn resolve_masking_review(
+    app: tauri::AppHandle,
+    sessions: tauri::State<'_, MaskingRunSessions>,
+    request: ResolveMaskingReviewRequest,
+) -> Result<AnalysisManifestV1, MaskingIpcError> {
+    clear_masking_failure();
+    resolve_masking_review_core(&app, &sessions, request).map_err(|code| {
+        let metadata = take_masking_failure(&code);
+        append_masking_debug_log(&app, &metadata);
+        metadata.error
+    })
+}
+#[tauri::command]
+fn apply_manual_action_v1(
+    sessions: tauri::State<'_, MaskingRunSessions>,
+    request: ManualActionV1Request,
+) -> Result<AnalysisManifestV1, String> {
+    sessions.apply_manual_action(request)
+}
+
+#[tauri::command]
+fn issue_restore_capability(
+    sessions: tauri::State<'_, MaskingRunSessions>,
+    request: RestoreCapabilityRequest,
+) -> Result<masking_run_session::RestoreCapabilityResponse, String> {
+    sessions.issue_restore_capability(request, "native_trusted_ui")
+}
+
+#[tauri::command]
+fn get_masking_run_state(
+    sessions: tauri::State<'_, MaskingRunSessions>,
+    run_id: String,
+) -> Result<AnalysisManifestV1, String> {
+    sessions.get(run_id.trim())
+}
+#[derive(Clone)]
+struct FinalizePublication {
+    final_path: String,
+    verified_staging_hash: String,
+}
+
+fn precommit_finalize_failure(primary: String, cleanup: Result<(), String>) -> String {
+    match cleanup {
+        Ok(()) => format!("MASKING_SESSION_PRECOMMIT_RETRYABLE;cause={primary}"),
+        Err(cleanup) => {
+            format!("MASKING_SESSION_PRECOMMIT_CLEANUP_REQUIRED;cause={primary};cleanup={cleanup}")
+        }
+    }
+}
+
+fn published_finalize_failure(
+    _publication: &FinalizePublication,
+    primary: String,
+    _cleanup: Result<(), String>,
+) -> String {
+    // Publication errors are public IPC values. Do not expose destination
+    // paths, hashes, or underlying filesystem failures across that boundary.
+    if primary == "MASKING_SESSION_PROMOTION_RESTORE_FAILED" {
+        "MASKING_SESSION_PUBLISHED_RESTORE_FAILED".to_string()
+    } else {
+        "MASKING_SESSION_PUBLISHED_POSTCOMMIT".to_string()
+    }
+}
+
+fn finalize_io_outcome(
+    committed: bool,
+    publication: Option<&FinalizePublication>,
+    result: Result<FinalizeMaskingRunResult, String>,
+    cleanup: Result<(), String>,
+) -> Result<FinalizeMaskingRunResult, String> {
+    match (committed, result, cleanup) {
+        (false, Err(primary), cleanup) => Err(precommit_finalize_failure(primary, cleanup)),
+        (true, Ok(result), Ok(())) => Ok(result),
+        (true, Ok(_), Err(cleanup)) => Err(published_finalize_failure(
+            publication.expect("publication evidence exists after commit"),
+            "MASKING_SESSION_CLEANUP_FAILED".to_string(),
+            Err(cleanup),
+        )),
+        (true, Err(primary), cleanup) => Err(published_finalize_failure(
+            publication.expect("publication evidence exists after commit"),
+            primary,
+            cleanup,
+        )),
+        (false, Ok(_), _) => Err("MASKING_SESSION_FINALIZE_STATE_INVALID".to_string()),
+    }
+}
+fn verified_final_hash(expected_hash: &str, output: &[u8]) -> Result<String, String> {
+    let final_hash = masking_run_session::document_hash(output);
+    if final_hash != expected_hash {
+        return Err("MASKING_SESSION_PROMOTION_FAILED".to_string());
+    }
+    Ok(final_hash)
+}
+
+fn open_regular_staging_file(path: &Path) -> Result<std::fs::File, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(target_os = "macos")]
+        const O_NOFOLLOW: i32 = 0x100;
+        #[cfg(not(target_os = "macos"))]
+        const O_NOFOLLOW: i32 = 0x20000;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW)
+            .open(path)
+            .map_err(|_| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?;
+        if !file
+            .metadata()
+            .map_err(|_| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?
+            .is_file()
+        {
+            return Err("MASKING_SESSION_FINALIZE_UNVERIFIED".to_string());
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|_| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err("MASKING_SESSION_FINALIZE_UNVERIFIED".to_string());
+        }
+        std::fs::File::open(path).map_err(|_| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExpectedFinalizeCounts {
+    effective_mask_count: usize,
+    manual_mask_count: usize,
+    restore_count: usize,
+}
+
+fn expected_finalized_counts(
+    manifest: &AnalysisManifestV1,
+) -> Result<ExpectedFinalizeCounts, String> {
+    let effective_excluded_occurrence_ids: HashSet<&str> = manifest
+        .occurrences
+        .iter()
+        .filter(|occurrence| {
+            manifest.manual_actions.iter().any(|action| {
+                action.linked_occurrence_id.as_deref() == Some(occurrence.occurrence_id.as_str())
+                    || (action.page == occurrence.page
+                        && action.protected_neighbor_refs == occurrence.rects)
+            })
+        })
+        .map(|occurrence| occurrence.occurrence_id.as_str())
+        .collect();
+    let automatic_mask_count = manifest
+        .occurrences
+        .iter()
+        .filter(|occurrence| {
+            occurrence.proposed_action == "mask"
+                && matches!(occurrence.state.as_str(), "confirmed" | "user_confirmed")
+                && !effective_excluded_occurrence_ids.contains(occurrence.occurrence_id.as_str())
+        })
+        .count();
+    let manual_mask_count = manifest
+        .manual_actions
+        .iter()
+        .filter(|action| action.mode == "mask")
+        .count();
+    let restore_count = manifest
+        .manual_actions
+        .iter()
+        .filter(|action| action.mode == "restore")
+        .count();
+    Ok(ExpectedFinalizeCounts {
+        effective_mask_count: automatic_mask_count
+            .checked_add(manual_mask_count)
+            .ok_or_else(|| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?,
+        manual_mask_count,
+        restore_count,
+    })
+}
+
+fn expected_finalized_mask_count(manifest: &AnalysisManifestV1) -> Result<usize, String> {
+    Ok(expected_finalized_counts(manifest)?.effective_mask_count)
+}
+
+pub(crate) fn finalize_masking_run_core(
+    app: &tauri::AppHandle,
+    access: &AllowedFileAccess,
+    sessions: &MaskingRunSessions,
+    request: FinalizeMaskingRunRequest,
+) -> Result<FinalizeMaskingRunResult, String> {
+    let (manifest, original, options) = sessions.finalize_context(
+        &request.run_id,
+        request.analysis_revision,
+        &request.manifest_hash,
+        request.warnings_confirmed,
+    )?;
+    let restore_authorization = sessions.restore_authorization_summary(&manifest)?;
+    let expected_counts = expected_finalized_counts(&manifest)?;
+    let preflight = (|| -> Result<_, String> {
+        if manifest.policy_version != masking_run_session::POLICY_VERSION
+            || manifest.options_version != masking_run_session::OPTIONS_VERSION
+            || masking_run_session::canonical_json_hash(&options)
+                .map_err(|_| "MASKING_SESSION_POLICY_VERSION_INVALID".to_string())?
+                != manifest.options_hash
+            || manifest.threshold_version != masking_run_session::THRESHOLD_VERSION
+            || manifest.threshold_hash != manifest.threshold_artifact.content_hash
+            || manifest.threshold_artifact.version != masking_run_session::THRESHOLD_VERSION
+            || manifest.threshold_artifact.content_hash.is_empty()
+            || !manifest.threshold_artifact.auto_mask_threshold.is_finite()
+            || !manifest.threshold_artifact.review_threshold.is_finite()
+            || manifest.threshold_artifact.review_threshold
+                > manifest.threshold_artifact.auto_mask_threshold
+        {
+            return Err("MASKING_SESSION_POLICY_VERSION_INVALID".to_string());
+        }
+        let original_bytes = std::fs::read(&original)
+            .map_err(|_| "MASKING_SESSION_ORIGINAL_READ_FAILED".to_string())?;
+        if masking_run_session::document_hash(&original_bytes) != manifest.original_document_hash {
+            return Err("MASKING_SESSION_ORIGINAL_CHANGED".to_string());
+        }
+        let binding = NativeSaveTargetBinding::Public {
+            run_id: request.run_id.clone(),
+            analysis_revision: request.analysis_revision,
+            manifest_hash: request.manifest_hash.clone(),
+        };
+        let destination_registration = consume_registered_native_save_target(
+            &access,
+            &request.destination,
+            &request.save_token,
+            &binding,
+        )
+        .map_err(|_| "MASKING_SESSION_DESTINATION_REJECTED".to_string())?;
+        let destination = destination_registration.output_path;
+        let parent = destination
+            .parent()
+            .ok_or_else(|| "MASKING_SESSION_DESTINATION_REJECTED".to_string())?;
+        let parent = canonicalize_existing_dir(parent)
+            .map_err(|_| "MASKING_SESSION_DESTINATION_REJECTED".to_string())?;
+        let cache_dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|_| "MASKING_SESSION_STAGING_FAILED".to_string())?;
+        let staging_root = cache_dir.join("authoritative_masking");
+        std::fs::create_dir_all(&staging_root)
+            .map_err(|_| "MASKING_SESSION_STAGING_FAILED".to_string())?;
+        if std::fs::symlink_metadata(&staging_root)
+            .map_err(|_| "MASKING_SESSION_STAGING_FAILED".to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("MASKING_SESSION_STAGING_FAILED".to_string());
+        }
+        let staging = staging_root.join(&manifest.run_id);
+        create_private_staging_dir(&staging).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "MASKING_SESSION_STAGING_COLLISION".to_string()
+            } else {
+                "MASKING_SESSION_STAGING_FAILED".to_string()
+            }
+        })?;
+        Ok((
+            destination,
+            destination_registration.overwrite_confirmed,
+            parent,
+            staging,
+        ))
+    })();
+    let (destination, overwrite_confirmed, parent, staging) = match preflight {
+        Ok(values) => values,
+        Err(error) => {
+            sessions.finish_finalize(
+                &request.run_id,
+                if error == "MASKING_SESSION_STAGING_COLLISION" {
+                    FinalizeDisposition::CleanupRequired
+                } else {
+                    FinalizeDisposition::RetryReady
+                },
+            )?;
+            return Err(error);
+        }
+    };
+    let staging_manifest = staging.join("immutable-manifest.json");
+    let staging_output = staging.join("finalized.pdf");
+    let mut committed = false;
+    let mut publication = None;
+    let mut audit_path: Option<PathBuf> = None;
+    let save_confirmation = masking_run_session::finalization_save_confirmation(&manifest);
+    let result = (|| {
+        let manifest_payload = serde_json::to_vec(&manifest)
+            .map_err(|_| "MASKING_SESSION_FINALIZE_INVALID".to_string())?;
+        std::fs::write(&staging_manifest, manifest_payload)
+            .map_err(|_| "MASKING_SESSION_STAGING_FAILED".to_string())?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&staging_manifest)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "MASKING_SESSION_STAGING_FAILED".to_string())?;
+        let mut finalize_options = options.clone();
+        let finalize_options_object = finalize_options
+            .as_object_mut()
+            .ok_or_else(|| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
+        finalize_options_object.insert(
+            "run_id".to_string(),
+            serde_json::Value::String(manifest.run_id.clone()),
+        );
+        finalize_options_object.insert(
+            "analysis_revision".to_string(),
+            serde_json::json!(manifest.analysis_revision),
+        );
+        finalize_options_object.insert(
+            "options_hash".to_string(),
+            serde_json::Value::String(manifest.options_hash.clone()),
+        );
+        finalize_options_object.insert(
+            "threshold_version".to_string(),
+            serde_json::Value::String(manifest.threshold_artifact.version.clone()),
+        );
+        finalize_options_object.insert(
+            "threshold_hash".to_string(),
+            serde_json::Value::String(manifest.threshold_artifact.content_hash.clone()),
+        );
+        finalize_options_object.insert(
+            "threshold_artifact".to_string(),
+            serde_json::json!({
+                "version": manifest.threshold_artifact.version,
+                "content_hash": manifest.threshold_artifact.content_hash,
+                "auto_mask_threshold": manifest.threshold_artifact.auto_mask_threshold,
+                "review_threshold": manifest.threshold_artifact.review_threshold,
+            }),
+        );
+        finalize_options_object.insert(
+            "auto_mask_threshold".to_string(),
+            serde_json::json!(manifest.threshold_artifact.auto_mask_threshold),
+        );
+        finalize_options_object.insert(
+            "review_threshold".to_string(),
+            serde_json::json!(manifest.threshold_artifact.review_threshold),
+        );
+        finalize_options_object.insert(
+            "warnings_confirmed".to_string(),
+            serde_json::json!(request.warnings_confirmed),
+        );
+        let runtime = resolve_lifecycle_runtime_paths(app)
+            .map_err(|_| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
+        let mut command = runtime_paths::lifecycle_command(&runtime, "trusted-finalize")?;
+        command.arg("--request-stdin");
+        configure_mask_tool_allowed_dirs(
+            &mut command,
+            &[
+                original
+                    .parent()
+                    .ok_or_else(|| "MASKING_SESSION_ORIGINAL_CHANGED".to_string())?,
+                &staging,
+            ],
+        )?;
+        let finalize_request = serde_json::to_vec(&serde_json::json!({
+            "input": original,
+            "original": original,
+            "manifest": staging_manifest,
+            "staging_output": staging_output,
+            "options": finalize_options,
+        }))
+        .map_err(|_| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
+        let captured = process_util::run_capturing_with_timeout_and_stdin(
+            command,
+            process_util::SINGLE_RUN_TIMEOUT,
+            finalize_request,
+        )
+        .map_err(|error| {
+            let failure = lifecycle_spawn_failure("MASKING_SESSION_FINALIZE_FAILED", &error);
+            remember_lifecycle_failure(failure, None);
+            "MASKING_SESSION_FINALIZE_FAILED".to_string()
+        })?;
+        if let Some(failure) =
+            lifecycle_capture_failure("MASKING_SESSION_FINALIZE_FAILED", &captured)
+        {
+            remember_lifecycle_failure(failure, Some(&captured));
+            return Err("MASKING_SESSION_FINALIZE_FAILED".to_string());
+        }
+        let value: serde_json::Value = serde_json::from_slice(&captured.stdout).map_err(|_| {
+            let failure =
+                lifecycle_output_parse_failure("MASKING_SESSION_FINALIZE_INVALID", &captured);
+            remember_lifecycle_failure(failure, Some(&captured));
+            "MASKING_SESSION_FINALIZE_INVALID".to_string()
+        })?;
+        let expected_applied_mask_count = expected_counts.effective_mask_count;
+        let occurrence_count = value
+            .get("occurrenceCount")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?;
+        if occurrence_count != expected_applied_mask_count {
+            return Err("MASKING_SESSION_FINALIZE_UNVERIFIED".to_string());
+        }
+        if value
+            .get("appliedMaskCount")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            != Some(expected_applied_mask_count)
+        {
+            return Err("MASKING_SESSION_FINALIZE_UNVERIFIED".to_string());
+        }
+        if value
+            .get("manualMaskCount")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            != Some(expected_counts.manual_mask_count)
+            || value
+                .get("restoreCount")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok())
+                != Some(expected_counts.restore_count)
+        {
+            return Err("MASKING_SESSION_FINALIZE_UNVERIFIED".to_string());
+        }
+        let source = staging_output.clone();
+        let mut staged_file = open_regular_staging_file(&source)?;
+        staged_file
+            .sync_all()
+            .map_err(|_| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?;
+        let mut staged = Vec::new();
+        staged_file
+            .read_to_end(&mut staged)
+            .map_err(|_| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?;
+        let expected_hash = value
+            .get("staging_hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?;
+        if masking_run_session::document_hash(&staged) != expected_hash
+            || value.pointer("/verification/verified") != Some(&serde_json::Value::Bool(true))
+        {
+            return Err("MASKING_SESSION_FINALIZE_UNVERIFIED".to_string());
+        }
+        // The safe report is durable before publication. A report failure
+        // therefore cannot leave a newly published PDF without its audit
+        // record; a later promotion failure removes this precommit record.
+        let audit_dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_FAILED".to_string())?
+            .join("finalization_safe_reports");
+        std::fs::create_dir_all(&audit_dir)
+            .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_FAILED".to_string())?;
+        let report_path = audit_dir.join(format!(
+            "{}.{}.safe_report.json",
+            manifest.run_id, manifest.analysis_revision
+        ));
+        audit_path = Some(report_path.clone());
+        let audit_payload = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "runId": manifest.run_id,
+            "analysisRevision": manifest.analysis_revision,
+            "manifestHash": manifest.manifest_hash,
+            "finalHash": expected_hash,
+            "manualMaskCount": expected_counts.manual_mask_count,
+            "restoreCount": expected_counts.restore_count,
+            "effectiveMaskCount": expected_counts.effective_mask_count,
+            "restoreAuthorization": &restore_authorization,
+            "saveConfirmation": &save_confirmation,
+        }))
+        .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_FAILED".to_string())?;
+        std::fs::write(&report_path, audit_payload)
+            .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_FAILED".to_string())?;
+        std::fs::File::open(&report_path)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_FAILED".to_string())?;
+        std::fs::File::open(&audit_dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_FAILED".to_string())?;
+        publication = Some(FinalizePublication {
+            final_path: destination.display().to_string(),
+            verified_staging_hash: expected_hash.to_string(),
+        });
+        let transaction = stage_copy_overwrite_exact_from_file(
+            &mut staged_file,
+            &destination,
+            overwrite_confirmed,
+        )
+        .map_err(|error| {
+            if error == SaveError::RestoreFailed {
+                committed = true;
+                "MASKING_SESSION_PROMOTION_RESTORE_FAILED".to_string()
+            } else {
+                "MASKING_SESSION_PROMOTION_FAILED".to_string()
+            }
+        })?;
+        if std::fs::File::open(&parent)
+            .and_then(|directory| directory.sync_all())
+            .is_err()
+        {
+            let rollback = transaction.rollback();
+            if rollback.is_err() {
+                committed = true;
+                return Err("MASKING_SESSION_PROMOTION_RESTORE_FAILED".to_string());
+            }
+            return Err("MASKING_SESSION_PROMOTION_FAILED".to_string());
+        }
+        transaction.commit().map_err(|error| {
+            if error == SaveError::RestoreFailed {
+                committed = true;
+                "MASKING_SESSION_PROMOTION_RESTORE_FAILED".to_string()
+            } else {
+                "MASKING_SESSION_PROMOTION_FAILED".to_string()
+            }
+        })?;
+        committed = true;
+        std::fs::File::open(&parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| "MASKING_SESSION_PUBLISHED_POSTCOMMIT".to_string())?;
+        let final_hash = std::fs::read(&destination)
+            .map_err(|_| "MASKING_SESSION_PUBLISHED_POSTCOMMIT".to_string())
+            .and_then(|published| {
+                verified_final_hash(
+                    &publication
+                        .as_ref()
+                        .expect("publication evidence exists after commit")
+                        .verified_staging_hash,
+                    &published,
+                )
+            })?;
+        sessions
+            .consume_restore_authorizations(
+                &request.run_id,
+                manifest.analysis_revision,
+                &manifest.manifest_hash,
+            )
+            .map_err(|_| "MASKING_SESSION_FINALIZE_UNVERIFIED".to_string())?;
+        sessions
+            .finish_finalize(&request.run_id, FinalizeDisposition::Consumed)
+            .map_err(|_| "MASKING_SESSION_PUBLISHED_STATE_INDETERMINATE".to_string())?;
+        Ok(FinalizeMaskingRunResult {
+            run_id: manifest.run_id.clone(),
+            analysis_revision: manifest.analysis_revision,
+            manifest_hash: manifest.manifest_hash.clone(),
+            final_path: publication
+                .as_ref()
+                .expect("publication evidence exists after commit")
+                .final_path
+                .clone(),
+            final_hash,
+            final_hash_attested: true,
+            occurrence_count,
+            applied_mask_count: expected_applied_mask_count,
+            manual_mask_count: expected_counts.manual_mask_count,
+            restore_count: expected_counts.restore_count,
+            effective_mask_count: expected_counts.effective_mask_count,
+            restore_authorization,
+            save_confirmation: save_confirmation.clone(),
+            status: "promoted",
+        })
+    })();
+    let cleanup = (|| {
+        std::fs::remove_dir_all(&staging)
+            .map_err(|_| "MASKING_SESSION_CLEANUP_FAILED".to_string())?;
+        if !committed {
+            if let Some(path) = audit_path.take() {
+                std::fs::remove_file(path)
+                    .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_CLEANUP_FAILED".to_string())?;
+            }
+        }
+        Ok(())
+    })();
+    if !committed {
+        sessions.finish_finalize(
+            &request.run_id,
+            if cleanup.is_ok() {
+                FinalizeDisposition::RetryReady
+            } else {
+                FinalizeDisposition::CleanupRequired
+            },
+        )?;
+    } else if result.is_err() {
+        sessions
+            .finish_finalize(&request.run_id, FinalizeDisposition::PublishedIndeterminate)
+            .map_err(|_| "MASKING_SESSION_PUBLISHED_STATE_INDETERMINATE".to_string())?;
+    }
+    finalize_io_outcome(committed, publication.as_ref(), result, cleanup)
+}
+#[tauri::command]
+fn finalize_masking_run(
+    app: tauri::AppHandle,
+    access: tauri::State<'_, AllowedFileAccess>,
+    sessions: tauri::State<'_, MaskingRunSessions>,
+    request: FinalizeMaskingRunRequest,
+) -> Result<FinalizeMaskingRunResult, MaskingIpcError> {
+    clear_masking_failure();
+    finalize_masking_run_core(&app, &access, &sessions, request).map_err(|code| {
+        let metadata = take_masking_failure(&code);
+        append_masking_debug_log(&app, &metadata);
+        metadata.error
+    })
 }
 
 #[tauri::command]
@@ -706,19 +2031,22 @@ fn open_mask_canvas_window(
     Ok(())
 }
 
-#[tauri::command]
-fn run_masking_pipeline(
-    app: tauri::AppHandle,
-    access: tauri::State<'_, AllowedFileAccess>,
+fn run_masking_pipeline_core(
+    app: &tauri::AppHandle,
+    access: &AllowedFileAccess,
     input_file: String,
     original_file: Option<String>,
     output_dir: String,
-    opts: MaskingOptions,
+    mut opts: MaskingOptions,
 ) -> Result<MaskingResult, String> {
     if input_file.trim().is_empty() {
         return Err("입력 파일 경로가 비어 있습니다.".to_string());
     }
     validate_masking_options(&opts)?;
+    opts.profile = normalize_masking_profile(&opts.profile)?.to_string();
+    if opts.profile != "legal" {
+        return Err("MASKING_SESSION_PUBLIC_DIRECT_PIPELINE_REJECTED".to_string());
+    }
 
     let input_path = canonicalize_registered_document(&access, &input_file, "입력 파일")?;
     let original_path = original_file
@@ -732,14 +2060,13 @@ fn run_masking_pipeline(
         canonicalize_registered_artifact_dir(&access, &output_dir)?
     };
 
-    let runtime = resolve_runtime_paths(&app)?;
+    let runtime = resolve_runtime_paths(app)?;
+    let use_live_scripts = runtime.development_discovery;
     let root = runtime.repo_root;
     let script_path = runtime.pipeline_script;
     let opts_json = serde_json::to_string(&opts).map_err(|e| format!("옵션 직렬화 실패: {e}"))?;
 
-    let mut command = if let Some(engine_path) = runtime.masking_engine.clone() {
-        Command::new(engine_path)
-    } else {
+    let mut command = if use_live_scripts {
         if !script_path.exists() {
             return Err("PROCESS_RUNTIME_UNAVAILABLE: 마스킹 엔진을 찾지 못했습니다.".to_string());
         }
@@ -750,6 +2077,12 @@ fn run_masking_pipeline(
         }
         fallback.arg(script_path);
         fallback
+    } else if let Some(engine_path) = runtime.masking_engine.clone() {
+        Command::new(engine_path)
+    } else {
+        return Err(
+            "PROCESS_RUNTIME_UNAVAILABLE: 패키지 마스킹 엔진을 찾지 못했습니다.".to_string(),
+        );
     };
     command
         .arg("--repo-root")
@@ -764,47 +2097,58 @@ fn run_masking_pipeline(
             .arg(original_path.display().to_string());
     }
     command.arg("--opts").arg(opts_json);
+    configure_direct_pipeline_allowed_dirs(&mut command, &input_path, &outdir)?;
     let captured =
         process_util::run_capturing_with_timeout(command, process_util::SINGLE_RUN_TIMEOUT)
-            .map_err(|_| {
-                "PROCESS_EXECUTION_FAILED: 파이프라인을 실행할 수 없습니다.".to_string()
+            .map_err(|error| {
+                let failure = lifecycle_spawn_failure("PROCESS_EXECUTION_FAILED", &error);
+                remember_lifecycle_failure(failure, None);
+                "PROCESS_EXECUTION_FAILED".to_string()
             })?;
 
     if captured.timed_out {
-        return Err(format!(
-            "파이프라인이 제한 시간({}분)을 초과하여 중단되었습니다.",
-            process_util::SINGLE_RUN_TIMEOUT.as_secs() / 60
-        ));
-    }
-    if captured.stdout_truncated {
-        return Err(
-            "PROCESS_OUTPUT_LIMIT: 파이프라인 출력이 허용 크기를 초과했습니다.".to_string(),
-        );
-    }
-    if !captured.status.success() {
-        let stderr = String::from_utf8_lossy(&captured.stderr);
-        let code = if captured.stderr_truncated {
-            "PROCESS_ERROR_OUTPUT_LIMIT"
-        } else {
-            "PROCESS_FAILED"
+        let failure = MaskingIpcError {
+            code: "PROCESS_TIMEOUT".to_string(),
+            stage: "timeout".to_string(),
+            detail: sanitized_stderr_tail(&captured.stderr),
         };
-        return Err(format!(
-            "{code}: 파이프라인 오류: {}",
-            process_util::sanitize_stderr(&stderr)
-        ));
+        remember_lifecycle_failure(failure, Some(&captured));
+        return Err("PROCESS_TIMEOUT".to_string());
+    }
+    if let Some(failure) = lifecycle_capture_failure("PROCESS_FAILED", &captured) {
+        remember_lifecycle_failure(failure, Some(&captured));
+        return Err("PROCESS_FAILED".to_string());
     }
 
     let stdout = String::from_utf8_lossy(&captured.stdout).trim().to_string();
     let parsed: MaskingResult = serde_json::from_str(&stdout).map_err(|_| {
-        format!(
-            "PROCESS_RESULT_INVALID: {}",
-            process_util::summarize_parse_failure(&stdout)
-        )
+        let failure = lifecycle_output_parse_failure("PROCESS_RESULT_INVALID", &captured);
+        remember_lifecycle_failure(failure, Some(&captured));
+        "PROCESS_RESULT_INVALID".to_string()
     })?;
     access.allow_artifact_dir(&outdir);
     register_result_paths(&access, &parsed, &opts.deidentification_policy);
 
     Ok(parsed)
+}
+
+#[tauri::command]
+fn run_masking_pipeline(
+    app: tauri::AppHandle,
+    access: tauri::State<'_, AllowedFileAccess>,
+    input_file: String,
+    original_file: Option<String>,
+    output_dir: String,
+    opts: MaskingOptions,
+) -> Result<MaskingResult, MaskingIpcError> {
+    clear_masking_failure();
+    run_masking_pipeline_core(&app, &access, input_file, original_file, output_dir, opts).map_err(
+        |code| {
+            let metadata = take_masking_failure(&code);
+            append_masking_debug_log(&app, &metadata);
+            metadata.error
+        },
+    )
 }
 
 #[tauri::command]
@@ -844,17 +2188,14 @@ fn apply_manual_boxes(
     };
 
     let runtime = resolve_runtime_paths(&app)?;
+    let use_live_scripts = runtime.development_discovery;
     let root = runtime.repo_root;
     let script_path = runtime.manual_boxes_script;
 
     let payload_json =
         serde_json::to_string(&boxes).map_err(|e| format!("박스 직렬화 실패: {e}"))?;
 
-    let mut command = if let Some(engine_path) = runtime.masking_engine.clone() {
-        let mut packaged = Command::new(engine_path);
-        packaged.arg("--manual-boxes");
-        packaged
-    } else {
+    let mut command = if use_live_scripts {
         if !script_path.exists() {
             return Err(
                 "PROCESS_RUNTIME_UNAVAILABLE: 보조 스크립트를 찾지 못했습니다.".to_string(),
@@ -867,6 +2208,12 @@ fn apply_manual_boxes(
         }
         fallback.arg(script_path);
         fallback
+    } else if let Some(engine_path) = runtime.masking_engine.clone() {
+        let mut packaged = Command::new(engine_path);
+        packaged.arg("--manual-boxes");
+        packaged
+    } else {
+        return Err("PROCESS_RUNTIME_UNAVAILABLE: 패키지 보조 엔진을 찾지 못했습니다.".to_string());
     };
     command
         .arg("--input")
@@ -879,6 +2226,18 @@ fn apply_manual_boxes(
         .arg(payload_json)
         .arg("--display-mode")
         .arg(display_mode);
+    configure_mask_tool_allowed_dirs(
+        &mut command,
+        &[
+            input_pdf
+                .parent()
+                .ok_or_else(|| "입력 PDF 경로가 올바르지 않습니다.".to_string())?,
+            original_pdf
+                .parent()
+                .ok_or_else(|| "원본 PDF 경로가 올바르지 않습니다.".to_string())?,
+            &output_dir,
+        ],
+    )?;
     let captured =
         process_util::run_capturing_with_timeout(command, process_util::SINGLE_RUN_TIMEOUT)
             .map_err(|_| {
@@ -1261,21 +2620,50 @@ where
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    if std::env::args().any(|arg| arg == "--public-native-qa-stdin") {
+        let app = tauri::Builder::default()
+            .manage(AllowedFileAccess::default())
+            .manage(MaskingRunSessions::default())
+            .build(context)
+            .unwrap_or_else(|_| std::process::exit(1));
+        if let Err(error) = native_qa::dispatch_from_stdin(app.handle()) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let qa_drive_environment = std::env::var("MASK_TOOL_QA_DRIVE").ok();
+    let qa_drive_enabled = qa_drive::is_enabled(std::env::args(), qa_drive_environment.as_deref());
+    if std::env::args().any(|arg| arg == "--qa-drive-stdin") && !qa_drive_enabled {
+        eprintln!("QA_DRIVE_ENV_REQUIRED");
+        std::process::exit(2);
+    }
+    let qa_drive_bridge = qa_drive::Bridge::default();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(qa_drive_bridge.clone())
+        .manage(QaDriveEnabled(qa_drive_enabled))
         .manage(AllowedFileAccess::default())
         .manage(CanvasLaunchRegistry::default())
         .manage(coordinate_batch::CoordinateBatchRegistry)
-        .setup(|app| {
+        .manage(MaskingRunSessions::default())
+        .setup(move |app| {
             set_macos_activation_policy(app);
             show_macos_application(app)?;
             ensure_main_window(app)?;
+            if qa_drive_enabled {
+                qa_drive::start(app.handle().clone(), qa_drive_bridge.clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             pick_input_pdf,
             choose_final_pdf_path,
             pick_input_document,
+            qa_register_input_document,
+            qa_stat_final_output,
+            qa_drive_response,
             pick_input_documents,
             pick_output_dir,
             default_output_dir_for_document,
@@ -1285,6 +2673,12 @@ pub fn run() {
             create_canvas_launch_token,
             take_canvas_launch_payload,
             open_mask_canvas_window,
+            analyze_masking_run,
+            resolve_masking_review,
+            apply_manual_action_v1,
+            issue_restore_capability,
+            get_masking_run_state,
+            finalize_masking_run,
             run_masking_pipeline,
             apply_manual_boxes,
             finalize_manual_output,
@@ -1299,7 +2693,7 @@ pub fn run() {
             coordinate_batch::cancel_coordinate_batch,
             coordinate_batch::retry_coordinate_batch
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|_, _| {});
@@ -1337,6 +2731,544 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[test]
+    fn qa_drive_requires_flag_and_explicit_environment_opt_in() {
+        assert!(!qa_drive::is_enabled(["document-masker"], None));
+        assert!(!qa_drive::is_enabled(
+            ["document-masker", "--qa-drive-stdin"],
+            None,
+        ));
+        assert!(qa_drive::is_enabled(
+            ["document-masker", "--qa-drive-stdin"],
+            Some("1"),
+        ));
+    }
+    #[test]
+    fn reanalysis_commands_receive_only_the_original_document_parent_capability() {
+        let root = std::env::temp_dir().join(format!(
+            "masking_reanalysis_capability_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("input parent");
+        let mut command = std::process::Command::new("true");
+        configure_mask_tool_allowed_dirs(&mut command, &[&root]).expect("capability");
+        let allowed = command
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key.to_string_lossy() == "MASK_TOOL_ALLOWED_DIRS")
+                    .then(|| value.and_then(|value| value.to_str()).map(str::to_string))
+                    .flatten()
+            })
+            .expect("allowed directory environment");
+        assert_eq!(
+            allowed,
+            root.canonicalize()
+                .expect("canonical root")
+                .to_string_lossy()
+                .to_string()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn boundary_profile_authority_uses_prior_revision_while_ocr_uses_successor() {
+        let boundary = masking_run_session::ReviewResolution::Boundary {
+            page_start: 1,
+            page_end: 1,
+            segment_kind: "official_dispatch".to_string(),
+        };
+        let ocr = masking_run_session::ReviewResolution::Ocr { accepted: true };
+
+        assert_eq!(
+            Some(7),
+            reanalysis_profile_authority_revision(&boundary, 7, 8)
+        );
+        assert_eq!(Some(8), reanalysis_profile_authority_revision(&ocr, 7, 8));
+    }
+    #[test]
+    fn direct_pipeline_commands_receive_input_and_output_capabilities() {
+        let root = std::env::temp_dir().join(format!(
+            "masking_direct_pipeline_capability_{}",
+            std::process::id()
+        ));
+        let input_dir = root.join("input");
+        let output_dir = root.join("output");
+        let input_file = input_dir.join("document.pdf");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&input_dir).expect("input directory");
+        fs::create_dir_all(&output_dir).expect("output directory");
+        fs::write(&input_file, b"fixture").expect("input file");
+
+        let mut command = std::process::Command::new("true");
+        configure_direct_pipeline_allowed_dirs(&mut command, &input_file, &output_dir)
+            .expect("capability");
+        let allowed = command
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key.to_string_lossy() == "MASK_TOOL_ALLOWED_DIRS")
+                    .then(|| value.and_then(|value| value.to_str()).map(str::to_string))
+                    .flatten()
+            })
+            .expect("allowed directory environment");
+        let expected = std::env::join_paths([
+            input_dir.canonicalize().expect("canonical input"),
+            output_dir.canonicalize().expect("canonical output"),
+        ])
+        .expect("joined paths");
+
+        assert_eq!(allowed, expected.to_string_lossy());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn finalize_io_outcomes_are_publication_aware() {
+        let publication = FinalizePublication {
+            final_path: "/safe/final.pdf".to_string(),
+            verified_staging_hash: "a".repeat(64),
+        };
+
+        assert_eq!(
+            finalize_io_outcome(
+                false,
+                None,
+                Err("MASKING_SESSION_FINALIZE_FAILED".to_string()),
+                Ok(()),
+            ),
+            Err(
+                "MASKING_SESSION_PRECOMMIT_RETRYABLE;cause=MASKING_SESSION_FINALIZE_FAILED"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            finalize_io_outcome(
+                false,
+                None,
+                Err("MASKING_SESSION_FINALIZE_FAILED".to_string()),
+                Err("MASKING_SESSION_CLEANUP_FAILED".to_string()),
+            ),
+            Err(
+                "MASKING_SESSION_PRECOMMIT_CLEANUP_REQUIRED;cause=MASKING_SESSION_FINALIZE_FAILED;cleanup=MASKING_SESSION_CLEANUP_FAILED"
+                    .to_string()
+            )
+        );
+
+        for (primary, cleanup) in [
+            ("MASKING_SESSION_PROMOTION_FAILED", Ok(())),
+            (
+                "MASKING_SESSION_PROMOTION_FAILED",
+                Err("MASKING_SESSION_CLEANUP_FAILED".to_string()),
+            ),
+            ("MASKING_SESSION_PUBLISHED_STATE_INDETERMINATE", Ok(())),
+        ] {
+            let error =
+                finalize_io_outcome(true, Some(&publication), Err(primary.to_string()), cleanup)
+                    .expect_err("post-commit failures must be reported");
+            assert_eq!(error, "MASKING_SESSION_PUBLISHED_POSTCOMMIT");
+            assert!(!error.contains("final.pdf"));
+        }
+        let cleanup_error = finalize_io_outcome(
+            true,
+            Some(&publication),
+            Ok(FinalizeMaskingRunResult {
+                run_id: "run-123".to_string(),
+                analysis_revision: 7,
+                manifest_hash: "b".repeat(64),
+                final_path: publication.final_path.clone(),
+                final_hash: publication.verified_staging_hash.clone(),
+                final_hash_attested: true,
+                occurrence_count: 1,
+                applied_mask_count: 1,
+                manual_mask_count: 0,
+                restore_count: 0,
+                effective_mask_count: 1,
+                restore_authorization: masking_run_session::RestoreAuthorizationSummary {
+                    action_id_hash: "c".repeat(64),
+                    target_occurrence_id_hash: "d".repeat(64),
+                    authorization_event: "none".to_string(),
+                },
+                save_confirmation: masking_run_session::FinalizeSaveConfirmation {
+                    status: "not_required".to_string(),
+                    unresolved_reviews: Vec::new(),
+                },
+                status: "promoted",
+            }),
+            Err("MASKING_SESSION_CLEANUP_FAILED".to_string()),
+        )
+        .expect_err("post-commit cleanup failures must remain publication-aware");
+        assert_eq!(cleanup_error, "MASKING_SESSION_PUBLISHED_POSTCOMMIT");
+    }
+
+    #[test]
+    fn expected_finalized_mask_count_matches_ts_canonical_formula() {
+        let occurrence = |occurrence_id: &str,
+                          proposed_action: &str,
+                          state: &str,
+                          rects: Vec<masking_run_session::Rect>| {
+            masking_run_session::AnalysisOccurrence {
+                occurrence_id: occurrence_id.to_string(),
+                segment_id: "segment-1".to_string(),
+                region_id: None,
+                analysis_revision: 7,
+                page: 0,
+                rects,
+                tag: "person".to_string(),
+                category: "name".to_string(),
+                value_hash: "a".repeat(64),
+                expected_text_hash: "b".repeat(64),
+                source: "ocr".to_string(),
+                policy: "default".to_string(),
+                proposed_action: proposed_action.to_string(),
+                state: state.to_string(),
+                provenance: "ocr".to_string(),
+            }
+        };
+        let manifest = AnalysisManifestV1 {
+            manifest_version: 1,
+            run_id: "run-1".to_string(),
+            original_document_hash: "a".repeat(64),
+            analysis_revision: 7,
+            manifest_hash: "b".repeat(64),
+            profile: "mixed".to_string(),
+            policy_version: "masking-policy-v1".to_string(),
+            options_version: "options-v2".to_string(),
+            options_hash: "c".repeat(64),
+            threshold_version: "thresholds-v2".to_string(),
+            threshold_hash: "d".repeat(64),
+            threshold_artifact: masking_run_session::ThresholdArtifactV1 {
+                version: "thresholds-v2".to_string(),
+                content_hash: "d".repeat(64),
+                auto_mask_threshold: 0.85,
+                review_threshold: 0.5,
+            },
+            coordinate_space: "pdf_points_top_left".to_string(),
+            approval_coverage: masking_run_session::ApprovalCoverage {
+                schema_version: 1,
+                state: masking_run_session::CoverageState::Present,
+                signer_count: 0,
+                protected_neighbor_count: 0,
+            },
+            required_region_coverage: masking_run_session::RequiredRegionCoverage {
+                schema_version: 1,
+                profile: "mixed".to_string(),
+                kinds: Vec::new(),
+                blocking: false,
+            },
+            segments: Vec::new(),
+            regions: Vec::new(),
+            occurrences: vec![
+                occurrence(
+                    "mask-final",
+                    "mask",
+                    "confirmed",
+                    vec![masking_run_session::Rect {
+                        x0: 1.0,
+                        y0: 1.0,
+                        x1: 2.0,
+                        y1: 2.0,
+                    }],
+                ),
+                occurrence(
+                    "mask-replaced",
+                    "mask",
+                    "user_confirmed",
+                    vec![masking_run_session::Rect {
+                        x0: 3.0,
+                        y0: 3.0,
+                        x1: 4.0,
+                        y1: 4.0,
+                    }],
+                ),
+                occurrence(
+                    "mask-protected",
+                    "mask",
+                    "confirmed",
+                    vec![masking_run_session::Rect {
+                        x0: 5.0,
+                        y0: 5.0,
+                        x1: 6.0,
+                        y1: 6.0,
+                    }],
+                ),
+                occurrence("review", "review", "confirmed", Vec::new()),
+            ],
+            review_items: Vec::new(),
+            manual_actions: vec![
+                masking_run_session::ManualAction {
+                    action_id: "manual-replacement".to_string(),
+                    analysis_revision: 7,
+                    page: 0,
+                    rects: Vec::new(),
+                    mode: "mask".to_string(),
+                    source_kind: "text_pdf".to_string(),
+                    linked_occurrence_id: Some("mask-replaced".to_string()),
+                    expected_text_hash: None,
+                    protected_neighbor_refs: vec![masking_run_session::Rect {
+                        x0: 5.0,
+                        y0: 5.0,
+                        x1: 6.0,
+                        y1: 6.0,
+                    }],
+                    restore_authorization_hash: None,
+                },
+                masking_run_session::ManualAction {
+                    action_id: "manual-standalone".to_string(),
+                    analysis_revision: 7,
+                    page: 0,
+                    rects: Vec::new(),
+                    mode: "mask".to_string(),
+                    source_kind: "text_pdf".to_string(),
+                    linked_occurrence_id: None,
+                    expected_text_hash: None,
+                    protected_neighbor_refs: Vec::new(),
+                    restore_authorization_hash: None,
+                },
+            ],
+        };
+
+        assert_eq!(expected_finalized_mask_count(&manifest), Ok(3));
+    }
+
+    fn captured_output_for_classifier(
+        status_command: &str,
+        stdout: &[u8],
+        stderr: &[u8],
+        timed_out: bool,
+    ) -> process_util::CapturedOutput {
+        process_util::CapturedOutput {
+            status: Command::new(status_command)
+                .status()
+                .expect("classifier status command"),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+            timed_out,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        }
+    }
+
+    #[test]
+    fn lifecycle_classifier_marks_missing_executable_as_spawn_failure() {
+        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "missing executable");
+
+        let failure = lifecycle_spawn_failure("MASKING_SESSION_ANALYZER_FAILED", &error);
+
+        assert_eq!(failure.code, "MASKING_SESSION_ANALYZER_UNAVAILABLE");
+        assert_eq!(failure.stage, "spawn");
+    }
+
+    #[test]
+    fn lifecycle_classifier_passes_through_pipeline_failure_code() {
+        let stderr = br#"{"event":"pipeline_failure","schemaVersion":1,"rawTextReturned":false,"error":{"code":"MASKING_PIPELINE_INPUT_REJECTED"}}"#;
+        let captured = captured_output_for_classifier("false", b"", stderr, false);
+
+        let failure = lifecycle_capture_failure("MASKING_SESSION_ANALYZER_FAILED", &captured)
+            .expect("nonzero pipeline failure is classified");
+
+        assert_eq!(failure.code, "MASKING_PIPELINE_INPUT_REJECTED");
+        assert_eq!(failure.stage, "pipeline_failure_code");
+        assert_eq!(failure.detail, "MASKING_PIPELINE_INPUT_REJECTED");
+    }
+
+    #[test]
+    fn lifecycle_classifier_keeps_only_safe_intrinsic_diagnostics() {
+        let stderr = br#"{"event":"pipeline_failure","schemaVersion":1,"rawTextReturned":false,"error":{"code":"MASKING_PIPELINE_TRUSTED_FINALIZE_OCCURRENCE_INTRINSIC_FAILED","diagnostics":[{"kind":"occurrence_failure","reason_code":"residual_text_in_saved_rectangle","count":2},{"kind":"pii_non_exposure","reason_code":"final_output_not_published","count":1}]}}"#;
+        let captured = captured_output_for_classifier("false", b"", stderr, false);
+
+        let failure = lifecycle_capture_failure("MASKING_SESSION_FINALIZE_FAILED", &captured)
+            .expect("intrinsic diagnostics are classified");
+
+        assert_eq!(
+            failure.code,
+            "MASKING_PIPELINE_TRUSTED_FINALIZE_OCCURRENCE_INTRINSIC_FAILED"
+        );
+        assert!(failure.detail.contains("\"kind\":\"occurrence_failure\""));
+        assert!(failure.detail.contains("residual_text_in_saved_rectangle"));
+        assert!(failure.detail.contains("final_output_not_published"));
+    }
+
+    #[test]
+    fn lifecycle_classifier_preserves_only_privacy_safe_occurrence_context() {
+        let stderr = br#"{"event":"pipeline_failure","schemaVersion":1,"rawTextReturned":false,"error":{"code":"MASKING_PIPELINE_TRUSTED_FINALIZE_OCCURRENCE_INTRINSIC_FAILED","diagnostics":[{"kind":"occurrence_failure","reason_code":"expected_text_hash_mismatch","count":1,"occurrence_id":"occ_0123456789abcdef01234567","category":"dispatch_metadata","page":1,"rect_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_text_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}}"#;
+        let captured = captured_output_for_classifier("false", b"", stderr, false);
+
+        let failure = lifecycle_capture_failure("MASKING_SESSION_FINALIZE_FAILED", &captured)
+            .expect("contextual intrinsic diagnostics are classified");
+
+        assert!(failure.detail.contains("\"occurrence_id\":\"occ_0123456789abcdef01234567\""));
+        assert!(failure.detail.contains("\"category\":\"dispatch_metadata\""));
+        assert!(failure.detail.contains("\"page\":1"));
+        assert!(failure.detail.contains("\"rect_fingerprint\":\"aaaaaaaa"));
+        assert!(failure.detail.contains("\"expected_text_hash\":\"bbbb"));
+    }
+
+    #[test]
+    fn lifecycle_classifier_rejects_raw_occurrence_diagnostic_context() {
+        let stderr = br#"{"event":"pipeline_failure","schemaVersion":1,"rawTextReturned":false,"error":{"code":"MASKING_PIPELINE_TRUSTED_FINALIZE_OCCURRENCE_INTRINSIC_FAILED","diagnostics":[{"kind":"occurrence_failure","reason_code":"expected_text_hash_mismatch","count":1,"category":"dispatch_metadata","raw_value":"sensitive"}]}}"#;
+        let captured = captured_output_for_classifier("false", b"", stderr, false);
+
+        let failure = lifecycle_capture_failure("MASKING_SESSION_FINALIZE_FAILED", &captured)
+            .expect("unsafe diagnostic context falls back safely");
+
+        assert_eq!(
+            failure.detail,
+            "MASKING_PIPELINE_TRUSTED_FINALIZE_OCCURRENCE_INTRINSIC_FAILED"
+        );
+        assert!(!failure.detail.contains("sensitive"));
+    }
+
+    #[test]
+    fn lifecycle_classifier_marks_garbage_stdout_as_output_parse_failure() {
+        let captured = captured_output_for_classifier("true", b"not-json", b"", false);
+
+        let failure = lifecycle_output_parse_failure("MASKING_SESSION_ANALYZER_INVALID", &captured);
+
+        assert_eq!(failure.code, "MASKING_SESSION_ANALYZER_INVALID");
+        assert_eq!(failure.stage, "output_parse");
+        assert!(failure.detail.contains("8바이트"));
+    }
+
+    #[test]
+    fn lifecycle_classifier_marks_timeout_without_losing_the_stable_code() {
+        let captured = captured_output_for_classifier("true", b"", b"engine timeout", true);
+
+        let failure = lifecycle_capture_failure("MASKING_SESSION_FINALIZE_FAILED", &captured)
+            .expect("timeout is classified");
+
+        assert_eq!(failure.code, "MASKING_SESSION_FINALIZE_FAILED");
+        assert_eq!(failure.stage, "timeout");
+        assert!(failure.detail.contains("내용 생략"));
+    }
+
+    #[test]
+    fn finalized_output_hash_must_match_verified_staging_hash() {
+        let staged = b"verified staged output";
+        let expected_hash = masking_run_session::document_hash(staged);
+        assert_eq!(
+            verified_final_hash(&expected_hash, staged).expect("matching hash"),
+            expected_hash
+        );
+        assert_eq!(
+            verified_final_hash(&expected_hash, b"different published output"),
+            Err("MASKING_SESSION_PROMOTION_FAILED".to_string())
+        );
+    }
+    #[test]
+    fn choose_final_pdf_path_binding_accepts_public_session() {
+        let binding = ChooseFinalPdfPathRequest {
+            default_file_name: "final.pdf".to_string(),
+            mode: None,
+            run_id: Some("run-a".to_string()),
+            analysis_revision: Some(7),
+            manifest_hash: Some("manifest-a".to_string()),
+        }
+        .binding()
+        .expect("complete public session must bind");
+
+        assert_eq!(
+            binding,
+            NativeSaveTargetBinding::Public {
+                run_id: "run-a".to_string(),
+                analysis_revision: 7,
+                manifest_hash: "manifest-a".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn choose_final_pdf_path_binding_accepts_legacy_direct_marker() {
+        let binding = ChooseFinalPdfPathRequest {
+            default_file_name: "final.pdf".to_string(),
+            mode: Some("legacy_direct".to_string()),
+            run_id: None,
+            analysis_revision: None,
+            manifest_hash: None,
+        }
+        .binding()
+        .expect("explicit legacy-direct request must bind");
+
+        assert_eq!(binding, NativeSaveTargetBinding::LegacyManual);
+    }
+
+    #[test]
+    fn choose_final_pdf_path_binding_requires_all_public_fields() {
+        let err = ChooseFinalPdfPathRequest {
+            default_file_name: "final.pdf".to_string(),
+            mode: None,
+            run_id: None,
+            analysis_revision: None,
+            manifest_hash: None,
+        }
+        .binding()
+        .expect_err("tuple-less save authority must be rejected");
+
+        assert_eq!(err, "MASKING_SESSION_DESTINATION_REJECTED");
+
+        let err = ChooseFinalPdfPathRequest {
+            default_file_name: "final.pdf".to_string(),
+            mode: None,
+            run_id: Some("run-a".to_string()),
+            analysis_revision: None,
+            manifest_hash: Some("manifest-a".to_string()),
+        }
+        .binding()
+        .expect_err("partial public binding must be rejected");
+
+        assert_eq!(err, "MASKING_SESSION_DESTINATION_REJECTED");
+    }
+
+    #[test]
+    fn choose_final_pdf_path_binding_rejects_mixed_marker_and_session_fields() {
+        let err = ChooseFinalPdfPathRequest {
+            default_file_name: "final.pdf".to_string(),
+            mode: Some("legacy_direct".to_string()),
+            run_id: Some("run-a".to_string()),
+            analysis_revision: Some(7),
+            manifest_hash: Some("manifest-a".to_string()),
+        }
+        .binding()
+        .expect_err("legacy marker and public session must not mix");
+
+        assert_eq!(err, "MASKING_SESSION_DESTINATION_REJECTED");
+    }
+
+    #[test]
+    fn handle_bound_promotion_copies_held_staging_bytes() {
+        let root = temp_security_root("handle_bound_promotion");
+        let staging = root.join("staging.pdf");
+        let destination = root.join("published.pdf");
+        fs::write(&staging, b"verified staging bytes").expect("staging");
+        let mut source = open_regular_staging_file(&staging).expect("held staging file");
+        let replacement = root.join("replacement.pdf");
+        fs::write(&replacement, b"replacement bytes").expect("replacement");
+        fs::rename(&replacement, &staging).expect("replace staging path");
+        stage_copy_overwrite_exact_from_file(&mut source, &destination, false)
+            .expect("promotion from held handle")
+            .commit()
+            .expect("commit");
+        assert_eq!(
+            fs::read(&destination).expect("published bytes"),
+            b"verified staging bytes"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn masking_promotion_denies_unconfirmed_overwrite() {
+        let root = temp_security_root("masking_overwrite_denial");
+        let source = root.join("staged.pdf");
+        let destination = root.join("published.pdf");
+        fs::write(&source, b"staged").expect("staging output");
+        fs::write(&destination, b"existing").expect("published output");
+
+        assert!(matches!(
+            stage_copy_overwrite_exact(&source, &destination, false),
+            Err(SaveError::OverwriteConfirmationRequired)
+        ));
+        assert_eq!(
+            fs::read(&destination).expect("existing output"),
+            b"existing"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn valid_masking_options() -> MaskingOptions {
         MaskingOptions {
             rrn: true,
@@ -1355,16 +3287,19 @@ mod tests {
             approval_line: true,
             region_context: true,
             doc_meta: true,
+            email: true,
             pdf_redaction: true,
             custom_keywords: String::new(),
             extract_engine: "auto".to_string(),
-            profile: "official".to_string(),
+            profile: "mixed".to_string(),
             output_artifacts: "pdf_safe_report".to_string(),
             display_mode: "black".to_string(),
             deidentification_policy: "token".to_string(),
-            region_scope: "all".to_string(),
+            region_scope: "national".to_string(),
             custom_regions: String::new(),
             return_text_preview: false,
+            auto_mask_threshold: 0.85,
+            review_threshold: 0.5,
         }
     }
 
@@ -1406,6 +3341,17 @@ mod tests {
         let mut opts = valid_masking_options();
         opts.return_text_preview = true;
         assert!(validate_masking_options(&opts).is_err());
+    }
+
+    #[test]
+    fn masking_profiles_preserve_canonical_values_and_fail_closed() {
+        for profile in ["internal_review", "official_dispatch", "mixed", "legal"] {
+            assert_eq!(normalize_masking_profile(profile).unwrap(), profile);
+        }
+        assert!(normalize_masking_profile("official").is_err());
+        for profile in ["", "unknown", "dispatch", "Internal_Review"] {
+            assert!(normalize_masking_profile(profile).is_err(), "{profile}");
+        }
     }
 
     fn temp_security_root(name: &str) -> PathBuf {
@@ -1645,7 +3591,7 @@ mod tests {
         access.allow_artifact_dir(&outdir);
         access.allow_disposable_artifact_path(&preview);
         let registration = access
-            .register_native_save_target(&selected)
+            .register_native_save_target(&selected, NativeSaveTargetBinding::LegacyManual)
             .expect("native selected output");
 
         let result = finalize_manual_output_to_selected_path_path(

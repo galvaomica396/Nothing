@@ -4,7 +4,7 @@
  * 공용 토큰(--dm-*)과 dm-* 컴포넌트만 사용. !important 금지(포커스 예외).
  * z-index 는 5 / 10 / 100 / 200 만 사용.
  *
- * 오버레이/캔버스 렌더 크기(px)는 JS 소유(startLegacyApp.ts 가 canvas.width/height 와
+ * 오버레이/캔버스 렌더 크기(px)는 JS 소유(compositionRoot.ts 가 canvas.width/height 와
  * wrap.style.width/height 를 인라인 지정)다. 여기서는 wrap 배치(position: relative)와
  * 캔버스 스택만 안전하게 담당한다.
  * ========================================================================== */
@@ -206,6 +206,9 @@
   accent-color: var(--dm-accent);
 }
 
+.dm-canvas [hidden] {
+  display: none !important;
+}
 /* 작업 완결 순서: 수동 보정 반영 → (화살표) → 최종 저장 */
 .dm-canvas__commit {
   gap: 8px;
@@ -277,7 +280,7 @@
   border: var(--dm-hairline) solid var(--dm-border);
   border-radius: var(--dm-radius-lg);
   background: var(--dm-surface-raised);
-  box-shadow: var(--dm-shadow-md);
+  box-shadow: var(--dm-shadow-page);
 }
 
 .dm-canvas__queue {
@@ -371,7 +374,7 @@
 
 /* ----------------------------------------------------------------------------
  * 3. 상태 스트립 — (좌) 선택한 도구 한 줄 안내 · (우) 게이트 사유
- *    canvas-tool-readiness 는 btn-canvas-apply / btn-canvas-final-save 게이트 사유.
+ *    canvas-tool-readiness 는 수동 보정 반영과 최종 저장 게이트 사유.
  * -------------------------------------------------------------------------- */
 .dm-canvas__statusbar {
   display: flex;
@@ -567,18 +570,38 @@
   font-size: var(--dm-fs-md);
 }
 
-/* 미로드 상태: 편집·키워드·보기·반영/저장 도구는 잠금(dimmed). 사유는
- * 상태 스트립의 canvas-tool-readiness 가 안내한다. 도구 안내(guide)도 감춘다. */
+/* 미로드 상태: 편집·키워드·보기·배치 도구는 숨기고, 반영·저장은 게이트 사유와 함께
+ * 남긴다. 도구 안내(guide)도 감춘다. */
 #mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--edit,
 #mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--keyword,
 #mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--view,
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__batch {
+  display: none;
+}
+
 #mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--commit {
-  opacity: 0.45;
-  pointer-events: none;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 #mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__guide {
   visibility: hidden;
+}
+
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) {
+  grid-template-rows: 40px 0 minmax(0, 1fr);
+}
+
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__toolbar {
+  min-height: 40px;
+  padding-block: var(--dm-space-1);
+}
+
+#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__statusbar {
+  height: 0;
+  border: 0;
+  visibility: hidden;
+  overflow: hidden;
 }
 
 /* 비교 영역 — 유일한 스크롤 영역. 하단 뷰바와 겹치지 않도록 격리 */
@@ -587,6 +610,225 @@
   min-height: 0;
   padding: 16px;
   overflow: auto;
+}
+
+.dm-canvas__stage:has(.dm-segment-strip) {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+.dm-canvas__stage:has(.dm-segment-strip):has(.dm-canvas__first-masking-cta) {
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
+}
+
+.dm-segment-strip {
+  min-width: 0;
+  padding: var(--dm-space-2) var(--dm-space-4);
+  border-top: var(--dm-hairline) solid var(--dm-border);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-segment-strip__head,
+.dm-segment-strip__editor {
+  display: flex;
+  align-items: center;
+  gap: var(--dm-space-2);
+  min-width: 0;
+}
+
+.dm-segment-strip__head {
+  justify-content: space-between;
+  margin-bottom: var(--dm-space-2);
+}
+
+.dm-segment-strip__head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.dm-segment-strip__head strong {
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-caption) / 1.2 var(--dm-font);
+}
+
+.dm-segment-strip__summary,
+.dm-segment-strip__range,
+.dm-segment-strip__readonly {
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-xs) / 1.2 var(--dm-font-mono);
+}
+
+.dm-segment-strip__reel {
+  display: flex;
+  gap: var(--dm-space-2);
+  min-width: 0;
+  padding-bottom: var(--dm-space-1);
+  overflow-x: auto;
+  scroll-snap-type: inline proximity;
+}
+
+.dm-segment-strip__page {
+  position: relative;
+  flex: 0 0 76px;
+  min-width: 0;
+  scroll-snap-align: start;
+}
+
+.dm-segment-strip__thumbnail {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 0.707;
+  overflow: hidden;
+  padding: 0;
+  border: var(--dm-hairline) solid var(--dm-border-strong);
+  border-radius: var(--dm-radius-sm);
+  background: var(--dm-surface);
+  cursor: pointer;
+}
+
+.dm-segment-strip__thumbnail:focus-visible,
+.dm-segment-strip__handle:focus-visible,
+.dm-segment-strip__start:focus-visible {
+  outline: 2px solid var(--dm-accent);
+  outline-offset: 2px;
+}
+
+.dm-segment-strip__thumbnail[aria-current="page"] {
+  border-color: var(--dm-accent);
+  box-shadow: inset 0 0 0 1px var(--dm-accent);
+}
+
+.dm-segment-strip__thumbnail img,
+.dm-segment-strip__placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.dm-segment-strip__thumbnail img { object-fit: cover; }
+
+.dm-segment-strip__placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--dm-text-muted);
+  font: 700 var(--dm-fs-caption) / 1 var(--dm-font-mono);
+}
+
+.dm-segment-strip__bar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--dm-space-1);
+  background: var(--dm-accent);
+}
+
+.dm-segment-strip__page[data-kind="internal_review"] .dm-segment-strip__bar { background: var(--dm-danger); }
+.dm-segment-strip__page[data-kind="official_dispatch"] .dm-segment-strip__bar { background: var(--dm-accent); }
+.dm-segment-strip__page[data-kind="attachment"] .dm-segment-strip__bar { background: var(--dm-success); }
+.dm-segment-strip__page[data-kind="legal"] .dm-segment-strip__bar { background: var(--dm-text-secondary); }
+.dm-segment-strip__page[data-kind="unknown"] .dm-segment-strip__bar,
+.dm-segment-strip__page[data-common-only] .dm-segment-strip__bar {
+  background: repeating-linear-gradient(135deg, var(--dm-text-muted) 0 var(--dm-space-1), var(--dm-surface-sunken) var(--dm-space-1) var(--dm-space-2));
+}
+
+.dm-segment-strip__page[data-state="review_required"] .dm-segment-strip__thumbnail { border-style: dashed; }
+.dm-segment-strip__page[data-state="user_confirmed"] .dm-segment-strip__thumbnail { border-color: var(--dm-success); }
+.dm-segment-strip__page[data-scanned] .dm-segment-strip__thumbnail {
+  background: repeating-linear-gradient(135deg, var(--dm-surface-sunken) 0 var(--dm-space-1), var(--dm-border) var(--dm-space-1) var(--dm-space-2));
+}
+.dm-segment-strip__page[data-scanned] .dm-segment-strip__thumbnail img { filter: grayscale(1); opacity: 0.52; }
+.dm-segment-strip__page[data-scanned] .dm-segment-strip__bar { background: repeating-linear-gradient(135deg, var(--dm-text-muted) 0 var(--dm-space-1), var(--dm-surface) var(--dm-space-1) var(--dm-space-2)); }
+
+.dm-segment-strip__page-number {
+  position: absolute;
+  right: var(--dm-space-1);
+  bottom: var(--dm-space-2);
+  display: grid;
+  min-width: var(--dm-space-4);
+  min-height: var(--dm-space-4);
+  place-items: center;
+  border-radius: var(--dm-radius-pill);
+  background: var(--dm-surface);
+  color: var(--dm-text-secondary);
+  font: 700 var(--dm-fs-xs) / 1 var(--dm-font-mono);
+}
+
+.dm-segment-strip__mask-count,
+.dm-segment-strip__manual-count,
+.dm-segment-strip__restore-count {
+  display: block;
+  min-width: 0;
+  min-height: 1.2em;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 var(--dm-fs-xs) / 1.2 var(--dm-font-mono);
+  text-align: center;
+}
+
+.dm-segment-strip__mask-count {
+  color: var(--dm-text-secondary);
+}
+
+.dm-segment-strip__manual-count {
+  color: var(--dm-warning);
+}
+
+.dm-segment-strip__manual-count[aria-hidden="true"],
+.dm-segment-strip__restore-count[aria-hidden="true"] {
+  visibility: hidden;
+}
+
+.dm-segment-strip__restore-count {
+  color: var(--dm-danger);
+}
+
+.dm-segment-strip__handles {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm-space-1);
+  margin-top: var(--dm-space-1);
+}
+
+.dm-segment-strip__handle,
+.dm-segment-strip__start {
+  min-height: var(--dm-space-5);
+  border: var(--dm-hairline) solid var(--dm-border-strong);
+  border-radius: var(--dm-radius-sm);
+  background: var(--dm-surface);
+  color: var(--dm-text-secondary);
+  cursor: ew-resize;
+}
+
+.dm-segment-strip__handle { width: var(--dm-space-5); padding: 0; }
+.dm-segment-strip__handle span { display: block; width: var(--dm-hairline); height: var(--dm-space-3); margin: auto; background: currentColor; }
+.dm-segment-strip__start { padding: 0 var(--dm-space-1); font: 600 var(--dm-fs-xs) / 1 var(--dm-font); cursor: pointer; }
+
+.dm-segment-strip__editor {
+  flex-wrap: wrap;
+  margin-top: var(--dm-space-2);
+  padding-top: var(--dm-space-2);
+  border-top: var(--dm-hairline) solid var(--dm-border);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-xs) / 1 var(--dm-font);
+}
+
+.dm-segment-strip__editor .dm-input { width: auto; min-height: var(--dm-space-7); }
+.dm-segment-strip__editor .dm-btn { min-height: var(--dm-space-7); }
+.dm-segment-strip__readonly { margin: var(--dm-space-2) 0 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .dm-segment-strip__thumbnail { transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease; }
+  .dm-segment-strip__thumbnail:hover { transform: translateY(-1px); }
+}
+
+@media (max-width: 639.98px) {
+  .dm-segment-strip { padding-inline: var(--dm-space-2); }
+  .dm-segment-strip__page { flex-basis: 64px; }
+  .dm-segment-strip__summary { display: none; }
 }
 
 .dm-canvas__compare-grid {
@@ -678,7 +920,7 @@
   position: relative;
   margin: 0 auto;
   background: var(--dm-document-paper);
-  box-shadow: var(--dm-shadow-md);
+  box-shadow: var(--dm-shadow-page);
 }
 
 /* 캔버스 스택: PDF 렌더 캔버스와 그 위의 오버레이(드래그로 박스 그리기)를
@@ -705,7 +947,7 @@
   pointer-events: auto;
 }
 
-/* Cursor reflects the active editor tool (set by startLegacyApp via data-tool),
+/* Cursor reflects the active editor tool (set by the composition root via data-tool),
  * so select/pan/delete read as live interactions rather than the draw crosshair. */
 #overlay-canvas-result[data-tool="select"] { cursor: pointer; }
 #overlay-canvas-result[data-tool="delete"] { cursor: pointer; }
@@ -751,6 +993,30 @@
   font: 500 var(--dm-fs-sm) / 1.6 var(--dm-font-mono);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.dm-canvas__first-masking-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm-space-3);
+  min-width: 0;
+  padding: var(--dm-space-2) var(--dm-space-4);
+  border-top: var(--dm-hairline) solid var(--dm-border);
+  background: var(--dm-warning-soft);
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-xs) / 1.4 var(--dm-font);
+}
+
+.dm-canvas__first-masking-cta > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-canvas__first-masking-cta .dm-btn {
+  flex: 0 0 auto;
 }
 
 /* 하단 뷰 바 — 페이지 이동 / 비교 모드 / 동기화 (스테이지 전용, 스크롤 밖) */
@@ -963,12 +1229,12 @@
 #keyword-dialog .ux-modal {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  width: min(640px, calc(100vw - 48px));
+  width: min(520px, calc(100vw - 48px));
   max-height: min(85dvh, 720px);
   border: var(--dm-hairline) solid var(--dm-border);
   border-radius: var(--dm-radius-lg);
   background: var(--dm-surface);
-  box-shadow: var(--dm-shadow-md);
+  box-shadow: var(--dm-shadow-modal);
   overflow: hidden auto;
 }
 
@@ -977,20 +1243,20 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--dm-space-4);
-  padding: var(--dm-space-8) var(--dm-space-8) 0;
+  padding: 18px 22px 0;
   border-bottom: 0;
 }
 
 #keyword-dialog .ux-modal-head h2 {
   color: var(--dm-text);
-  font: 700 var(--dm-fs-modal-title) / 1.3 var(--dm-font);
+  font: 700 17px / 1.3 var(--dm-font);
   letter-spacing: -0.01em;
 }
 
 #keyword-dialog .ux-modal-head p {
   margin-top: var(--dm-space-2);
-  color: var(--dm-text-secondary);
-  font: 500 var(--dm-fs-body) / 1.5 var(--dm-font);
+  color: var(--dm-text-muted);
+  font: 400 var(--dm-fs-eyebrow) / 1.5 var(--dm-font);
 }
 
 #keyword-dialog .ux-modal-actions {
@@ -998,7 +1264,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: var(--dm-space-3);
-  padding: var(--dm-space-4) var(--dm-space-8);
+  padding: var(--dm-space-4) 22px;
   border-top: 0;
   background: var(--dm-surface);
 }
@@ -1007,7 +1273,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--dm-space-4);
-  padding: var(--dm-space-6) var(--dm-space-8) 0;
+  padding: var(--dm-space-4) 22px 0;
 }
 
 .dm-keyword-dialog__section {
@@ -1037,12 +1303,44 @@
   font: 500 var(--dm-fs-sm) / 1.3 var(--dm-font);
 }
 
-.dm-keyword-dialog__chips span {
+.dm-keyword-dialog__chips > span {
   padding: 2px 8px;
   border: 1px solid var(--dm-border);
   border-radius: var(--dm-radius-pill);
   background: var(--dm-surface-sunken);
   color: var(--dm-text);
+}
+
+.dm-keyword-dialog__count {
+  margin: 0;
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-caption) / 1.3 var(--dm-font);
+}
+
+.dm-keyword-dialog__chips .dm-keyword-chip {
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.dm-keyword-chip__remove {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dm-radius-sm);
+  background: transparent;
+  color: var(--dm-text-secondary);
+  font: 700 16px / 1 var(--dm-font);
+  cursor: pointer;
+}
+
+.dm-keyword-chip__remove:hover,
+.dm-keyword-chip__remove:focus-visible {
+  background: var(--dm-surface-sunken);
+  color: var(--dm-danger);
+  outline: none;
 }
 
 .dm-keyword-dialog__policy {
@@ -1076,7 +1374,7 @@
   border: var(--dm-hairline) solid var(--dm-border);
   border-radius: var(--dm-radius-lg);
   background: var(--dm-surface);
-  box-shadow: var(--dm-shadow-md);
+  box-shadow: var(--dm-shadow-modal);
   overflow: hidden;
 }
 
@@ -1333,22 +1631,29 @@ body.standalone-canvas-window .dm-canvas__body {
   font-style: normal;
 }
 
-/* 저장 게이트: 준비/차단은 배지 색으로 (legacy 가 data-state=ready|blocked 세팅) */
+/* 저장 게이트는 확인 전 중립으로 시작하고, 확인된 차단·검토 상태만 경고로 표시한다. */
 #canvas-workspace-screen .dm-savegate__readiness {
   display: flex;
   gap: 8px;
   align-items: baseline;
   padding: 9px 11px;
-  border: 1px solid var(--dm-warning);
+  border: 1px solid var(--dm-border);
   border-radius: var(--dm-radius);
-  background: var(--dm-warning-soft);
-  color: var(--dm-warning);
+  background: var(--dm-surface-sunken);
+  color: var(--dm-text-secondary);
   font: 600 var(--dm-fs-sm) / 1.5 var(--dm-font);
   overflow-wrap: anywhere;
 }
 
+#canvas-workspace-screen .dm-savegate__readiness[data-state="blocked"],
+#canvas-workspace-screen .dm-savegate__readiness[data-state="review"] {
+  border-color: var(--dm-warning);
+  background: var(--dm-warning-soft);
+  color: var(--dm-warning);
+}
+
 #canvas-workspace-screen .dm-savegate__readiness::before {
-  -webkit-mask-image: var(--dm-icon-warning); /* 경고: 저장 차단 사유 */
+  -webkit-mask-image: var(--dm-icon-warning);
   mask-image: var(--dm-icon-warning);
 }
 
@@ -1492,6 +1797,25 @@ body.standalone-canvas-window .dm-canvas__body {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+#canvas-workspace-screen .dm-detect__list > div > span,
+#canvas-workspace-screen .dm-detect__actions {
+  grid-column: 2 / -1;
+}
+
+#canvas-workspace-screen .dm-detect__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+#canvas-workspace-screen .dm-detect__action.dm-btn--compact {
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  padding: 5px 9px;
+  font: 600 var(--dm-fs-sm) / 1.3 var(--dm-font);
+}
 
 #canvas-workspace-screen .dm-detect__state {
   display: grid;
@@ -1554,6 +1878,23 @@ body.standalone-canvas-window .dm-canvas__body {
   font-size: var(--dm-fs-base);
 }
 
+#canvas-workspace-screen .dm-savesummary__staging-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px dashed var(--dm-warning);
+  border-radius: var(--dm-radius);
+  color: var(--dm-warning);
+  background: var(--dm-warning-soft);
+  font: 600 var(--dm-fs-xs) / 1.4 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-savesummary__staging-status[data-state="blocked"] {
+  border-color: var(--dm-danger);
+  color: var(--dm-danger);
+  background: var(--dm-danger-soft);
+}
+
 
 
 /* 하단 고정 액션 — 저장 버튼이 절대 잘리지 않는다 (v4.2.0: 저장 단일 CTA) */
@@ -1606,10 +1947,12 @@ body.standalone-canvas-window .dm-canvas__body {
 }
 
 /* ----------------------------------------------------------------------------
- * 4. 최종 저장 다이얼로그 (#final-save-dialog — hidden/is-hidden 토글 유지)
+ * 4. 마스킹 진행 / 최종 저장 다이얼로그
  *    Modal 컴포넌트(.ux-modal-*) 마크업을 화면 스코프로 재스타일.
  * -------------------------------------------------------------------------- */
-#final-save-dialog {
+#masking-progress-dialog,
+#final-save-dialog,
+#finalization-success-dialog {
   position: fixed;
   inset: 0;
   z-index: 100;
@@ -1619,22 +1962,103 @@ body.standalone-canvas-window .dm-canvas__body {
   background: var(--dm-overlay);
 }
 
+#masking-progress-dialog.is-hidden,
+#masking-progress-dialog[hidden],
 #final-save-dialog.is-hidden,
-#final-save-dialog[hidden] {
+#final-save-dialog[hidden],
+#finalization-success-dialog.is-hidden,
+#finalization-success-dialog[hidden] {
   display: none;
+}
+
+#masking-progress-dialog .ux-modal,
+#finalization-success-dialog .ux-modal {
+  display: grid;
+  width: 480px;
+  max-width: 90vw;
+  height: auto;
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius-modal);
+  background: var(--dm-surface);
+  box-shadow: var(--dm-shadow-modal);
+  overflow: hidden;
+}
+
+#masking-progress-dialog .ux-modal-head,
+#finalization-success-dialog .ux-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dm-space-4);
+  padding: var(--dm-space-6) var(--dm-space-6) var(--dm-space-4);
+  border-bottom: 0;
+}
+
+#masking-progress-dialog .ux-modal-head h2,
+#finalization-success-dialog .ux-modal-head h2 {
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-modal-title) / 1.3 var(--dm-font);
+  letter-spacing: -0.01em;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+#masking-progress-dialog .dm-progress-dialog {
+  display: grid;
+  gap: var(--dm-space-3);
+  padding: 0 var(--dm-space-6) var(--dm-space-6);
+}
+
+#masking-progress-dialog progress {
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--dm-surface-sunken);
+  accent-color: var(--dm-accent);
+}
+
+#masking-progress-dialog progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: var(--dm-surface-sunken);
+}
+
+#masking-progress-dialog progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--dm-accent);
+}
+
+#finalization-success-dialog .ux-modal {
+  width: 440px;
+}
+
+#finalization-success-dialog .ux-modal-head h2 {
+  font-size: 18px;
+}
+
+#finalization-success-dialog .ux-modal-actions {
+  display: flex;
+  justify-content: stretch;
+  gap: var(--dm-space-3);
+  padding: 0 var(--dm-space-6) var(--dm-space-6);
+}
+
+#finalization-success-dialog .ux-modal-actions .dm-btn {
+  width: 100%;
 }
 
 #final-save-dialog .ux-modal {
   display: grid;
   grid-template-rows: auto auto auto auto;
-  width: 480px;
+  width: 440px;
   max-width: 90vw;
   height: auto;
   max-height: min(85dvh, 720px);
   border: var(--dm-hairline) solid var(--dm-border);
   border-radius: var(--dm-radius-modal);
   background: var(--dm-surface);
-  box-shadow: var(--dm-shadow-md);
+  box-shadow: var(--dm-shadow-modal);
   overflow: hidden auto;
 }
 
@@ -1679,9 +2103,16 @@ body.standalone-canvas-window .dm-canvas__body {
   justify-self: start;
   margin: var(--dm-space-6) var(--dm-space-8) 0;
 }
+#final-save-dialog .status-chip.status-chip-pending {
+  border-color: var(--dm-border);
+  background: var(--dm-surface-sunken);
+  color: var(--dm-text-secondary);
+}
 
 #final-save-dialog .status-chip.status-chip-warn {
-  display: none;
+  border-color: var(--dm-warning);
+  background: var(--dm-warning-soft);
+  color: var(--dm-warning);
 }
 
 #final-save-dialog .status-chip.status-chip-ok {
@@ -1705,7 +2136,7 @@ body.standalone-canvas-window .dm-canvas__body {
 }
 
 #final-save-dialog .dm-savewarn__summary:has(.dm-savewarn__empty) {
-  display: none;
+  background: var(--dm-surface-sunken);
 }
 
 #final-save-dialog .dm-savewarn__summary-icon {
@@ -1749,15 +2180,10 @@ body.standalone-canvas-window .dm-canvas__body {
 /* 저장 전 확인 — 권고형 경고 목록. 저장을 막지 않으므로 톤은 경고 1단계만 쓰고,
    비어 있을 때는 무채색으로 가라앉힌다(액센트 남발 금지). */
 #final-save-dialog .dm-savewarn {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: 0;
+  display: grid;
+  gap: var(--dm-space-2);
+  margin: var(--dm-space-3) 0 0;
   padding: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
   list-style: none;
 }
 
@@ -1822,6 +2248,24 @@ body.standalone-canvas-window .dm-canvas__body {
   #keyword-dialog .ux-modal-actions,
   #new-document-dialog .ux-modal-actions {
     padding-inline: var(--dm-space-6);
+  }
+
+  #masking-progress-dialog .ux-modal,
+  #finalization-success-dialog .ux-modal {
+    width: min(440px, calc(100vw - 24px));
+  }
+
+  #masking-progress-dialog .ux-modal-head,
+  #finalization-success-dialog .ux-modal-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--dm-space-3);
+    padding: var(--dm-space-6);
+  }
+
+  #masking-progress-dialog .ux-modal-head > div,
+  #finalization-success-dialog .ux-modal-head > div {
+    min-width: 0;
   }
 
   .dm-keyword-dialog,
@@ -1960,33 +2404,6 @@ body.standalone-canvas-window .dm-canvas__body {
   transform: translateX(0);
 }
 
-#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) {
-  grid-template-rows: 40px 0 minmax(0, 1fr);
-}
-
-#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__toolbar {
-  min-height: 40px;
-  padding-block: var(--dm-space-1);
-}
-
-#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--edit,
-#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--keyword,
-#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--view,
-#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__batch {
-  display: none;
-}
-
-#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__tool-group--commit {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-#mask-canvas-window:not(:has(#canvas-wrap-result.has-rendered-pdf)) .dm-canvas__statusbar {
-  height: 0;
-  border: 0;
-  visibility: hidden;
-  overflow: hidden;
-}
 
 .dm-canvas__compare {
   padding-block-start: var(--dm-space-6);
@@ -2148,5 +2565,414 @@ body.standalone-canvas-window .dm-canvas__body {
 
   .dm-inspector__accordion-content {
     padding-inline: var(--dm-space-4);
+  }
+}
+
+.dm-keyword-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.dm-keyword-dialog__textarea {
+  min-height: 72px;
+}
+
+.dm-keyword-dialog__chips {
+  min-height: 48px;
+  background: var(--dm-surface-sunken);
+}
+
+.dm-keyword-dialog__chips > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  background: var(--dm-surface);
+}
+
+#masking-progress-dialog .ux-modal {
+  width: min(440px, calc(100vw - 32px));
+}
+
+.dm-progress-dialog__eyebrow {
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-caption) / 1.3 var(--dm-font);
+}
+
+.dm-progress-dialog__progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm-space-3);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-caption) / 1.3 var(--dm-font);
+}
+
+.dm-progress-dialog__progress-meta strong {
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-control) / 1 var(--dm-font);
+}
+
+.dm-progress-dialog__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dm-progress-dialog__stats > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-progress-dialog__stats span {
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-xs) / 1.3 var(--dm-font);
+}
+
+.dm-progress-dialog__stats strong {
+  color: var(--dm-text);
+  font: 700 var(--dm-fs-control) / 1.2 var(--dm-font);
+  word-break: keep-all;
+}
+
+.dm-progress-dialog__note {
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-sm) / 1.5 var(--dm-font);
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.dm-save-success__title-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  vertical-align: -5px;
+  color: var(--dm-accent);
+}
+
+.dm-save-success__title-mark .symbol-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.dm-save-success__file {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  margin: 0 24px 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-lg);
+  background: var(--dm-surface-sunken);
+}
+
+.dm-save-success__file > .symbol-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--dm-accent);
+}
+
+.dm-save-success__file dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin: 0;
+}
+
+.dm-save-success__file dt {
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-xs) / 1.3 var(--dm-font);
+}
+
+.dm-save-success__file dd {
+  margin: 2px 0 0;
+  color: var(--dm-text);
+  font: 600 var(--dm-fs-caption) / 1.4 var(--dm-font);
+  overflow-wrap: break-word;
+  word-break: keep-all;
+}
+
+.dm-save-success__file #final-save-result-meta {
+  color: var(--dm-text-secondary);
+  font-weight: 500;
+}
+
+.dm-save-success__file #final-save-result-status[data-state="warn"] {
+  color: var(--dm-danger);
+}
+
+.dm-save-success__warnings {
+  margin: 0 24px 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--dm-danger);
+  border-radius: var(--dm-radius-lg);
+  color: var(--dm-danger);
+  background: var(--dm-danger-soft);
+}
+
+.dm-save-success__warnings strong {
+  display: block;
+  font: 700 var(--dm-fs-sm) / 1.4 var(--dm-font);
+}
+
+.dm-save-success__warnings ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  font: 500 var(--dm-fs-sm) / 1.5 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-inspector {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  border-left: var(--dm-hairline) solid var(--dm-border);
+}
+
+#canvas-workspace-screen .dm-inspector__bar {
+  min-height: 51px;
+  padding: 0 var(--dm-space-5);
+}
+
+#canvas-workspace-screen .dm-inspector__bar-title {
+  font: 700 var(--dm-fs-control) / 1.3 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-inspector__total {
+  margin-left: auto;
+  color: var(--dm-text-secondary);
+  font: 500 var(--dm-fs-caption) / 1.3 var(--dm-font);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#canvas-workspace-screen .dm-inspector__filters {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+  min-height: 39px;
+  padding: 0 var(--dm-space-5);
+  border-bottom: var(--dm-hairline) solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+#canvas-workspace-screen .dm-inspector__filters > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dm-space-1);
+  min-height: 39px;
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-caption) / 1 var(--dm-font);
+  white-space: nowrap;
+}
+
+#canvas-workspace-screen .dm-inspector__filters > .is-active {
+  margin-bottom: -1px;
+  border-bottom: 2px solid var(--dm-accent);
+  color: var(--dm-accent);
+  font-weight: 700;
+}
+
+#canvas-workspace-screen .dm-inspector__filters b {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+#canvas-workspace-screen .dm-inspector__scroll {
+  gap: 0;
+  padding: 0;
+}
+
+#canvas-workspace-screen .dm-inspector__scroll > .dm-inspector__empty-guide {
+  margin: var(--dm-space-5);
+}
+
+#canvas-workspace-screen .dm-inspector__accordion.dm-detect {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+#canvas-workspace-screen .dm-detect > .dm-inspector__accordion-summary {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+#canvas-workspace-screen .dm-detect > .dm-inspector__accordion-content {
+  padding: 0;
+  border-top: 0;
+}
+
+#canvas-workspace-screen .dm-review-summary {
+  padding: var(--dm-space-3) var(--dm-space-5) var(--dm-space-2);
+  color: var(--dm-text);
+  background: var(--dm-surface);
+  font: 700 var(--dm-fs-caption) / 1.4 var(--dm-font);
+  font-variant-numeric: tabular-nums;
+}
+
+#canvas-workspace-screen .dm-review-summary__explanation {
+  margin: 0;
+  padding: 0 var(--dm-space-5) var(--dm-space-3);
+  color: var(--dm-text-secondary);
+  background: var(--dm-surface);
+  font: 500 var(--dm-fs-xs) / 1.5 var(--dm-font);
+  overflow-wrap: anywhere;
+}
+
+#canvas-workspace-screen .dm-detect__list {
+  gap: 0;
+}
+
+#canvas-workspace-screen .dm-detect__list > .dm-detect__item {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--dm-space-2) var(--dm-space-3);
+  padding: 14px var(--dm-space-5);
+  border-bottom: var(--dm-hairline) solid var(--dm-border);
+  background: var(--dm-surface);
+}
+
+#canvas-workspace-screen .dm-detect__list > .dm-detect__item[data-state="pending"] {
+  background: var(--dm-surface-sunken);
+}
+
+#canvas-workspace-screen .dm-detect__list > .dm-detect__item[data-state="resolved"] {
+  background: var(--dm-surface);
+}
+
+#canvas-workspace-screen .dm-detect__list > .dm-detect__item > i {
+  display: none;
+}
+
+#canvas-workspace-screen .dm-detect__list > .dm-detect__item > strong {
+  grid-column: 1;
+  grid-row: 1;
+  font: 700 var(--dm-fs-caption) / 1.35 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-detect__list > .dm-detect__item > em {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  color: var(--dm-text-muted);
+  font: 500 var(--dm-fs-xs) / 1.35 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-detect__detail {
+  grid-column: 1 / -1;
+  color: var(--dm-text-muted);
+  font: 500 var(--dm-fs-xs) / 1.4 var(--dm-font);
+  overflow-wrap: anywhere;
+}
+
+#canvas-workspace-screen .dm-detect__scan-page-action {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+#canvas-workspace-screen .dm-detect__geometry-guidance,
+#canvas-workspace-screen .dm-detect__feedback {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--dm-space-2) var(--dm-space-3);
+  border: var(--dm-hairline) solid var(--dm-border);
+  border-radius: var(--dm-radius-sm);
+  font: 600 var(--dm-fs-xs) / 1.45 var(--dm-font);
+  overflow-wrap: anywhere;
+}
+
+#canvas-workspace-screen .dm-detect__geometry-guidance {
+  color: var(--dm-text);
+  background: var(--dm-surface);
+}
+
+#canvas-workspace-screen .dm-detect__feedback[data-state="resolved"] {
+  color: var(--dm-accent);
+  border-color: var(--dm-accent);
+  background: var(--dm-surface-sunken);
+}
+
+#canvas-workspace-screen .dm-detect__feedback[data-state="failure"] {
+  color: var(--dm-danger);
+  border-color: var(--dm-danger);
+  background: var(--dm-surface);
+}
+
+#canvas-workspace-screen .dm-detect__item .dm-detect__actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dm-space-2);
+  margin-top: 2px;
+}
+
+#canvas-workspace-screen .dm-detect__item .dm-detect__action.dm-btn--compact {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 var(--dm-space-2);
+  border-color: var(--dm-border-strong);
+  background: var(--dm-surface);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-caption) / 1 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-detect__item .dm-detect__action--primary.dm-btn--compact {
+  border-color: var(--dm-accent);
+  background: var(--dm-accent);
+  color: var(--dm-on-accent);
+}
+
+#canvas-workspace-screen .dm-detect__state {
+  gap: var(--dm-space-1);
+  padding: var(--dm-space-3) var(--dm-space-5) var(--dm-space-4);
+  border-bottom: var(--dm-hairline) solid var(--dm-border);
+  border-radius: 0;
+  background: var(--dm-surface);
+}
+
+#canvas-workspace-screen .dm-detect__state #review-progress-summary {
+  margin: 0 0 var(--dm-space-1);
+  color: var(--dm-text-secondary);
+  font: 600 var(--dm-fs-caption) / 1.4 var(--dm-font);
+  font-variant-numeric: tabular-nums;
+}
+
+#canvas-workspace-screen .dm-detect__state strong {
+  font: 700 var(--dm-fs-caption) / 1.35 var(--dm-font);
+}
+
+#canvas-workspace-screen .dm-inspector__actions {
+  padding: var(--dm-space-4) var(--dm-space-5);
+}
+
+#canvas-workspace-screen .dm-inspector__actions #btn-save {
+  min-height: 36px;
+  font: 700 var(--dm-fs-caption) / 1 var(--dm-font);
+}
+
+@media (max-width: 767.98px) {
+  .dm-progress-dialog__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dm-save-success__file {
+    margin-inline: 20px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dm-save-success__file dl {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

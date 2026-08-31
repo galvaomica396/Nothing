@@ -285,56 +285,86 @@ def classify_redaction_failure_reason_code(exc: BaseException) -> str:
     return NATIVE_REDACTION_FAILED_REASON_CODE
 
 
+def _safe_nonnegative_count(value: Any) -> int | None:
+    """Accept only producer-native non-negative integers; never coerce malformed evidence."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _normalized_redaction_counts(
+    result: dict[str, Any], verification: dict[str, Any],
+) -> tuple[dict[str, int], bool]:
+    requested = _safe_nonnegative_count(result.get("targets_requested", 0))
+    hit = _safe_nonnegative_count(result.get("targets_hit", 0))
+    missing_value = result.get("missing_targets_count")
+    if missing_value is None:
+        missing = None if requested is None or hit is None else max(requested - hit, 0)
+    else:
+        missing = _safe_nonnegative_count(missing_value)
+    residual = _safe_nonnegative_count(verification.get("residual_hits", 0))
+    fuzzy = _safe_nonnegative_count(verification.get("residual_fuzzy_hits", 0))
+    values = (requested, hit, missing, residual, fuzzy)
+    return (
+        dict(zip(("targets_requested", "targets_hit", "missing_targets_count", "residual_hits", "residual_fuzzy_hits"),
+                 (value if value is not None else 0 for value in values))),
+        all(value is not None for value in values),
+    )
+
+
 def evaluate_quality_gate(pdf_redaction_result: dict[str, Any]) -> bool:
     verification = pdf_redaction_result.get("verification", {})
-    targets_requested = int(pdf_redaction_result.get("targets_requested", 0) or 0)
-    targets_hit = int(pdf_redaction_result.get("targets_hit", 0) or 0)
-    missing_targets_count = int(
-        pdf_redaction_result.get(
-            "missing_targets_count",
-            max(targets_requested - targets_hit, 0),
-        )
-        or 0
-    )
-    residual_hits = int(verification.get("residual_hits", 0) or 0)
-    residual_fuzzy_hits = int(verification.get("residual_fuzzy_hits", 0) or 0)
+    if not isinstance(verification, dict):
+        return False
+    counts, valid_counts = _normalized_redaction_counts(pdf_redaction_result, verification)
     return (
-        bool(verification.get("verified", False))
-        and targets_requested > 0
-        and targets_hit == targets_requested
-        and missing_targets_count == 0
-        and residual_hits == 0
-        and residual_fuzzy_hits == 0
+        valid_counts
+        and verification.get("verified") is True
+        and counts["targets_requested"] > 0
+        and counts["targets_hit"] == counts["targets_requested"]
+        and counts["missing_targets_count"] == 0
+        and counts["residual_hits"] == 0
+        and counts["residual_fuzzy_hits"] == 0
     )
 
 
 def _safe_pdf_redaction_summary(pdf_redaction_result: dict[str, Any]) -> dict[str, Any]:
     verification = pdf_redaction_result.get("verification", {})
-    targets_requested = int(pdf_redaction_result.get("targets_requested", 0) or 0)
-    targets_hit = int(pdf_redaction_result.get("targets_hit", 0) or 0)
-    missing_targets_count = int(
-        pdf_redaction_result.get("missing_targets_count", max(targets_requested - targets_hit, 0)) or 0
+    verification_is_mapping = isinstance(verification, dict)
+    if not verification_is_mapping:
+        verification = {}
+    counts, valid_counts = _normalized_redaction_counts(pdf_redaction_result, verification)
+    verified = verification.get("verified") is True
+    malformed_verification = not verification_is_mapping or (
+        verification.get("verified") is not True and verification.get("verified") is not False
     )
+    reason_code = safe_reason_code(pdf_redaction_result.get("reason_code"))
+    if not valid_counts:
+        reason_code = "malformed_redaction_counts"
+    elif malformed_verification:
+        reason_code = "malformed_redaction_verification"
     return {
         "enabled": bool(pdf_redaction_result.get("enabled", False)),
-        "status": pdf_redaction_result.get("status", "skipped"),
+        "status": "blocked" if not valid_counts or malformed_verification else pdf_redaction_result.get("status", "skipped"),
         "output_file": None,
         "display_mode": pdf_redaction_result.get("display_mode", "black"),
-        "targets_requested": targets_requested,
-        "targets_hit": targets_hit,
-        "missing_targets_count": missing_targets_count,
-        "annotations_added": int(pdf_redaction_result.get("annotations_added", 0) or 0),
-        "rects_from_word_fallback": int(pdf_redaction_result.get("rects_from_word_fallback", 0) or 0),
-        "excluded_hits": int(pdf_redaction_result.get("excluded_hits", 0) or 0),
-        "excluded_regions": int(pdf_redaction_result.get("excluded_regions", 0) or 0),
+        "targets_requested": counts["targets_requested"],
+        "targets_hit": counts["targets_hit"],
+        "missing_targets_count": counts["missing_targets_count"],
+        "annotations_added": _safe_nonnegative_count(pdf_redaction_result.get("annotations_added", 0)) or 0,
+        "rects_from_word_fallback": _safe_nonnegative_count(pdf_redaction_result.get("rects_from_word_fallback", 0)) or 0,
+        "excluded_hits": _safe_nonnegative_count(pdf_redaction_result.get("excluded_hits", 0)) or 0,
+        "excluded_regions": _safe_nonnegative_count(pdf_redaction_result.get("excluded_regions", 0)) or 0,
         "review_items": safe_review_item_summaries(pdf_redaction_result.get("review_items", [])),
-        "reason_code": safe_reason_code(pdf_redaction_result.get("reason_code")),
+        "reason_code": reason_code,
         "verification": {
-            "verified": bool(verification.get("verified", False)),
-            "residual_hits": int(verification.get("residual_hits", 0) or 0),
-            "residual_fuzzy_hits": int(verification.get("residual_fuzzy_hits", 0) or 0),
-            "reason_code": safe_reason_code(
-                verification.get("reason_code") or pdf_redaction_result.get("reason_code")
+            "verified": verified and valid_counts,
+            "residual_hits": counts["residual_hits"],
+            "residual_fuzzy_hits": counts["residual_fuzzy_hits"],
+            "reason_code": (
+                "malformed_redaction_counts" if not valid_counts
+                else "malformed_redaction_verification" if malformed_verification
+                else safe_reason_code(verification.get("reason_code") or pdf_redaction_result.get("reason_code"))
             ),
         },
     }
@@ -376,13 +406,32 @@ def safe_review_item_summaries(items: Any) -> list[dict[str, Any]]:
                 "raw_value_saved": False,
             }
         )
+        category = item.get("category")
+        if isinstance(category, str) and re.fullmatch(r"[a-z][a-z0-9_:-]{0,95}", category):
+            summaries[-1]["category"] = category
+        page_start = item.get("page_start", item.get("page"))
+        page_end = item.get("page_end", item.get("page"))
+        if (
+            type(page_start) is int
+            and page_start >= 0
+            and type(page_end) is int
+            and page_end >= page_start
+        ):
+            summaries[-1]["page_start"] = page_start
+            summaries[-1]["page_end"] = page_end
     return summaries
 
 
 def enforce_quality_gate_or_raise(report: dict[str, Any]) -> None:
     checks = report.get("product_checks", {})
-    if checks.get("quality_gate_passed", False):
+    if isinstance(checks, dict) and checks.get("quality_gate_passed", False):
         return
-    missing = int(report.get("document_redaction", {}).get("missing_targets_count", 0) or 0)
-    residual = int(report.get("document_redaction", {}).get("verification", {}).get("residual_hits", 0) or 0)
+    summary = report.get("document_redaction", {})
+    verification = summary.get("verification", {}) if isinstance(summary, dict) else {}
+    counts, _ = _normalized_redaction_counts(
+        summary if isinstance(summary, dict) else {},
+        verification if isinstance(verification, dict) else {},
+    )
+    missing = counts["missing_targets_count"]
+    residual = counts["residual_hits"]
     raise RuntimeError(f"QUALITY_GATE_BLOCK: missing={missing}, residual={residual}")

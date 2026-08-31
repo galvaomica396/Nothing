@@ -1,0 +1,10 @@
+{
+  "startup_ms": 30000,
+  "open_ms": 180000,
+  "control_ms": 10000,
+  "navigation_ms": 30000,
+  "long_ms": 1800000,
+  "response_ms": 5000,
+  "render_cancel_ms": 5000,
+  "precondition_ms": 30000
+}

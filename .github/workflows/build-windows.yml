@@ -276,21 +276,9 @@ jobs:
           Remove-Item $roundTripRoot -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $roundTripRoot | Out-Null
 
-          gh release download $tag `
-            --repo $env:GITHUB_REPOSITORY `
-            --pattern "Nothing-4.6.3-windows-x64-portable.zip" `
-            --dir $roundTripRoot `
-            --clobber
-          gh release download $tag `
-            --repo $env:GITHUB_REPOSITORY `
-            --pattern "Nothing-4.6.3-windows-x64-setup.exe" `
-            --dir $roundTripRoot `
-            --clobber
-          gh release download $tag `
-            --repo $env:GITHUB_REPOSITORY `
-            --pattern "Nothing-4.6.3-windows-x64-manifest.json" `
-            --dir $roundTripRoot `
-            --clobber
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.6.3-windows-x64-portable.zip" --dir $roundTripRoot --clobber
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.6.3-windows-x64-setup.exe" --dir $roundTripRoot --clobber
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.6.3-windows-x64-manifest.json" --dir $roundTripRoot --clobber
 
           $zipPath = Join-Path $roundTripRoot "Nothing-4.6.3-windows-x64-portable.zip"
           $installerPath = Join-Path $roundTripRoot "Nothing-4.6.3-windows-x64-setup.exe"

@@ -47,6 +47,13 @@ def pdf_text(path: Path) -> str:
         return "\n".join(page.get_text() for page in doc)
     finally:
         doc.close()
+def redact_legal_fallback(source: Path, output: Path, matches: list[masker.RedactionMatch], display_mode: str = "black") -> dict[str, object]:
+    """Exercise legacy text-layer matching only through its legal compatibility seam."""
+    return masker.redact_pdf_native(
+        str(source), str(output), matches, display_mode=display_mode, profile="legal", legal_compatibility=True
+    )
+
+
 
 
 def _insert_korean(page: "fitz.Page", pos: tuple[float, float], text: str, fontsize: float = 14) -> None:
@@ -58,6 +65,53 @@ def _insert_korean(page: "fitz.Page", pos: tuple[float, float], text: str, fonts
 
 
 class WordBboxFallbackTests(unittest.TestCase):
+    def test_public_call_cannot_use_legacy_match_strings_as_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "public.pdf"
+            output = root / "out.pdf"
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_text((32, 52), "anchor phone 010-9999-8888")
+            doc.save(source)
+            doc.close()
+
+            for profile, legal_compatibility in (("mixed", False), ("mixed", True), ("legal", False)):
+                with self.subTest(profile=profile, legal_compatibility=legal_compatibility):
+                    output.unlink(missing_ok=True)
+                    with self.assertRaisesRegex(ValueError, "^PUBLIC_OCCURRENCE_INPUTS_REQUIRED$"):
+                        masker.redact_pdf_native(
+                            str(source),
+                            str(output),
+                            [masker.RedactionMatch("PHONE", "010-9999-8888")],
+                            profile=profile,
+                            legal_compatibility=legal_compatibility,
+                        )
+                    self.assertFalse(output.exists())
+
+    def test_legal_compatibility_search_redacts_global_exact_occurrences_not_near_collisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, output = root / "legal-source.pdf", root / "legal-output.pdf"
+            doc = fitz.open()
+            first = doc.new_page(width=320, height=180)
+            first.insert_text((32, 52), "exact TOKEN-42")
+            first.insert_text((32, 92), "near TOKEN-420 remains")
+            second = doc.new_page(width=320, height=180)
+            second.insert_text((32, 52), "second exact TOKEN-42")
+            second.insert_text((32, 92), "anchor control")
+            doc.save(source)
+            doc.close()
+
+            result = redact_legal_fallback(source, output, [masker.RedactionMatch("ID", "TOKEN-42")])
+
+            self.assertEqual("applied", result["status"])
+            self.assertEqual(2, result["annotations_added"])
+            self.assertTrue(result["verification"]["verified"])
+            rendered = pdf_text(output)
+            self.assertIn("TOKEN-420 remains", rendered)
+            self.assertIn("anchor control", rendered)
+
     def test_word_index_is_built_once_per_page_in_each_document_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -69,6 +123,7 @@ class WordBboxFallbackTests(unittest.TestCase):
                 page = doc.new_page(width=320, height=180)
                 page.insert_text((32, 52), f"page {page_num + 1} name Alice Example")
                 page.insert_text((32, 92), f"page {page_num + 1} phone 010-1111-2222")
+                page.insert_text((32, 132), "anchor cache control")
             doc.save(source)
             doc.close()
 
@@ -82,11 +137,15 @@ class WordBboxFallbackTests(unittest.TestCase):
                 "_build_page_word_index",
                 wraps=original_builder,
             ) as build_index:
-                result = masker.redact_pdf_native(str(source), str(output), matches)
+                result = redact_legal_fallback(source, output, matches)
 
             self.assertEqual("applied", result["status"])
             self.assertTrue(result["verification"]["verified"])
             self.assertEqual(4, build_index.call_count)
+            rendered = pdf_text(output)
+            self.assertIn("anchor cache control", rendered)
+            self.assertNotIn("Alice Example", rendered)
+            self.assertNotIn("010-1111-2222", rendered)
 
     def test_kerned_korean_name_recovered_by_word_fallback(self) -> None:
         if korean_pdf_font_file() is None:
@@ -102,6 +161,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             # PDF text layer stores the name with inter-character spacing
             # (자간 삽입) — a common OCR/legacy-export artifact.
             _insert_korean(page, (32, 52), "홍 길 동")
+            _insert_korean(page, (32, 92), "anchor control")
             doc.save(source)
             doc.close()
 
@@ -117,7 +177,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             finally:
                 probe.close()
 
-            result = masker.redact_pdf_native(str(source), str(output), matches, display_mode="black")
+            result = redact_legal_fallback(source, output, matches)
 
             self.assertEqual("applied", result["status"])
             self.assertTrue(result["verification"]["verified"])
@@ -131,6 +191,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             self.assertNotIn("홍", rendered)
             self.assertNotIn("길", rendered)
             self.assertNotIn("동", rendered)
+            self.assertIn("anchor control", rendered.replace("\xa0", " "))
 
             fallback_items = [
                 item for item in result["review_items"] if item.get("match_source") == "word_bbox_fallback"
@@ -162,11 +223,12 @@ class WordBboxFallbackTests(unittest.TestCase):
             # Second occurrence, same page, kerned form only the word-bbox
             # fallback can recover (e.g. a signature block further down).
             _insert_korean(page, (36, 160), "서 명 란: 홍 길 동")
+            _insert_korean(page, (36, 210), "anchor control")
             doc.save(source)
             doc.close()
 
             matches = [masker.RedactionMatch("NAME", "홍길동")]
-            result = masker.redact_pdf_native(str(source), str(output), matches, display_mode="black")
+            result = redact_legal_fallback(source, output, matches)
 
             self.assertEqual("applied", result["status"])
             self.assertEqual(2, result["annotations_added"], "both occurrences must be redacted")
@@ -178,6 +240,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             self.assertNotIn("홍", rendered)
             self.assertNotIn("길", rendered)
             self.assertNotIn("동", rendered)
+            self.assertIn("anchor control", rendered.replace("\xa0", " "))
 
     def test_newline_split_phone_number_recovered_by_word_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -192,6 +255,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             # whitespace so the concatenated normalized form matches.
             page.insert_text((32, 52), "010-1234-")
             page.insert_text((32, 84), "5678")
+            page.insert_text((32, 124), "anchor control")
             doc.save(source)
             doc.close()
 
@@ -203,7 +267,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             finally:
                 probe.close()
 
-            result = masker.redact_pdf_native(str(source), str(output), matches, display_mode="black")
+            result = redact_legal_fallback(source, output, matches)
 
             self.assertEqual("applied", result["status"])
             self.assertTrue(result["verification"]["verified"])
@@ -214,6 +278,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             rendered = pdf_text(output)
             self.assertNotIn("010-1234-", rendered)
             self.assertNotIn("5678", rendered)
+            self.assertIn("anchor control", rendered)
 
     def test_plain_text_regression_uses_search_for_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,17 +289,19 @@ class WordBboxFallbackTests(unittest.TestCase):
             doc = fitz.open()
             page = doc.new_page(width=240, height=180)
             page.insert_text((32, 52), "phone 010-9999-8888")
+            page.insert_text((32, 92), "anchor control")
             doc.save(source)
             doc.close()
 
             matches = [masker.RedactionMatch("PHONE", "010-9999-8888")]
-            result = masker.redact_pdf_native(str(source), str(output), matches, display_mode="black")
+            result = redact_legal_fallback(source, output, matches)
 
             self.assertEqual("applied", result["status"])
             self.assertTrue(result["verification"]["verified"])
             self.assertEqual(1, result["targets_hit"])
             self.assertEqual(0, result["rects_from_word_fallback"])
             self.assertNotIn("010-9999-8888", pdf_text(output))
+            self.assertIn("anchor control", pdf_text(output))
 
     def test_fallback_miss_still_reports_missing_pdf_rect(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -245,6 +312,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             doc = fitz.open()
             page = doc.new_page(width=240, height=180)
             page.insert_text((32, 52), "phone 010-9999-8888")
+            page.insert_text((32, 92), "anchor control")
             doc.save(source)
             doc.close()
 
@@ -254,7 +322,7 @@ class WordBboxFallbackTests(unittest.TestCase):
                 # search_for and the word fallback must fail for it.
                 masker.RedactionMatch("NAME", "완전히다른이름"),
             ]
-            result = masker.redact_pdf_native(str(source), str(output), matches, display_mode="black")
+            result = redact_legal_fallback(source, output, matches)
 
             self.assertEqual(1, result["targets_hit"])
             self.assertEqual(1, result["missing_targets_count"])
@@ -263,6 +331,7 @@ class WordBboxFallbackTests(unittest.TestCase):
             self.assertEqual(1, len(missing_items))
             self.assertEqual("NAME", missing_items[0]["tag"])
             self.assertFalse(result["verification"]["verified"], "unresolved missing target must fail the gate")
+            self.assertFalse(output.exists(), "failed fallback output must be cleaned")
 
 
 class PostVerificationFuzzyResidualTests(unittest.TestCase):
@@ -323,6 +392,7 @@ class PostVerificationFuzzyResidualTests(unittest.TestCase):
             doc = fitz.open()
             page = doc.new_page(width=320, height=220)
             page.insert_text((32, 52), "tel 010-4444-5555")  # plain, redacted
+            page.insert_text((32, 190), "anchor control")
             page.insert_text((32, 120), "010-4444-")  # split survivor line 1
             page.insert_text((32, 150), "5555")  # split survivor line 2
             doc.save(source)
@@ -335,7 +405,7 @@ class PostVerificationFuzzyResidualTests(unittest.TestCase):
                 "_page_word_fallback_rect_groups",
                 return_value=[],
             ):
-                masker.redact_pdf_native(str(source), str(output), matches, display_mode="black")
+                redact_legal_fallback(source, output, matches)
 
             # Real verifier (fallback no longer mocked) on the produced output.
             residual_hits, residual_fuzzy_hits, _terms, _items = _verify_redaction_output(
@@ -343,6 +413,7 @@ class PostVerificationFuzzyResidualTests(unittest.TestCase):
             )
             self.assertEqual(0, residual_hits, "exact/compact must miss the split residual")
             self.assertGreaterEqual(residual_fuzzy_hits, 1, "real fuzzy verifier must catch the survivor")
+            self.assertIn("anchor control", pdf_text(output))
 
     def test_clean_output_has_no_fuzzy_false_positive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -431,16 +502,20 @@ class PostVerificationFuzzyResidualTests(unittest.TestCase):
             doc = fitz.open()
             page = doc.new_page(width=260, height=180)
             page.insert_text((32, 52), "phone 010-9999-8888")
+            page.insert_text((32, 92), "anchor control")
             doc.save(source)
             doc.close()
 
             matches = [masker.RedactionMatch("PHONE", "010-9999-8888")]
-            result = masker.redact_pdf_native(str(source), str(output), matches, display_mode="black")
+            result = redact_legal_fallback(source, output, matches)
 
             self.assertTrue(result["verification"]["verified"])
             self.assertIn("residual_fuzzy_hits", result["verification"])
             self.assertEqual(0, result["verification"]["residual_fuzzy_hits"])
             self.assertTrue(evaluate_quality_gate(result))
+            rendered = pdf_text(output)
+            self.assertIn("anchor control", rendered)
+            self.assertNotIn("010-9999-8888", rendered)
 
 
 class ScannedPdfFailureTests(unittest.TestCase):
@@ -463,7 +538,7 @@ class ScannedPdfFailureTests(unittest.TestCase):
             matches = [masker.RedactionMatch("NAME", "홍길동")]
 
             with self.assertRaises(ScannedPdfRedactionError) as ctx:
-                masker.redact_pdf_native(str(source), str(output), matches, display_mode="black")
+                redact_legal_fallback(source, output, matches)
 
             self.assertIn("스캔", str(ctx.exception))
             self.assertIn("수동 마스킹", str(ctx.exception))
@@ -500,7 +575,7 @@ class ScannedPdfFailureTests(unittest.TestCase):
                     str(source),
                     outdir=str(root),
                     opts={
-                        "profile": "official",
+                        "profile": "legal",
                         "extract_engine": "pypdf",
                         "output_artifacts": "pdf+report",
                         "display_mode": "black",

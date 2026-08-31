@@ -13,6 +13,7 @@ dist-ssr
 build/
 masking_runtime/bin/masking_engine
 masking_runtime/bin/masking_engine.exe
+masking_runtime/resource_fingerprint.json
 *.local
 
 # Editor directories and files
@@ -26,8 +27,16 @@ masking_runtime/bin/masking_engine.exe
 *.sln
 *.sw?
 .omx/
+.gjc/
 .venv-release/
 outputs/
 release-macos/
 __pycache__/
 scripts/__pycache__/
+:memory:.ses
+.omo/evidence/real-app-e2e/
+.omo/evidence/acceptance-real-app/
+
+# Local corpus evidence with real names; never commit.
+.omo/evidence/T34b-adjudication-table.md
+.omo/evidence/T34b-write-result.txt

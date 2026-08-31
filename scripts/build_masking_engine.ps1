@@ -27,4 +27,7 @@ if ($LASTEXITCODE -ne 0) {
 
 New-Item -ItemType Directory -Force -Path $RuntimeBinDir | Out-Null
 Copy-Item $distExe (Join-Path $RuntimeBinDir "masking_engine.exe") -Force
+node (Join-Path $RepoRoot "scripts\prepare_package_fingerprint.mjs") `
+  --repo $RepoRoot `
+  --record-engine-build "masking_runtime/bin/masking_engine.exe"
 Write-Host "masking_engine.exe copied to $RuntimeBinDir"

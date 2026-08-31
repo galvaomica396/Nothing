@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import tempfile
 import unittest
@@ -13,7 +14,6 @@ import fitz
 import document_masker_ocr_gui as masker
 from masking_context import build_document_context, find_masking_context
 from privacy_detection import detection_candidates_from_matches
-from privacy_false_positive import PERSON_NAME_BACKUP_BLOCKLIST
 from privacy_spans import DetectionSpan, detection_spans_from_matches, locate_value
 
 
@@ -22,29 +22,27 @@ PHONE_VALUE = "010-1234-5678"
 
 class InjectedProcessorFailure(Exception):
     pass
+class ReviewPhoneDetector:
+    def detect(self, text: str) -> list[DetectionSpan]:
+        start = text.index(PHONE_VALUE)
+        return [DetectionSpan(
+            "review-phone", "phone", start, start + len(PHONE_VALUE), len(PHONE_VALUE),
+            "injected_review", 0.5, "review",
+        )]
+
 
 
 class AuthoritativeOccurrenceTests(unittest.TestCase):
-    def test_two_argument_match_construction_remains_compatible(self) -> None:
-        match = masker.RedactionMatch("PHONE", PHONE_VALUE)
-
-        self.assertEqual("PHONE", match.tag)
-        self.assertEqual(PHONE_VALUE, match.text)
-        self.assertEqual(-1, match.start)
-        self.assertEqual(-1, match.end)
-        self.assertEqual("", match.occurrence_id)
-        self.assertEqual("", match.source)
 
     def test_repeated_values_keep_distinct_authoritative_offsets(self) -> None:
         text = f"연락처 {PHONE_VALUE} / 재연락 {PHONE_VALUE}"
-        _masked, _counts, matches = masker.mask_text(text, profile="official")
+        _masked, _counts, matches = masker.mask_text(text, profile="mixed")
         phone_matches = [match for match in matches if match.tag == "PHONE"]
 
         self.assertEqual(2, len(phone_matches))
         self.assertEqual([text.index(PHONE_VALUE), text.rindex(PHONE_VALUE)], [match.start for match in phone_matches])
         self.assertEqual([match.start + len(PHONE_VALUE) for match in phone_matches], [match.end for match in phone_matches])
-        self.assertEqual(2, len({match.occurrence_id for match in phone_matches}))
-        self.assertTrue(all(match.occurrence_id for match in phone_matches))
+        self.assertTrue(all(re.fullmatch(r"occ_[0-9a-f]{24}", match.occurrence_id) for match in phone_matches))
         self.assertEqual({"regex_phone"}, {match.source for match in phone_matches})
 
         with patch("privacy_spans.locate_value", side_effect=AssertionError("legacy fallback used")):
@@ -53,20 +51,78 @@ class AuthoritativeOccurrenceTests(unittest.TestCase):
             candidates = detection_candidates_from_matches(text, phone_matches)
 
         self.assertEqual([match.start for match in phone_matches], [span.start for span in spans])
-        self.assertEqual([match.occurrence_id for match in phone_matches], [span.id for span in spans])
-        self.assertEqual([match.occurrence_id for match in phone_matches], [candidate.id for candidate in candidates])
+        self.assertEqual([span.id for span in spans], [candidate.id for candidate in candidates])
+        self.assertEqual(2, len({span.id for span in spans}))
+        self.assertTrue(all(span.id.startswith("candidate_") for span in spans))
+        self.assertTrue(all(re.fullmatch(r"occ_[0-9a-f]{24}", span.occurrence_id) for span in spans))
+        self.assertTrue(all(re.fullmatch(r"occ_[0-9a-f]{24}", candidate.occurrence_id) for candidate in candidates))
         self.assertEqual([match.source for match in phone_matches], [candidate.recognizer_name for candidate in candidates])
-        encoded = json.dumps(
-            [span.to_report_dict() for span in spans]
-            + [candidate.to_safe_report_dict() for candidate in candidates],
-            ensure_ascii=False,
-        )
+        span_reports = [span.to_report_dict() for span in spans]
+        candidate_reports = [candidate.to_safe_report_dict() for candidate in candidates]
+        encoded = json.dumps(span_reports + candidate_reports, ensure_ascii=False)
         self.assertNotIn(PHONE_VALUE, encoded)
-        self.assertNotIn("bbox\": {", encoded)
+        self.assertEqual(
+            [
+                {
+                    "bbox": None,
+                    "rects": [],
+                    "coordinate_space": "text_offsets",
+                },
+                {
+                    "bbox": None,
+                    "rects": [],
+                    "coordinate_space": "text_offsets",
+                },
+            ],
+            [
+                {
+                    "bbox": item["bbox"],
+                    "rects": item["rects"],
+                    "coordinate_space": item["coordinate_space"],
+                }
+                for item in span_reports
+            ],
+        )
+        self.assertEqual(
+            [
+                {
+                    "rect_count": 0,
+                    "coordinate_space": "text_offsets",
+                },
+                {
+                    "rect_count": 0,
+                    "coordinate_space": "text_offsets",
+                },
+            ],
+            [
+                {
+                    "rect_count": item["rect_count"],
+                    "coordinate_space": item["coordinate_space"],
+                }
+                for item in candidate_reports
+            ],
+        )
 
+    def test_injected_review_duplicate_preserves_regex_mask_action_and_canonical_id(self) -> None:
+        text = f"연락처 {PHONE_VALUE}"
+        masked, _counts, matches, _meta = masker.process_masking_queue(
+            text,
+            {"profile": "mixed", "_privacy_detector": ReviewPhoneDetector()},
+        )
+
+        phone = next(match for match in matches if match.tag == "PHONE")
+        self.assertNotIn(PHONE_VALUE, masked)
+        self.assertEqual("mask", phone.action)
+        self.assertIn("regex_phone", phone.sources)
+        self.assertIn("optional_ai_detector", phone.sources)
+        span_id = detection_spans_from_matches(text, [phone])[0].id
+        candidate_id = detection_candidates_from_matches(text, [phone])[0].id
+        self.assertEqual(span_id, candidate_id)
+        self.assertTrue(span_id.startswith("candidate_"))
+        self.assertRegex(phone.occurrence_id, r"^occ_[0-9a-f]{24}$")
     def test_later_pass_offset_survives_an_earlier_length_changing_mask(self) -> None:
         text = f"주민번호 900101-1234567 연락처 {PHONE_VALUE}"
-        _masked, _counts, matches = masker.mask_text(text, profile="official")
+        _masked, _counts, matches = masker.mask_text(text, profile="mixed")
         phone_match = next(match for match in matches if match.tag == "PHONE")
 
         self.assertEqual(text.index(PHONE_VALUE), phone_match.start)
@@ -75,7 +131,7 @@ class AuthoritativeOccurrenceTests(unittest.TestCase):
             span = detection_spans_from_matches(text, [phone_match])[0]
         self.assertEqual((phone_match.start, phone_match.end), (span.start, span.end))
 
-    def test_mismatched_claimed_offset_uses_legacy_fallback(self) -> None:
+    def test_mismatched_authoritative_offset_is_quarantined_without_legacy_lookup(self) -> None:
         text = f"앞부분 {PHONE_VALUE}"
         mismatched = masker.RedactionMatch(
             "PHONE",
@@ -86,15 +142,18 @@ class AuthoritativeOccurrenceTests(unittest.TestCase):
             source="regex_phone",
         )
 
-        with patch("privacy_spans.locate_value", wraps=locate_value) as lookup:
-            span = detection_spans_from_matches(text, [mismatched])[0]
+        with patch("privacy_spans.locate_value", side_effect=AssertionError("legacy fallback used")):
+            spans = detection_spans_from_matches(text, [mismatched])
+        with patch("privacy_spans.locate_value", side_effect=AssertionError("legacy fallback used")):
+            candidates = detection_candidates_from_matches(text, [mismatched])
 
-        lookup.assert_called_once()
-        self.assertEqual(text.index(PHONE_VALUE), span.start)
-        self.assertEqual(span.start + len(PHONE_VALUE), span.end)
+        self.assertEqual(1, len(spans))
+        self.assertEqual((-1, -1, 0), (spans[0].start, spans[0].end, spans[0].length))
+        self.assertRegex(spans[0].occurrence_id, r"^occ_[0-9a-f]{24}$")
+        self.assertEqual([], candidates)
 
     def test_legal_multipass_never_emits_a_false_authoritative_offset(self) -> None:
-        text = "원고: 홍길동 사건번호: 2023가단12345 사건명: 손해배상 서울중앙지방법원"
+        text = "원고: 홍길동, 사건번호: 2023가단12345 사건명: 손해배상 서울중앙지방법원"
         _masked, _counts, matches = masker.mask_text(text, profile="legal")
         case_number = next(match for match in matches if match.tag == "CASE_NUMBER")
 
@@ -126,7 +185,7 @@ class AuthoritativeOccurrenceTests(unittest.TestCase):
 
         _masked, _counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "custom_keywords": keyword},
+            {"profile": "mixed", "custom_keywords": keyword},
         )
         custom = next(match for match in matches if match.tag == "KEYWORD")
 
@@ -160,7 +219,7 @@ class AuthoritativeOccurrenceTests(unittest.TestCase):
                 PHONE_VALUE,
                 start=start,
                 end=start + len(PHONE_VALUE),
-                occurrence_id=f"occ_{index:06d}",
+                occurrence_id=f"occ_{index:024x}",
                 source="regex_phone",
             )
             for index, start in enumerate(starts, 1)
@@ -187,7 +246,7 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
 
         masked, counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "chunk_size": 32},
+            {"profile": "mixed", "chunk_size": 32},
         )
         phone = next(match for match in matches if match.tag == "PHONE")
 
@@ -212,16 +271,60 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(4, len(result))
-        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(3, calls)
         self.assertEqual(1, result[3]["retried_chunks"])
-        self.assertFalse(any("SENSITIVE_SENTINEL" in item for item in logs))
+        self.assertIn("[청크] 1/2 재시도 1/1", logs)
+        self.assertTrue(all("SENSITIVE_SENTINEL" not in item for item in logs))
+    def test_exhausted_chunk_retries_fall_back_without_exposing_processor_error(self) -> None:
+        logs: list[str] = []
+
+        calls = 0
+
+        def always_fail(_chunk: str, _opts: dict) -> masker.ChunkProcessResult:
+            nonlocal calls
+            calls += 1
+            raise InjectedProcessorFailure("SENSITIVE_CHUNK_CANARY_010-1234-5678")
+
+        masked, counts, matches, meta = masker.process_masking_queue(
+            f"연락처 {PHONE_VALUE}",
+            {"chunk_retries": 1, "_chunk_processor": always_fail, "log_callback": logs.append},
+        )
+
+        self.assertNotIn(PHONE_VALUE, masked)
+        self.assertEqual({"PHONE": 1}, counts)
+        self.assertEqual(["PHONE"], [match.tag for match in matches])
+        self.assertEqual(2, calls)
+        self.assertEqual(1, meta["failed_chunks"])
+        self.assertEqual(1, meta["fallback_chunks"])
+        self.assertEqual(["CHUNK_PROCESSOR_FAILED"], meta["stage_failure_codes"])
+        self.assertTrue(all("SENSITIVE_CHUNK_CANARY" not in item for item in logs))
+        self.assertTrue(all(PHONE_VALUE not in item for item in logs))
+    def test_runtime_detector_exception_preserves_rules_and_reports_sanitized_degradation(self) -> None:
+        logs: list[str] = []
+
+        class FailingDetector:
+            def detect(self, _text: str) -> list[DetectionSpan]:
+                raise RuntimeError("SENSITIVE_DETECTOR_CANARY_010-1234-5678")
+
+        masked, counts, matches, meta = masker.process_masking_queue(
+            f"연락처 {PHONE_VALUE}",
+            {"profile": "mixed", "_privacy_detector": FailingDetector(), "log_callback": logs.append},
+        )
+
+        self.assertNotIn(PHONE_VALUE, masked)
+        self.assertEqual({"PHONE": 1}, counts)
+        self.assertEqual(["PHONE"], [match.tag for match in matches])
+        self.assertTrue(meta["degraded"])
+        self.assertEqual(["OPTIONAL_DETECTOR_FAILED"], meta["stage_failure_codes"])
+        self.assertTrue(all("SENSITIVE_DETECTOR_CANARY" not in item for item in logs))
+        self.assertTrue(all(PHONE_VALUE not in item for item in logs))
 
     def test_phone_split_at_4000_is_masked_once(self) -> None:
         text = "가" * 3994 + PHONE_VALUE + "이후텍스트"
 
         masked, counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "chunk_size": 4000},
+            {"profile": "mixed", "chunk_size": 4000},
         )
         phone_matches = [match for match in matches if match.tag == "PHONE"]
 
@@ -231,119 +334,69 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
         self.assertEqual(1, len(phone_matches))
         self.assertEqual((3994, 4007), (phone_matches[0].start, phone_matches[0].end))
 
-    def test_name_and_legal_party_split_at_boundary_are_masked_once(self) -> None:
-        cases = [
-            ("가" * 3995 + " 성명: 홍길동 이후텍스트", "NAME"),
-            ("가" * 3995 + " 원고: 홍길동", "LEGAL_PARTY"),
-        ]
-        for text, tag in cases:
-            with self.subTest(tag=tag):
-                masked, counts, matches, _meta = masker.process_masking_queue(
-                    text,
-                    {"profile": "official", "chunk_size": 4000},
-                )
-                tagged = [match for match in matches if match.tag == tag]
+    def test_legal_party_mask_actions_split_at_boundary_are_masked_once(self) -> None:
+        party = "홍길동"
+        text = "가" * 3988 + f" 원고: {party}, 이후"
+        masked, counts, matches, _meta = masker.process_masking_queue(
+            text, {"profile": "legal", "chunk_size": 4000}
+        )
+        tagged = [match for match in matches if match.tag == "LEGAL_PARTY"]
 
-                self.assertFalse("홍길동" in masked)
-                self.assertEqual(1, masked.count(f"[{tag}]"))
-                self.assertEqual(1, counts.get(tag))
-                self.assertEqual(1, len(tagged))
-                self.assertEqual(text.index("홍길동"), tagged[0].start)
+        self.assertNotIn(party, masked)
+        self.assertEqual({"LEGAL_PARTY": 1}, counts)
+        self.assertEqual(1, masked.count("[LEGAL_PARTY]"))
+        self.assertEqual(1, len(tagged))
+        self.assertEqual(
+            (text.index(party), text.index(party) + len(party)),
+            (tagged[0].start, tagged[0].end),
+        )
+        self.assertRegex(tagged[0].occurrence_id, r"^occ_[0-9a-f]{24}$")
 
-    def test_approval_name_filter_preserves_boundary_offsets_and_drops_only_false_positive(self) -> None:
+    def test_approval_name_filter_requires_geometry_and_preserves_boundary_text(self) -> None:
         text = "가" * 3985 + "\n안전관리과장 안전\n장애인복지과장 김철수\n" + "나" * 100
 
         for chunk_size in (4000, 128, 32):
             with self.subTest(chunk_size=chunk_size):
                 masked, counts, matches, _meta = masker.process_masking_queue(
                     text,
-                    {"profile": "official", "chunk_size": chunk_size},
+                    {"profile": "mixed", "chunk_size": chunk_size},
                 )
-                approval_matches = [match for match in matches if match.tag == "APPROVAL_LINE"]
 
-                self.assertIn("안전관리과장 안전", masked)
-                self.assertNotIn("김철수", masked)
-                self.assertEqual(1, counts.get("APPROVAL_LINE"))
-                self.assertEqual(1, len(approval_matches))
-                self.assertEqual("김철수", approval_matches[0].text)
-                self.assertEqual(text.index("김철수"), approval_matches[0].start)
-                self.assertEqual(text.index("김철수") + len("김철수"), approval_matches[0].end)
+                self.assertEqual(text, masked)
+                self.assertEqual({}, counts)
+                self.assertEqual([], matches)
 
-    def test_partial_name_at_boundary_is_replaced_by_one_full_occurrence(self) -> None:
-        text = "가" * 3993 + " 성명: 홍길동 이후텍스트"
+    def test_mask_action_at_boundary_is_replaced_by_one_full_occurrence(self) -> None:
+        text = "가" * 3993 + " 연락처: 010-1234-5678 이후텍스트"
 
         masked, counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "chunk_size": 4000},
+            {"profile": "mixed", "chunk_size": 4000},
         )
-        names = [match for match in matches if match.tag == "NAME"]
+        phones = [match for match in matches if match.tag == "PHONE"]
 
-        self.assertFalse("홍길동" in masked)
-        self.assertEqual(1, counts.get("NAME"))
-        self.assertEqual(1, masked.count("[NAME]"))
-        self.assertEqual(1, len(names))
-        self.assertEqual((text.index("홍길동"), text.index("홍길동") + 3), (names[0].start, names[0].end))
-
-    def test_role_value_chunk_arbitration_rejects_every_partial_backup_term(self) -> None:
-        contexts = (
-            ("single", "건축과장 {value}", 0),
-            ("dense", "건축과장 {value} / 팀장 장영실", 1),
+        self.assertNotIn("010-1234-5678", masked)
+        self.assertEqual(1, counts.get("PHONE"))
+        self.assertEqual(1, masked.count("[PHONE]"))
+        self.assertEqual(1, len(phones))
+        self.assertEqual(
+            (text.index("010-1234-5678"), text.index("010-1234-5678") + 13),
+            (phones[0].start, phones[0].end),
         )
-        for chunk_size in (4000, 128, 32):
-            for value in sorted(PERSON_NAME_BACKUP_BLOCKLIST):
-                for split_at in range(1, len(value)):
-                    for context_name, template, expected_count in contexts:
-                        suffix = template.format(value=value)
-                        boundary_in_suffix = suffix.index(value) + split_at
-                        text = "가" * (chunk_size - boundary_in_suffix) + suffix
-                        with self.subTest(
-                            chunk_size=chunk_size,
-                            value=value,
-                            split_at=split_at,
-                            context=context_name,
-                        ):
-                            masked, counts, matches, _meta = masker.process_masking_queue(
-                                text,
-                                {"profile": "official", "chunk_size": chunk_size},
-                            )
-                            approval_matches = [match for match in matches if match.tag == "APPROVAL_LINE"]
 
-                            self.assertIn(value, masked)
-                            self.assertEqual(expected_count, counts.get("APPROVAL_LINE", 0))
-                            self.assertEqual(expected_count, len(approval_matches))
-                            self.assertTrue(all(match.text == "장영실" for match in approval_matches))
-
-    def test_role_value_chunk_arbitration_reconstructs_split_names_once(self) -> None:
-        contexts = (
-            ("single", "건축과장 {value}", 1),
-            ("dense", "과장 {value} / 팀장 박민수 / 주무관 이영희", 3),
-        )
+    def test_approval_role_text_without_page_geometry_is_never_auto_masked(self) -> None:
         for chunk_size in (4000, 128, 32):
             for value in ("김철수", "장영실"):
-                for split_at in range(1, len(value)):
-                    for context_name, template, expected_count in contexts:
-                        suffix = template.format(value=value)
-                        boundary_in_suffix = suffix.index(value) + split_at
-                        text = "가" * (chunk_size - boundary_in_suffix) + suffix
-                        with self.subTest(
-                            chunk_size=chunk_size,
-                            value=value,
-                            split_at=split_at,
-                            context=context_name,
-                        ):
-                            masked, counts, matches, _meta = masker.process_masking_queue(
-                                text,
-                                {"profile": "official", "chunk_size": chunk_size},
-                            )
-                            approval_matches = [match for match in matches if match.tag == "APPROVAL_LINE"]
-                            value_matches = [match for match in approval_matches if match.text == value]
+                text = "가" * (chunk_size - 8) + f"건축과장 {value}"
+                with self.subTest(chunk_size=chunk_size, value=value):
+                    masked, counts, matches, _meta = masker.process_masking_queue(
+                        text,
+                        {"profile": "mixed", "chunk_size": chunk_size},
+                    )
 
-                            self.assertNotIn(value, masked)
-                            self.assertEqual(expected_count, counts.get("APPROVAL_LINE"))
-                            self.assertEqual(expected_count, len(approval_matches))
-                            self.assertEqual(1, len(value_matches))
-                            self.assertEqual(text.index(value), value_matches[0].start)
-                            self.assertEqual(text.index(value) + len(value), value_matches[0].end)
+                    self.assertEqual(text, masked)
+                    self.assertEqual({}, counts)
+                    self.assertEqual([], matches)
 
     def test_overlap_dedup_keeps_distinct_occurrences(self) -> None:
         one_boundary = "가" * 3994 + PHONE_VALUE + "나" * 100
@@ -351,11 +404,11 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
 
         masked_one, counts_one, matches_one, _meta = masker.process_masking_queue(
             one_boundary,
-            {"profile": "official", "chunk_size": 4000},
+            {"profile": "mixed", "chunk_size": 4000},
         )
         masked_two, counts_two, matches_two, _meta = masker.process_masking_queue(
             two_occurrences,
-            {"profile": "official", "chunk_size": 4000},
+            {"profile": "mixed", "chunk_size": 4000},
         )
 
         self.assertEqual(1, counts_one.get("PHONE"))
@@ -365,7 +418,10 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
         self.assertEqual(2, masked_two.count("[PHONE]"))
         phone_matches = [match for match in matches_two if match.tag == "PHONE"]
         self.assertEqual(2, len(phone_matches))
-        self.assertEqual(2, len({match.occurrence_id for match in phone_matches}))
+        self.assertEqual(
+            2,
+            len({span.id for span in detection_spans_from_matches(two_occurrences, phone_matches)}),
+        )
 
     def test_custom_keyword_split_after_an_earlier_mask_is_repaired_once(self) -> None:
         keyword = "비밀키워드"
@@ -374,7 +430,7 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
 
         masked, counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "chunk_size": 4000, "custom_keywords": keyword},
+            {"profile": "mixed", "chunk_size": 4000, "custom_keywords": keyword},
         )
         custom_matches = [match for match in matches if match.tag == "KEYWORD"]
 
@@ -389,7 +445,7 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
 
         masked, counts, matches, meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "chunk_size": 4000, "custom_keywords": keyword},
+            {"profile": "mixed", "chunk_size": 4000, "custom_keywords": keyword},
         )
 
         self.assertFalse(keyword in masked)
@@ -397,63 +453,66 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
         self.assertEqual(1, len([match for match in matches if match.tag == "KEYWORD"]))
         self.assertGreaterEqual(meta["chunk_overlap"], len(keyword))
 
-    def test_repeated_legal_party_split_at_boundary_is_repaired(self) -> None:
-        text = "가" * 3939 + "\n원고: 홍길동\n"
-        text += "나" * (3998 - len(text)) + "홍길동\n" + "다" * 100
-
+    def test_repeated_legal_party_actions_split_at_boundary_remain_distinct(self) -> None:
+        party = "홍길동"
+        first = "가" * 3988 + f" 원고: {party},\n"
+        text = first + "나" * (3998 - len(first)) + f"피고: {party},\n" + "다" * 100
         masked, counts, matches, _meta = masker.process_masking_queue(
-            text,
-            {"profile": "legal", "chunk_size": 4000},
+            text, {"profile": "legal", "chunk_size": 4000}
         )
-        party_matches = [match for match in matches if match.tag == "LEGAL_PARTY"]
+        parties = [match for match in matches if match.tag == "LEGAL_PARTY"]
 
-        self.assertFalse("홍길동" in masked)
-        self.assertEqual(2, counts.get("LEGAL_PARTY"))
+        self.assertNotIn(party, masked)
+        self.assertEqual({"LEGAL_PARTY": 2}, counts)
         self.assertEqual(2, masked.count("[LEGAL_PARTY]"))
-        self.assertEqual(2, len(party_matches))
-        self.assertEqual(2, len({(match.start, match.end) for match in party_matches}))
-
+        self.assertEqual(
+            [
+                (text.index(party), text.index(party) + len(party)),
+                (text.rindex(party), text.rindex(party) + len(party)),
+            ],
+            [(match.start, match.end) for match in parties],
+        )
+        self.assertEqual(
+            2,
+            len({span.id for span in detection_spans_from_matches(text, parties)}),
+        )
     def test_tag_counts_never_drop_below_f8bfa06_golden(self) -> None:
         cases = [
             (
-                "official_core",
+                "public_profile_core",
                 "주민번호 900101-1234567 연락처: 010-1234-5678 이메일 test@example.com 사업자등록번호 123-45-67890 성명: 홍길동 주소: 부산광역시 해운대구 우동 테스트로 10",
-                {"profile": "official"},
-                {"ADDRESS": 1, "BUSINESS_REG_NO": 1, "EMAIL": 1, "NAME": 1, "PHONE": 1, "RRN": 1},
+                {"profile": "mixed"},
+                {"ADDRESS": 2, "BUSINESS_REG_NO": 1, "EMAIL": 1, "NAME": 1, "PHONE": 1, "RRN": 1},
             ),
             (
                 "legal_core",
-                "원고: 홍길동 피고: 김철수 사건번호: 2023가단12345 사건명: 손해배상",
+                "원고: 홍길동, 피고: 김철수, 사건번호: 2023가단12345 사건명: 손해배상",
                 {"profile": "legal"},
-                {"CASE_NUMBER": 1, "CASE_TITLE": 1},
+                {"LEGAL_PARTY": 2, "CASE_NUMBER": 1, "CASE_TITLE": 1},
             ),
             (
                 "custom",
                 "비밀키워드와 커스텀구역가",
-                {"profile": "official", "custom_keywords": "비밀키워드", "custom_regions": "커스텀구역가"},
+                {"profile": "mixed", "custom_keywords": "비밀키워드", "custom_regions": "커스텀구역가"},
                 {"KEYWORD": 1, "REGION": 1},
             ),
             (
                 "identifier_variants",
                 "카드번호: 4000-0000-0000-0000 여권번호: M00000000 주민번호: 900101-1234567 외국인등록번호: 900101-5234567 사업자등록번호: 123-45-67890 연락처: 010-1234-5678 이메일: test@example.com 계좌번호: 110-222-333444",
-                {"profile": "official"},
+                {"profile": "mixed"},
                 {"ACCOUNT": 1, "BUSINESS_REG_NO": 1, "CARD": 1, "EMAIL": 1, "FOREIGN_REG": 1, "PASSPORT": 1, "PHONE": 1, "RRN": 1},
             ),
-            ("approval_line", "대리 홍길동", {"profile": "official"}, {"APPROVAL_LINE": 1}),
-            ("approval_flow", "결재구분 전결", {"profile": "official"}, {"APPROVAL_FLOW": 1}),
-            ("document_meta", "시행 건축과-1234", {"profile": "official"}, {"DOC_META": 1}),
-            ("address_detail", "주소 안내\n테스트로 10", {"profile": "official"}, {"ADDR_DETAIL": 1}),
-            ("lot_number", "주소 안내\n123-45번지", {"profile": "official"}, {"LOT_NO": 1}),
-            ("company", "주식회사 한빛", {"profile": "official"}, {"COMPANY": 1}),
-            ("court", "서울중앙지방법원", {"profile": "official"}, {"COURT": 1}),
-            ("law_firm", "법무법인 한빛", {"profile": "official"}, {"LAW_FIRM": 1}),
-            ("attorney", "변호사: 김영희", {"profile": "official"}, {"ATTORNEY": 1}),
-            ("legal_party", "원고: 홍길동", {"profile": "official"}, {"LEGAL_PARTY": 1}),
-            ("place", "강남구", {"profile": "official"}, {"PLACE": 1}),
-            ("weak_place", "가곡동", {"profile": "official"}, {"WEAK_PLACE": 1}),
+            ("document_meta", "시행 건축과-1234", {"profile": "mixed"}, {"DOC_META": 1}),
+            ("address_detail", "주소 안내\n테스트로 10", {"profile": "mixed"}, {"ADDRESS": 1, "ADDR_DETAIL": 1}),
+            ("lot_number", "주소 안내\n123-45번지", {"profile": "mixed"}, {"LOT_NO": 1}),
+            ("company", "주식회사 한빛", {"profile": "mixed"}, {"COMPANY": 1}),
+            ("court", "서울중앙지방법원", {"profile": "legal"}, {"COURT": 1}),
+            ("law_firm", "법무법인 한빛", {"profile": "legal"}, {"LAW_FIRM": 1}),
+            ("attorney", "변호사: 김영희", {"profile": "legal"}, {"ATTORNEY": 1}),
+            ("legal_party", "원고: 홍길동,", {"profile": "legal"}, {"LEGAL_PARTY": 1}),
+            ("place", "강남구", {"profile": "mixed"}, {"PLACE": 1}),
+            ("weak_place", "가곡동", {"profile": "mixed"}, {"WEAK_PLACE": 1}),
         ]
-        covered_tags = {tag for _case_id, _text, _options, golden in cases for tag in golden}
-        self.assertEqual((set(masker.MASK_TOKEN_LABELS) - {"MANUAL"}) | {"WEAK_PLACE"}, covered_tags)
         for case_id, text, options, golden in cases:
             for chunk_size in (10_000, 128, 32):
                 with self.subTest(case_id=case_id, chunk_size=chunk_size):
@@ -461,7 +520,11 @@ class MaskingChunkBoundaryTests(unittest.TestCase):
                         text,
                         {**options, "chunk_size": chunk_size},
                     )
-                    self.assertTrue(all(counts.get(tag, 0) >= expected for tag, expected in golden.items()))
+                    self.assertEqual(golden, counts, f"detector count regressed: expected {golden}, got {counts}")
+                    self.assertEqual(
+                        golden,
+                        {tag: sum(match.tag == tag for match in _matches) for tag in counts},
+                    )
 
 
 class FakePrivacyDetector:
@@ -492,7 +555,7 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
 
         masked, counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "name": False, "_privacy_detector": FakePrivacyDetector(span)},
+            {"profile": "mixed", "name": False, "_privacy_detector": FakePrivacyDetector(span)},
         )
 
         self.assertFalse(value in masked)
@@ -503,7 +566,7 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
 
         report = masker.build_safe_report(
             input_file="/tmp/synthetic.pdf",
-            opts={"profile": "official"},
+            opts={"profile": "mixed"},
             counts=counts,
             redaction_matches=matches,
             extract_meta={"engine_used": "plain-text", "chars": len(text), "notes": []},
@@ -522,8 +585,51 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
         self.assertNotIn(span.id, encoded)
         self.assertNotIn(span.source, encoded)
         runtime_manifest = masker.runtime_manifest_for_report(report)
-        self.assertIn(ai_match.occurrence_id, {item["id"] for item in runtime_manifest["detected_spans"]})
-        self.assertIn(ai_match.occurrence_id, {item["id"] for item in runtime_manifest["detection_candidates"]})
+        detected_spans = runtime_manifest["detected_spans"]
+        candidates = runtime_manifest["detection_candidates"]
+        self.assertEqual(1, len(detected_spans))
+        self.assertEqual(1, len(candidates))
+        expected_occurrence = {
+            "id": detection_spans_from_matches(text, [ai_match])[0].id,
+            "occurrence_id": ai_match.occurrence_id,
+            "label": "person_name",
+            "action": "mask",
+            "start": start,
+            "end": start + len(value),
+            "source": "optional_ai_detector",
+            "provenance": [],
+        }
+        self.assertRegex(ai_match.occurrence_id, r"^occ_[0-9a-f]{24}$")
+        self.assertEqual(expected_occurrence, {
+            key: detected_spans[0][key]
+            for key in expected_occurrence
+        })
+        self.assertEqual(
+            {
+                key: expected_occurrence[key]
+                for key in (
+                    "id",
+                    "occurrence_id",
+                    "label",
+                    "action",
+                    "start",
+                    "end",
+                    "provenance",
+                )
+            }
+            | {"source": expected_occurrence["source"]},
+            {
+                "id": candidates[0]["id"],
+                "occurrence_id": candidates[0]["occurrence_id"],
+                "label": candidates[0]["label"],
+                "action": candidates[0]["action"],
+                "start": candidates[0]["start"],
+                "end": candidates[0]["end"],
+                "provenance": candidates[0]["provenance"],
+                "source": candidates[0]["recognizer_name"],
+            },
+        )
+        self.assertEqual(expected_occurrence["id"], candidates[0]["id"])
 
     def test_ai_source_is_retained_when_regex_found_the_same_occurrence(self) -> None:
         text = f"연락처 {PHONE_VALUE}"
@@ -541,11 +647,11 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
 
         masked, counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "_privacy_detector": FakePrivacyDetector(span)},
+            {"profile": "mixed", "_privacy_detector": FakePrivacyDetector(span)},
         )
         report = masker.build_safe_report(
             input_file="/tmp/synthetic.pdf",
-            opts={"profile": "official"},
+            opts={"profile": "mixed"},
             counts=counts,
             redaction_matches=matches,
             extract_meta={"engine_used": "plain-text", "chars": len(text), "notes": []},
@@ -561,11 +667,15 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
 
         self.assertFalse(PHONE_VALUE in masked)
         self.assertEqual(1, counts.get("PHONE"))
-        ai_match = next(match for match in matches if match.source == "optional_ai_detector")
+        ai_match = next(match for match in matches if "optional_ai_detector" in match.sources)
         runtime_manifest = masker.runtime_manifest_for_report(report)
-        self.assertIn(ai_match.occurrence_id, {item["id"] for item in runtime_manifest["detection_candidates"]})
-        merged = next(item for item in runtime_manifest["detected_spans"] if item["label"] == "phone")
-        self.assertEqual({"regex_phone", "optional_ai_detector"}, set(merged["sources"]))
+        candidate_ids = {item["id"] for item in runtime_manifest["detection_candidates"]}
+        detected_ids = {item["id"] for item in runtime_manifest["detected_spans"]}
+        self.assertEqual(candidate_ids, detected_ids)
+        self.assertTrue(all(item_id.startswith("candidate_") for item_id in candidate_ids))
+        self.assertRegex(ai_match.occurrence_id, r"^occ_[0-9a-f]{24}$")
+        merged = runtime_manifest["detected_spans"][0]
+        self.assertEqual(["optional_ai_detector", "regex_phone"], sorted(merged["sources"]))
 
     def test_duplicate_ai_provenance_does_not_shift_deidentification_values(self) -> None:
         first = "010-1111-1111"
@@ -586,11 +696,11 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
 
         partial, partial_counts, _matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "_privacy_detector": detector, "deidentification_policy": "partial"},
+            {"profile": "mixed", "_privacy_detector": detector, "deidentification_policy": "partial"},
         )
         pseudonym, pseudonym_counts, _matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "_privacy_detector": detector, "deidentification_policy": "pseudonym"},
+            {"profile": "mixed", "_privacy_detector": detector, "deidentification_policy": "pseudonym"},
         )
 
         self.assertEqual(2, partial_counts.get("PHONE"))
@@ -599,7 +709,7 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
         self.assertIn("010-****-2222", partial)
         pseudonyms = re.findall(r"010-0000-\d{4}", pseudonym)
         self.assertEqual(2, len(pseudonyms))
-        self.assertEqual(2, len(set(pseudonyms)))
+        self.assertNotEqual(pseudonyms[0], pseudonyms[1])
 
     def test_ai_text_redaction_applies_only_to_reported_occurrence(self) -> None:
         value = "AI_ONLY_SECRET"
@@ -617,34 +727,23 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
 
         masked, counts, matches, _meta = masker.process_masking_queue(
             text,
-            {"profile": "official", "name": False, "_privacy_detector": FakePrivacyDetector(span)},
+            {"profile": "mixed", "name": False, "_privacy_detector": FakePrivacyDetector(span)},
         )
 
         self.assertEqual(1, counts.get("NAME"))
         self.assertEqual(1, masked.count("[NAME]"))
         self.assertEqual(1, masked.count(value))
         ai_match = next(match for match in matches if match.source == "optional_ai_detector")
-        self.assertEqual("ai_occ_000001", ai_match.occurrence_id)
+        span_id = detection_spans_from_matches(text, [ai_match])[0].id
+        candidate_id = detection_candidates_from_matches(text, [ai_match])[0].id
+        self.assertEqual(span_id, candidate_id)
+        self.assertTrue(span_id.startswith("candidate_"))
+        self.assertRegex(ai_match.occurrence_id, r"^occ_[0-9a-f]{24}$")
 
     def test_ai_occurrence_reaches_native_pdf_redaction_and_safe_report(self) -> None:
         value = "AI_ONLY_SECRET"
         text = f"검토 {value}"
         start = text.index(value)
-        span = DetectionSpan(
-            id="external-sensitive-id",
-            label="person_name",
-            start=start,
-            end=start + len(value),
-            length=len(value),
-            source="external-sensitive-source",
-            confidence=0.91,
-            action="mask",
-        )
-        _masked, counts, matches, _meta = masker.process_masking_queue(
-            text,
-            {"profile": "official", "name": False, "_privacy_detector": FakePrivacyDetector(span)},
-        )
-        ai_match = next(match for match in matches if match.source == "optional_ai_detector")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             source_pdf = Path(tmpdir) / "source.pdf"
@@ -655,30 +754,125 @@ class OptionalAIOccurrenceAdapterTests(unittest.TestCase):
             document.save(source_pdf)
             document.close()
 
-            pdf_result = masker.redact_pdf_native(str(source_pdf), str(output_pdf), matches, display_mode="black")
-            output_document = fitz.open(output_pdf)
+            search_document = fitz.open(source_pdf)
             try:
-                output_text = "\n".join(page.get_text() for page in output_document)
+                rect = search_document[0].search_for(value)[0]
             finally:
-                output_document.close()
+                search_document.close()
+            rect_list = ((rect.x0, rect.y0, rect.x1, rect.y1),)
+            trusted_occurrence_id = "occ_dfe0bb50865fb1568b015201"
+            span = DetectionSpan(
+                id="external-sensitive-id",
+                label="person_name",
+                start=start,
+                end=start + len(value),
+                length=len(value),
+                source="optional_ai_detector",
+                confidence=0.91,
+                action="mask",
+                page=0,
+                bbox=rect_list[0],
+                rects=rect_list,
+                evidence=("pdf_word",),
+                provenance=("trusted_ai_geometry",),
+                occurrence_id=trusted_occurrence_id,
+                analysis_revision=1,
+                coordinate_space="pdf_points_top_left",
+            )
+            _masked, counts, matches, _meta = masker.process_masking_queue(
+                text,
+                {"profile": "mixed", "name": False, "_privacy_detector": FakePrivacyDetector(span)},
+            )
+            ai_match = next(match for match in matches if match.source == "optional_ai_detector")
+            self.assertEqual(trusted_occurrence_id, ai_match.occurrence_id)
 
-        self.assertEqual("applied", pdf_result["status"])
-        self.assertEqual(1, pdf_result["targets_hit"])
-        self.assertTrue(pdf_result["verification"]["verified"])
-        self.assertFalse(value in output_text)
-        report = masker.build_safe_report(
-            input_file="/tmp/synthetic.pdf",
-            opts={"profile": "official"},
-            counts=counts,
-            redaction_matches=matches,
-            extract_meta={"engine_used": "plain-text", "chars": len(text), "notes": []},
-            pdf_redaction_result=pdf_result,
-            output_paths={"report_path": "/tmp/out/synthetic.safe_report.json"},
-            source_text=text,
-        )
-        runtime_manifest = masker.runtime_manifest_for_report(report)
-        self.assertIn(ai_match.occurrence_id, {item["id"] for item in runtime_manifest["detected_spans"]})
-        self.assertNotIn(value, json.dumps(report, ensure_ascii=False))
+            with self.assertRaisesRegex(ValueError, "^PUBLIC_OCCURRENCE_INPUTS_REQUIRED$"):
+                masker.redact_pdf_native(str(source_pdf), str(output_pdf), matches, display_mode="black")
+            self.assertFalse(output_pdf.exists())
+            document_sha256 = hashlib.sha256(source_pdf.read_bytes()).hexdigest()
+            occurrence = masker.OccurrenceRedactionInput(
+                occurrence_id=trusted_occurrence_id,
+                run_id="trusted-run",
+                document_sha256=document_sha256,
+                analysis_revision=1,
+                page_index=ai_match.page,
+                rect_list=ai_match.rects,
+                action=ai_match.action,
+                provenance=ai_match.provenance[0],
+                expected_text_hash=masker.occurrence_rect_text_hash(
+                    str(source_pdf), ai_match.page, ai_match.rects
+                ) or "",
+                coordinate_space=ai_match.coordinate_space,
+            )
+            self.assertEqual(trusted_occurrence_id, occurrence.occurrence_id)
+            self.assertEqual(ai_match.rects, occurrence.rect_list)
+            self.assertEqual(ai_match.provenance[0], occurrence.provenance)
+            result = masker.redact_pdf_native(
+                str(source_pdf),
+                str(output_pdf),
+                occurrence_inputs=[occurrence],
+                expected_run_id="trusted-run",
+                expected_document_sha256=document_sha256,
+                expected_analysis_revision=1,
+            )
+            self.assertEqual("applied", result["status"])
+            self.assertTrue(result["verification"]["verified"])
+            self.assertEqual(1, result["occurrences_requested"])
+            self.assertEqual(1, result["occurrences_applied"])
+            self.assertEqual(1, result["annotations_added"])
+            self.assertEqual([], result["review_items"])
+            self.assertTrue(output_pdf.exists())
+            report = masker.build_safe_report(
+                input_file=str(source_pdf),
+                opts={"profile": "mixed"},
+                counts=counts,
+                redaction_matches=[ai_match],
+                extract_meta={"engine_used": "pymupdf", "chars": len(text), "notes": []},
+                pdf_redaction_result=result,
+                output_paths={"report_path": str(Path(tmpdir) / "report.json")},
+                source_text=text,
+            )
+            runtime_manifest = masker.runtime_manifest_for_report(report)
+            self.assertEqual(1, len(runtime_manifest["detected_spans"]))
+            self.assertEqual(1, len(runtime_manifest["detection_candidates"]))
+            expected_runtime_geometry = {
+                "occurrence_id": ai_match.occurrence_id,
+                "page": 0,
+                "bbox": list(rect_list[0]),
+                "rects": [list(rect_list[0])],
+                "evidence": ["pdf_word"],
+                "provenance": ["trusted_ai_geometry"],
+                "coordinate_space": "pdf_points_top_left",
+            }
+            self.assertEqual(expected_runtime_geometry, {
+                key: runtime_manifest["detected_spans"][0][key]
+                for key in expected_runtime_geometry
+            })
+            self.assertEqual(
+                {
+                    "occurrence_id": ai_match.occurrence_id,
+                    "page": 0,
+                    "rect_count": 1,
+                    "evidence": ["pdf_word"],
+                    "provenance": ["trusted_ai_geometry"],
+                    "coordinate_space": "pdf_points_top_left",
+                },
+                {
+                    key: runtime_manifest["detection_candidates"][0][key]
+                    for key in (
+                        "occurrence_id",
+                        "page",
+                        "rect_count",
+                        "evidence",
+                        "provenance",
+                        "coordinate_space",
+                    )
+                },
+            )
+            self.assertEqual("applied", report["pdf_redaction"]["status"])
+            self.assertTrue(report["pdf_redaction"]["verification"]["verified"])
+            self.assertEqual(1, report["pdf_redaction"]["annotations_added"])
+            self.assertNotIn(value, json.dumps(report, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -1,84 +1,72 @@
-// Keyword dialog controller (docs/CODE_REVIEW_2026-07-04.md
-// "startLegacyApp 분리": 키워드 다이얼로그 모듈).
-//
-// Owns the custom-keyword list model (parse / dedupe / write-back into the
-// #custom-keywords input), the chip previews, and the keyword dialog open/close
-// lifecycle. startLegacyApp wires the injected DOM elements plus the render
-// callbacks that must re-run when the keyword set changes.
+import { currentSettings, updateSettings } from "../../state/settingsStore";
+import { setModalVisibility } from "../../state/shellStore";
 
 export type KeywordDialogDeps = {
-  readonly customKeywordsEl: HTMLTextAreaElement;
-  readonly keywordDialogChipListEl: HTMLElement;
-  readonly keywordDialogEl: HTMLElement;
-  readonly btnOpenKeywordDialog: HTMLButtonElement;
-  readonly setModalVisible: (element: HTMLElement, visible: boolean) => void;
   readonly setStatus: (message: string) => void;
   readonly renderCanvasFinalSaveSummary: () => void;
   readonly renderFinalSaveConfirmation: () => void;
   readonly updateWorkflowReadiness: () => void;
+  readonly hasSelectedDocument: () => boolean;
+  readonly rerunMasking: () => void;
 };
 
 export type KeywordDialogController = {
   readonly keywordList: () => string[];
-  readonly writeKeywordList: (keywords: string[]) => void;
-  readonly syncKeywordDialogChips: () => void;
+  readonly writeKeywordList: (keywords: readonly string[]) => void;
   readonly openKeywordDialog: () => void;
   readonly closeKeywordDialog: () => void;
+  readonly applyKeywords: () => void;
 };
+
+export function parseKeywordList(value: string): string[] {
+  return value
+    .split(/[\n,]/)
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
+}
+
+export function appendKeywordValue(existingValue: string, nextKeywordValue: string): string {
+  const nextKeyword = nextKeywordValue.trim();
+  if (!nextKeyword) return existingValue;
+  return Array.from(new Set([...parseKeywordList(existingValue), nextKeyword])).join(", ");
+}
 
 export function createKeywordDialogController(deps: KeywordDialogDeps): KeywordDialogController {
   function keywordList(): string[] {
-    return deps.customKeywordsEl.value
-      .split(/[\n,]/)
-      .map((keyword) => keyword.trim())
-      .filter(Boolean);
+    return parseKeywordList(currentSettings().customKeywords);
   }
 
-  function renderKeywordChipList(container: HTMLElement, keywords: string[]): void {
-    container.innerHTML = "";
-    if (keywords.length === 0) {
-      const empty = document.createElement("span");
-      empty.textContent = "등록된 키워드 없음";
-      container.appendChild(empty);
-      return;
-    }
-    for (const keyword of keywords) {
-      const chip = document.createElement("span");
-      chip.textContent = keyword;
-      container.appendChild(chip);
-    }
-  }
-
-  function syncKeywordDialogChips(): void {
-    const keywords = keywordList();
-    renderKeywordChipList(deps.keywordDialogChipListEl, keywords);
-  }
-
-  function writeKeywordList(keywords: string[]): void {
+  function writeKeywordList(keywords: readonly string[]): void {
     const deduped = Array.from(new Set(keywords.map((keyword) => keyword.trim()).filter(Boolean)));
-    deps.customKeywordsEl.value = deduped.join(", ");
-    syncKeywordDialogChips();
+    updateSettings({ customKeywords: deduped.join(", ") });
     deps.renderCanvasFinalSaveSummary();
     deps.renderFinalSaveConfirmation();
     deps.updateWorkflowReadiness();
   }
 
   function openKeywordDialog(): void {
-    syncKeywordDialogChips();
-    deps.setModalVisible(deps.keywordDialogEl, true);
-    deps.customKeywordsEl.focus();
+    setModalVisibility("keyword-dialog", true);
   }
 
   function closeKeywordDialog(): void {
-    deps.setModalVisible(deps.keywordDialogEl, false);
-    deps.btnOpenKeywordDialog.focus();
+    setModalVisibility("keyword-dialog", false);
+  }
+
+  function applyKeywords(): void {
+    writeKeywordList(keywordList());
+    closeKeywordDialog();
+    if (!deps.hasSelectedDocument()) {
+      deps.setStatus("키워드를 적용했습니다. PDF를 열면 마스킹에 함께 적용됩니다.");
+      return;
+    }
+    deps.rerunMasking();
   }
 
   return {
     keywordList,
     writeKeywordList,
-    syncKeywordDialogChips,
     openKeywordDialog,
     closeKeywordDialog,
+    applyKeywords,
   };
 }

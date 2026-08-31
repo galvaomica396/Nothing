@@ -1,6 +1,6 @@
 (() => {
   const root = document.documentElement;
-  let preference = "system";
+  let preference = "light";
 
   let stored = null;
   try {
@@ -9,7 +9,7 @@
     stored = null;
   }
   if (stored) {
-    preference = "dark";
+    preference = "light";
     try {
       const parsed = JSON.parse(stored);
       if (parsed && typeof parsed === "object") {
@@ -18,7 +18,7 @@
         }
       }
     } catch {
-      preference = "dark";
+      preference = "light";
     }
   }
 

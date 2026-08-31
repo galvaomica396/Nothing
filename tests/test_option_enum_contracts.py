@@ -3,22 +3,13 @@ from __future__ import annotations
 import re
 import unittest
 import unicodedata
-from pathlib import Path
-
+from types import SimpleNamespace
 import document_masker_ocr_gui as masker
 import privacy_transformers
 
 from test_frontend_state_helpers import run_node_helper
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def quoted_values(source: str, pattern: str) -> set[str]:
-    match = re.search(pattern, source, re.DOTALL)
-    if match is None:
-        raise AssertionError(f"enum declaration not found: {pattern}")
-    return set(re.findall(r'"([^\"]+)"', match.group("values")))
 
 
 class OptionEnumContractTests(unittest.TestCase):
@@ -29,63 +20,109 @@ class OptionEnumContractTests(unittest.TestCase):
         self.assertFalse(normalized["phone"])
         self.assertIs(marker, normalized["_privacy_detector"])
         self.assertTrue(normalized["rrn"])
-        self.assertEqual("official", normalized["profile"])
         self.assertEqual("pdf_safe_report", normalized["output_artifacts"])
         self.assertFalse(normalized["return_text_preview"])
+    def test_python_profile_normalization_preserves_accepted_profiles_and_fails_closed(self) -> None:
+        self.assertEqual("mixed", masker.normalize_opts({})["profile"])
+        for unsupported in ("official", "default", "unknown"):
+            with self.subTest(unsupported=unsupported), self.assertRaisesRegex(ValueError, "MASKING_PROFILE_UNSUPPORTED"):
+                masker.normalize_opts({"profile": unsupported})
+        for profile in ("internal_review", "official_dispatch", "mixed", "legal"):
+            self.assertEqual(profile, masker.normalize_opts({"profile": profile})["profile"])
 
-    def test_deidentification_and_display_mode_enum_sets_match_all_runtime_boundaries(self) -> None:
-        settings = (REPO_ROOT / "src" / "settingsState.ts").read_text(encoding="utf-8")
-        transformers = (REPO_ROOT / "privacy_transformers.py").read_text(encoding="utf-8")
-        gui = (REPO_ROOT / "document_masker_ocr_gui.py").read_text(encoding="utf-8")
-        engine_entry = (REPO_ROOT / "scripts" / "masking_engine_entry.py").read_text(encoding="utf-8")
-        rust = (REPO_ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
 
-        expected_policies = {"token", "partial", "pseudonym"}
-        policy_sets = [
-            quoted_values(settings, r'DEIDENTIFICATION_MODES\s*=\s*\[(?P<values>[^\]]+)\]'),
-            quoted_values(transformers, r'POLICIES[^=]*=\s*\{(?P<values>[^}]+)\}'),
-            quoted_values(rust, r'opts\.deidentification_policy\.as_str\(\),\s*(?P<values>[^)]*)\)'),
-        ]
-        for values in policy_sets:
-            self.assertEqual(expected_policies, values)
-
-        expected_display_modes = {"black", "label_en", "label_ko", "pseudonym"}
-        display_mode_sets = [
-            quoted_values(settings, r'DISPLAY_MODES\s*=\s*\[(?P<values>[^\]]+)\]'),
-            quoted_values(gui, r'display_mode not in \{(?P<values>[^}]+)\}'),
-            quoted_values(engine_entry, r'SAFE_DISPLAY_MODES[^=]*=\s*\{(?P<values>[^}]+)\}'),
-            quoted_values(rust, r'opts\.display_mode\.as_str\(\),\s*(?P<values>[^)]*)\)'),
-        ]
-        for values in display_mode_sets:
-            self.assertEqual(expected_display_modes, values)
-
-        merged = run_node_helper(
+    def test_profile_normalization_and_native_request_serialization(self) -> None:
+        profiles = run_node_helper(
             "src/settingsState.ts",
-            "({ valid: m.mergeSettings({ displayMode: 'pseudonym' }).displayMode, legacy: m.mergeSettings({ displayMode: 'unknown' }).displayMode })",
+            "(() => { const persistedOfficial = { getItem: () => JSON.stringify({ profile: 'official' }), setItem() {}, removeItem() {} }; const invalid = (() => { try { m.mergeSettings({ profile: 'unknown' }); return false; } catch { return true; } })(); return { canonical: ['internal_review', 'official_dispatch', 'mixed', 'legal'].map((profile) => m.mergeSettings({ profile }).profile), legacy: m.loadSettings(persistedOfficial).settings.profile, invalid }; })()",
         )
-        self.assertEqual("pseudonym", merged["valid"])
-        self.assertEqual("black", merged["legacy"])
+        self.assertEqual(
+            profiles["canonical"],
+            ["internal_review", "official_dispatch", "mixed", "legal"],
+        )
+        self.assertEqual(profiles["legacy"], "mixed")
+        self.assertTrue(profiles["invalid"])
 
-    def test_final_save_warning_presentation_keeps_warnings_advisory(self) -> None:
+        requests = run_node_helper(
+            "src/services/tauri/maskingContracts.ts",
+            "(() => { const options = (profile) => ({ rrn: true, phone: true, business_reg: true, name: true, address: true, place: true, legal_party: true, company: true, court: true, case_title: true, case_number: true, law_firm: true, attorney: true, approval_line: true, region_context: true, doc_meta: true, email: true, pdf_redaction: true, custom_keywords: '', extract_engine: 'pypdf', profile, output_artifacts: 'pdf_safe_report', display_mode: 'black', deidentification_policy: 'token', region_scope: 'national', custom_regions: '', return_text_preview: false, auto_mask_threshold: 0.85, review_threshold: 0.5 }); const calls = []; const invoke = (command, payload) => { calls.push({ command, payload }); return Promise.resolve(null); }; for (const profile of ['internal_review', 'official_dispatch', 'mixed']) m.analyzeMaskingRun(invoke, { inputFile: '/tmp/input.pdf', profile, options: options(profile) }); const reject = (profile, optionProfile = profile) => { const before = calls.length; try { m.analyzeMaskingRun(invoke, { inputFile: '/tmp/input.pdf', profile, options: options(optionProfile) }); return { message: '', invoked: calls.length - before }; } catch (error) { return { message: error.message, invoked: calls.length - before }; } }; return { calls, rejected: { unsupported: reject('legal'), mismatched: reject('mixed', 'official_dispatch'), unknown: reject('unknown'), null: reject(null), numeric: reject(7), malformed: reject({ profile: 'mixed' }) } }; })()"
+        )
+        self.assertEqual([call["command"] for call in requests["calls"]], ["analyze_masking_run"] * 3)
+        self.assertEqual(
+            [call["payload"]["request"]["options"]["profile"] for call in requests["calls"]],
+            ["internal_review", "official_dispatch", "mixed"],
+        )
+        self.assertEqual(
+            {
+                key: {"message": "Invalid masking analysis profile.", "invoked": 0}
+                for key in ("unsupported", "mismatched", "unknown", "null", "numeric", "malformed")
+            },
+            requests["rejected"],
+        )
+
+    def test_option_enums_are_serialized_at_the_command_boundary(self) -> None:
+        values = run_node_helper(
+            "src/settingsState.ts",
+            "(() => { const reject = (field, value) => { try { m.mergeSettings({ [field]: value }); return false; } catch { return true; } }; return { policies: ['token', 'partial', 'pseudonym'].map((deidentificationMode) => m.mergeSettings({ deidentificationMode }).deidentificationMode), displays: ['black', 'label_en', 'label_ko', 'pseudonym'].map((displayMode) => m.mergeSettings({ displayMode }).displayMode), scopes: ['national', 'seoul', 'custom'].map((regionScope) => m.mergeSettings({ regionScope }).regionScope), rejected: { policy: reject('deidentificationMode', 'unsafe'), display: reject('displayMode', 'emoji'), scope: reject('regionScope', 'mars') } }; })()"
+        )
+        self.assertEqual(values["policies"], ["token", "partial", "pseudonym"])
+        self.assertEqual(values["displays"], ["black", "label_en", "label_ko", "pseudonym"])
+        self.assertEqual(values["scopes"], ["national", "seoul", "custom"])
+        self.assertEqual({"policy": True, "display": True, "scope": True}, values["rejected"])
+
+        phone = SimpleNamespace(tag="PHONE", text="010-0000-0000")
+        token = privacy_transformers.apply_deidentification_policy("[PHONE]", [phone], "token")
+        partial = privacy_transformers.apply_deidentification_policy("[PHONE]", [phone], "partial")
+        pseudonym = privacy_transformers.apply_deidentification_policy("[PHONE]", [phone], "pseudonym")
+        self.assertEqual("[PHONE]", token)
+        self.assertEqual("010-****-0000", partial)
+        self.assertEqual(
+            privacy_transformers.pseudonym_value("PHONE", "010-0000-0000", privacy_transformers.TransformState()),
+            pseudonym,
+        )
+        for rendered in (token, partial, pseudonym):
+            self.assertNotIn("010-0000-0000", rendered)
+
+        requests = run_node_helper(
+            "src/services/tauri/maskingContracts.ts",
+            "(() => { const options = (overrides = {}) => ({ rrn: true, phone: true, business_reg: true, name: true, address: true, place: true, legal_party: true, company: true, court: true, case_title: true, case_number: true, law_firm: true, attorney: true, approval_line: true, region_context: true, doc_meta: true, email: true, pdf_redaction: true, custom_keywords: '', extract_engine: 'pypdf', profile: 'mixed', output_artifacts: 'pdf_safe_report', display_mode: 'black', deidentification_policy: 'token', region_scope: 'national', custom_regions: '', return_text_preview: false, auto_mask_threshold: 0.85, review_threshold: 0.5, ...overrides }); const calls = []; const invoke = (command, payload) => { calls.push({ command, payload }); return Promise.resolve({ command }); }; const valid = [['black','token','national',''], ['label_en','partial','seoul',''], ['label_ko','pseudonym','custom','서울 중구']].map(([display_mode, deidentification_policy, region_scope, custom_regions]) => m.analyzeMaskingRun(invoke, { inputFile: '/tmp/input.pdf', profile: 'mixed', options: options({ display_mode, deidentification_policy, region_scope, custom_regions }) })); const reject = (overrides) => { const before = calls.length; try { m.analyzeMaskingRun(invoke, { inputFile: '/tmp/input.pdf', profile: 'mixed', options: options(overrides) }); return { message: '', invoked: calls.length - before }; } catch (error) { return { message: error.message, invoked: calls.length - before }; } }; return { valid, calls, rejected: { emailString: reject({ email: 'yes' }), displayString: reject({ display_mode: 'emoji' }), displayNull: reject({ display_mode: null }), displayNumber: reject({ display_mode: 7 }), policyString: reject({ deidentification_policy: 'unsafe' }), policyNull: reject({ deidentification_policy: null }), scopeString: reject({ region_scope: 'mars' }), scopeNull: reject({ region_scope: null }), customMissing: reject({ region_scope: 'custom', custom_regions: '' }), customUnexpected: reject({ region_scope: 'seoul', custom_regions: '서울 중구' }) } }; })()",
+        )
+        self.assertEqual(
+            [(item["display_mode"], item["deidentification_policy"], item["region_scope"], item["custom_regions"]) for item in [call["payload"]["request"]["options"] for call in requests["calls"]]],
+            [("black", "token", "national", ""), ("label_en", "partial", "seoul", ""), ("label_ko", "pseudonym", "custom", "서울 중구")],
+        )
+        self.assertEqual(
+            {
+                key: {"message": "Invalid masking analysis options.", "invoked": 0}
+                for key in (
+                    "emailString", "displayString", "displayNull", "displayNumber", "policyString", "policyNull",
+                    "scopeString", "scopeNull", "customMissing", "customUnexpected",
+                )
+            },
+            requests["rejected"],
+        )
+
+    def test_legal_gate_and_presentation_share_advisory_policy_for_quality_states_and_missing_path(self) -> None:
         result = run_node_helper(
             "src/features/save-gate/saveGate.ts",
-            "m.finalSaveWarningPresentation({ hasReportPath: true, report: { product_checks: { quality_gate_passed: false }, document_redaction: { verification: { residual_hits: 2 }, missing_targets_count: 1 }, review_items: [] } })",
+            "(() => { const pass = { product_checks: { quality_gate_passed: true } }; const fail = { product_checks: { quality_gate_passed: false } }; const project = (report, hasReportPath) => ({ gate: m.legalCompatibilityFinalSaveGate({ report, hasReportPath }), presentation: m.finalSaveWarningPresentation({ report, hasReportPath }) }); return { passed: project(pass, true), failed: project(fail, true), missingPath: project(pass, false) }; })()",
         )
-
-        self.assertEqual("fail", result["stateName"])
-        self.assertEqual("잔존 개인정보 후보 있음", result["title"])
+        self.assertEqual({"eligible": True, "state": "eligible", "reasonCodes": []}, result["passed"]["gate"])
+        self.assertEqual("pass", result["passed"]["presentation"]["stateName"])
+        self.assertEqual([], result["passed"]["presentation"]["warnings"])
+        self.assertEqual({"eligible": True, "state": "advisory", "reasonCodes": ["legal_quality_gate_failed"]}, result["failed"]["gate"])
+        self.assertEqual("review", result["failed"]["presentation"]["stateName"])
         self.assertEqual(
-            "잔존 개인정보 후보 2건이 남아 있습니다. 보정 화면에서 확인하는 것을 권장합니다.",
-            result["detail"],
+            "자동 검증을 통과하지 못했습니다. 보정 화면에서 확인하는 것을 권장합니다.",
+            result["failed"]["presentation"]["detail"],
         )
+        self.assertEqual(result["failed"]["presentation"]["warnings"][0], result["failed"]["presentation"]["detail"])
         self.assertEqual(
-            [
-                "잔존 개인정보 후보 2건이 남아 있습니다. 보정 화면에서 확인하는 것을 권장합니다.",
-                "마스킹되지 않은 대상 1건이 있습니다. 보정 화면에서 확인하는 것을 권장합니다.",
-                "자동 검증을 통과하지 못했습니다. 보정 화면에서 확인하는 것을 권장합니다.",
-            ],
-            result["warnings"],
+            {"eligible": False, "state": "blocked", "reasonCodes": ["missing_legal_report_path"]},
+            result["missingPath"]["gate"],
         )
+        self.assertEqual("최종 저장 차단", result["missingPath"]["presentation"]["title"])
+        self.assertEqual(result["missingPath"]["presentation"]["warnings"][0], result["missingPath"]["presentation"]["detail"])
 
     def test_korean_tokens_rejects_non_token_deidentification_policy(self) -> None:
         with self.assertRaisesRegex(ValueError, "korean_tokens requires token policy"):

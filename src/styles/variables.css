@@ -1,74 +1,79 @@
 /* ============================================================================
  * DocuMasker 디자인 토큰 (REDESIGN_V4_DARK §2 — "Two Screens, One Accent")
  * 단일 토큰 루트: --dm-* 만이 신규 CSS의 공식 토큰이다.
- * v4: :root 기본을 다크로 전환한다 (near-black + 단일 신뢰-블루 액센트).
- *     라이트 값은 themes.css 의 `light` 프리셋으로 이관됨.
+ * v4: :root 기본은 Pencil 시안의 라이트 문서 데스크다.
+ *     themes.css 는 명시적인 light/dark 프리셋을 모두 제공한다.
  * (--nothing-* / --stitch-* 토큰 체계와 구 CSS는 전부 삭제됨 — 별칭/브리지 없음.)
  * ========================================================================== */
 
 :root {
-  /* surfaces — near-black, 살짝 블루 틴트 */
-  --dm-bg: #0e1116;            /* 앱 배경 (near-black) */
-  --dm-surface: #161b22;       /* 카드/패널 */
-  --dm-surface-raised: #1c2330;/* 떠 있는 표면 (다이얼로그/헤더 강조) */
-  --dm-surface-sunken: #0b0e13;/* 인풋/웰 (배경보다 더 어둡게) */
-  --dm-border: #262d38;
-  --dm-border-strong: #3a4351;
+  --dm-bg: #f4f5f6;
+  --dm-surface: #ffffff;
+  --dm-surface-raised: #ffffff;
+  --dm-surface-sunken: #eceef0;
+  --dm-border: #e6e8ea;
+  --dm-border-strong: #cdd1d5;
 
   /* text */
-  --dm-text: #e8edf4;          /* 본문 */
-  --dm-text-secondary: #9aa6b5;
-  --dm-text-muted: #5c6875;    /* 대기/빈 상태 전용 */
-  --dm-placeholder: #9aa6b5;
+  --dm-text: #1e2124;
+  --dm-text-secondary: #58616a;
+  --dm-text-muted: #8a949e;
+  --dm-placeholder: #8a949e;
 
   /* accent — 단일 신뢰 블루 (문서·보안 도구 정체성). 화면당 1~2곳만. */
-  --dm-accent: #2f81f7;
-  --dm-accent-hover: #4c95f9;
-  --dm-accent-soft: #16233c;   /* 선택/활성 배경 (다크 블루 틴트) */
+  --dm-accent: #256ef4;
+  --dm-accent-hover: #1459cf;
+  --dm-accent-soft: #e8f0ff;
 
   /* semantic — 채도 낮춰 다크 조정 */
-  --dm-success: #3fb950;  --dm-success-soft: #122619;
-  --dm-warning: #d29922;  --dm-warning-soft: #2a2110;
-  --dm-danger:  #f85149;  --dm-danger-soft:  #3a1a1a;
-  --dm-danger-hover: #da3633;
+  --dm-success: #0f7b6c;  --dm-success-soft: #e6f4f0;
+  --dm-staged: #0f7b6c;   --dm-staged-soft: #e6f4f0;
+  --dm-warning: #8b5600;  --dm-warning-soft: #f7ecd9;
+  --dm-danger:  #be3127;  --dm-danger-soft:  #f8e1df;
+  --dm-danger-hover: #9e281f;
   --dm-mask:    #000000;   /* 마스킹 박스 색 (검정) */
   --dm-document-paper: #ffffff;
   --dm-on-accent: #ffffff;
-  --dm-overlay: rgba(0, 0, 0, 0.68);
-  --dm-toast-bg: #e8edf4;
-  --dm-toast-text: #161b22;
+  --dm-overlay: #0b111aa6;
+  --dm-toast-bg: #1e2124;
+  --dm-toast-text: #ffffff;
 
   --dm-space-1: 4px;
   --dm-space-2: 8px;
   --dm-space-3: 12px;
   --dm-space-4: 16px;
+  --dm-space-5: 20px;
   --dm-space-6: 24px;
+  --dm-space-7: 28px;
   --dm-space-8: 32px;
 
   /* geometry */
   --dm-hairline: 1px;
   --dm-radius-sm: 8px; --dm-radius: 8px; --dm-radius-lg: 12px;
-  --dm-radius-modal: 16px;
+  --dm-radius-modal: 12px;
   --dm-radius-pill: 9999px;
-  --dm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24), 0 4px 18px rgba(0, 0, 0, 0.12);
-  --dm-shadow-md: 0 3px 7px rgba(0, 0, 0, 0.14), 0 14px 28px rgba(0, 0, 0, 0.16), 0 23px 52px rgba(0, 0, 0, 0.18);
+  --dm-shadow-sm: 0 0.175px 1.041px rgba(0, 0, 0, 0.01), 0 0.8px 2.925px rgba(0, 0, 0, 0.02), 0 2.025px 7.847px rgba(0, 0, 0, 0.027), 0 4px 18px rgba(0, 0, 0, 0.04);
+  --dm-shadow-md: 0 1px 3px rgba(0, 0, 0, 0.01), 0 3px 7px rgba(0, 0, 0, 0.02), 0 14px 28px rgba(0, 0, 0, 0.04), 0 23px 52px rgba(0, 0, 0, 0.05);
+  --dm-shadow-page: 0 10px 28px #0b111a22;
+  --dm-shadow-modal: 0 18px 48px #0b111a55;
 
   /* layout */
-  --dm-header-h: 48px;
-  --dm-inspector-w: 320px;   /* 우측 검토 패널 */
+  --dm-header-h: 64px;
+  --dm-sidebar-w: 248px;     /* 좌측 내비게이션 사이드바 (2026-08 KRDS 시안) */
+  --dm-inspector-w: 340px;
   --dm-statusbar-h: 28px;
 
   /* typography */
-  --dm-font: "Pretendard Variable", Pretendard, "Segoe UI Variable Text",
-             "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --dm-font: "Gothic A1", "Malgun Gothic", "Apple SD Gothic Neo", "Segoe UI",
+             sans-serif;
   --dm-font-mono: "Cascadia Mono", Consolas, "SF Mono", monospace;
   --dm-fs-eyebrow: 12px;
   --dm-fs-caption: 14px;
   --dm-fs-control: 15px;
   --dm-fs-body: 16px;
   --dm-fs-card-title: 20px;
-  --dm-fs-modal-title: 22px;
-  --dm-fs-page-title: 26px;
+  --dm-fs-modal-title: 20px;
+  --dm-fs-page-title: 28px;
   --dm-fs-xs: var(--dm-fs-eyebrow);
   --dm-fs-sm: var(--dm-fs-caption);
   --dm-fs-base: var(--dm-fs-control);

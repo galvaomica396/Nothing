@@ -296,6 +296,9 @@ def find_masking_context(
         if authoritative_context is not None:
             contexts.append(authoritative_context)
             continue
+        if authoritative_start != -1 or authoritative_end != -1:
+            contexts.append(None)
+            continue
         if indexed_chunks is None:
             indexed_chunks = tuple(
                 (chunk, _compact_search_text(chunk.text), chunk.text.casefold())

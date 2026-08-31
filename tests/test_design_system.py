@@ -28,32 +28,32 @@ def public_doc_corpus() -> str:
 
 
 def frontend_markup():
-    # v4 P2 (문서 통합): 문서 관제(DocumentsWorkspace/DocumentStage/WorkRail/
-    # ReviewInspector)와 수동 보정(캔버스) 화면이 하나의 "문서" 화면
-    # (CanvasWorkspace, data-screen-panel="documents")으로 병합됐다. 삭제된
-    # DocumentsWorkspace/WorkRail/DocumentStage/ReviewInspector 는 마크업 코퍼스에서
-    # 제거하고, 이식된 검토·저장 레일/최종 저장 게이트는 CanvasWorkspace 로 읽는다.
+    # 2026-08 Pencil replacement: the live shell includes the left rail, desk,
+        # documents, storage, and settings surfaces. Tests must read the current
+        # React-owned screen corpus rather than the retired pre-replacement shell.
     component_paths = [
         REPO_ROOT / "src" / "components" / "layout" / "AppShell.tsx",
+        REPO_ROOT / "src" / "components" / "layout" / "Sidebar.tsx",
         REPO_ROOT / "src" / "components" / "ui" / "Button.tsx",
         REPO_ROOT / "src" / "components" / "ui" / "Modal.tsx",
         REPO_ROOT / "src" / "components" / "ui" / "Toast.tsx",
         REPO_ROOT / "src" / "components" / "AppHeader.tsx",
         REPO_ROOT / "src" / "components" / "StatusRibbon.tsx",
+        REPO_ROOT / "src" / "components" / "DocumentDeskScreen.tsx",
         REPO_ROOT / "src" / "components" / "CanvasWorkspace.tsx",
         REPO_ROOT / "src" / "components" / "MaskingSettingsScreen.tsx",
         REPO_ROOT / "src" / "components" / "SettingsScreen.tsx",
-        # v4 P3: MobileActionDock 삭제(좁은 폭에서 스테이지+검토 레일 세로 스택).
+        REPO_ROOT / "src" / "components" / "StorageScreen.tsx",
     ]
     component_sources = "\n".join(path.read_text(encoding="utf-8") for path in component_paths)
     return (REPO_ROOT / "index.html").read_text(encoding="utf-8") + "\n" + (REPO_ROOT / "src" / "App.tsx").read_text(encoding="utf-8") + "\n" + component_sources
 
 
-def legacy_typescript_source() -> str:
-    legacy_root = REPO_ROOT / "src" / "legacy"
+def application_composition_typescript_source() -> str:
+    application_root = REPO_ROOT / "src" / "app"
     return "\n".join(
         path.read_text(encoding="utf-8")
-        for path in sorted(legacy_root.rglob("*.ts"))
+        for path in sorted(application_root.rglob("*.ts"))
     )
 
 
@@ -61,7 +61,7 @@ def frontend_script():
     return (
         (REPO_ROOT / "src" / "main.tsx").read_text(encoding="utf-8")
         + "\n"
-        + legacy_typescript_source()
+        + application_composition_typescript_source()
     )
 
 
@@ -116,40 +116,22 @@ class DesignSystemTests(unittest.TestCase):
     def test_design_md_locks_document_security_studio_direction(self):
         design = (REPO_ROOT / "DESIGN.md").read_text(encoding="utf-8")
 
-        # DESIGN.md itself is the v4.3 authority. The old two-screen spec is
-        # historical because coordinate templates were retired.
-        self.assertIn("One Document Flow, One Accent", design)
-        self.assertIn("single current authority", design)
-        self.assertIn("exclude the coordinate-template product flow", design)
-        self.assertNotIn("Those specs are the single authority", design)
-        self.assertIn("single blue action accent", design)
-        self.assertIn("--dm-accent: #2f81f7", design)
-        self.assertIn("--dm-inspector-w: 320px", design)
-        # The v4 shell has no left rail width token.
-        self.assertNotIn("--dm-rail-w: 224px", design)
-        self.assertIn("shell.css", design)
+        self.assertIn("Pencil A-G Canonical Replacement", design)
+        self.assertIn("seven Pencil HTML exports", design)
+        self.assertIn("paper-gray document desk", design)
+        self.assertIn("The left rail is always present on desktop.", design)
+        self.assertIn("Preserve all existing runtime IDs, `data-*` hooks", design)
+        self.assertIn("No new dependencies.", design)
+        self.assertIn("Desktop: left rail + top header + main content + 28px status bar", design)
+        self.assertIn("Korean-first desktop masking tool", design)
+        self.assertIn("Keyword Masking", design)
+        self.assertIn("Chip list of current keywords", design)
+        self.assertIn("Dedicated progress dialog", design)
+        self.assertIn("Dedicated success modal", design)
+        self.assertIn("variables.css", design)
         self.assertIn("screen-canvas.css", design)
-        # screen-documents.css was deleted when 문서 관제 merged into the canvas;
-        # DESIGN.md must document its removal, not list it as a live style file.
-        self.assertIn("There is no `screen-documents.css`", design)
-        self.assertIn("data-theme", design)
-        self.assertIn("`light` / `dark` / `system`", design)
-        self.assertIn("data-screen-target", design)
-        self.assertIn("btn-run-masking", design)
-        self.assertIn("docs/RUNTIME_CONTRACT.md", design)
-        self.assertIn("Do not reintroduce the removed review queue screen", design)
-        self.assertIn("The accent must appear in at most one or two places on a screen.", design)
-        self.assertIn("박스 크기, 버튼 높이, 경계선 두께가 흔들리면 안 된다", design)
-        self.assertIn("React 19 + TypeScript components", design)
-        self.assertIn("plain-CSS token system", design)
-        self.assertIn("Tailwind utilities are not used in JSX", design)
-        self.assertIn("immutable exported snapshot", design)
-        self.assertIn("sole continuation baseline", design)
-        self.assertIn("must never silently fall back", design)
-        self.assertIn("editing and re-saving stay disabled", design)
-        # The retired Obsidian identity must not be reasserted as the default.
-        self.assertNotIn("dark Korean administrative workbench", design)
-        self.assertNotIn("Primary violet: `#8b5cf6`", design)
+        self.assertNotIn("coordinate-template", design)
+        self.assertNotIn("#8b5cf6", design)
 
     def test_frontend_stack_is_react_typescript_tailwind(self):
         package_json = (REPO_ROOT / "package.json").read_text(encoding="utf-8")
@@ -158,7 +140,7 @@ class DesignSystemTests(unittest.TestCase):
         index = (REPO_ROOT / "index.html").read_text(encoding="utf-8")
         entry = (REPO_ROOT / "src" / "main.tsx").read_text(encoding="utf-8")
         app = (REPO_ROOT / "src" / "App.tsx").read_text(encoding="utf-8")
-        legacy_entrypoint = (REPO_ROOT / "src" / "legacy" / "startLegacyApp.ts").read_text(encoding="utf-8")
+        composition_root = (REPO_ROOT / "src" / "app" / "compositionRoot.ts").read_text(encoding="utf-8")
 
         self.assertIn('"react": "^19.', package_json)
         self.assertIn('"react-dom": "^19.', package_json)
@@ -177,10 +159,10 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn('/src/main.tsx', index)
         self.assertIn('createRoot(rootElement).render', entry)
         self.assertIn("<App />", entry)
-        self.assertNotIn("startLegacyApp()", entry)
-        self.assertIn("<LegacyBootstrap />", app)
+        self.assertNotIn("startApplicationComposition()", entry)
+        self.assertIn("<AppCompositionRoot />", app)
         self.assertIn("export function App()", app)
-        self.assertIn("export function startLegacyApp(): void", legacy_entrypoint)
+        self.assertIn("export function startApplicationComposition(): void", composition_root)
         # styles.css is retired; the redesign loads the --dm-* token root first.
         self.assertFalse((REPO_ROOT / "src" / "styles.css").exists())
         self.assertIn('import "./styles/variables.css";', entry)
@@ -268,11 +250,15 @@ class DesignSystemTests(unittest.TestCase):
         self.assertFalse((REPO_ROOT / "src" / "hooks" / "useWorkspaceNavigation.ts").exists())
         self.assertNotIn("WorkspaceNavigationProvider", app_shell)
         self.assertNotIn("AppRail", app_shell)
-        # The top bar owns screen switching via the document home and settings gears.
+        sidebar = (REPO_ROOT / "src" / "components" / "layout" / "Sidebar.tsx").read_text(encoding="utf-8")
+        self.assertIn('data-screen-target="desk"', sidebar)
+        self.assertIn('data-screen-target="documents"', sidebar)
+        self.assertIn('data-screen-target="storage"', sidebar)
+        self.assertIn('data-screen-target="settings"', sidebar)
+        self.assertIn('src="/favicon.png"', sidebar)
+        self.assertIn('data-screen-target="masking-settings"', header)
         self.assertIn('data-screen-target="settings"', header)
-        self.assertIn('data-screen-target="documents"', header)
-        self.assertNotIn('data-screen-target="coordinate-template"', header)
-        # Single --dm-* token root (the --nothing-*/--stitch-* systems are gone).
+        self.assertNotIn('data-screen-target="coordinate-template"', sidebar)
         self.assertIn("--dm-accent:", style_css("variables.css"))
         self.assertIn(".ui-button", style_css("components.css"))
 
@@ -319,64 +305,96 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn(':root[data-theme="dark"]', themes)
         self.assertIn(':root[data-theme="light"]', themes)
 
-    def test_legacy_bootstrap_preserves_masking_ipc_contract(self):
+    def test_application_composition_root_preserves_masking_ipc_contract(self):
         entry = (REPO_ROOT / "src" / "main.tsx").read_text(encoding="utf-8")
-        legacy_start = REPO_ROOT / "src" / "legacy" / "startLegacyApp.ts"
-        legacy_bootstrap = REPO_ROOT / "src" / "legacy" / "LegacyBootstrap.tsx"
+        composition_root = REPO_ROOT / "src" / "app" / "compositionRoot.ts"
+        composition_component = REPO_ROOT / "src" / "app" / "AppCompositionRoot.tsx"
         document_session = REPO_ROOT / "src" / "features" / "document-session" / "documentSessionController.ts"
         manual_adjustment = REPO_ROOT / "src" / "features" / "manual-adjustment" / "manualAdjustmentController.ts"
         app = (REPO_ROOT / "src" / "App.tsx").read_text(encoding="utf-8")
+        application_controller_source = (REPO_ROOT / "src" / "app" / "applicationController.ts").read_text(encoding="utf-8")
 
-        self.assertTrue(legacy_start.exists(), "legacy app bootstrap should live under src/legacy")
-        self.assertTrue(legacy_bootstrap.exists(), "legacy bootstrap should be mounted by React after shell commit")
-        legacy_source = legacy_typescript_source()
-        legacy_bootstrap_source = legacy_bootstrap.read_text(encoding="utf-8")
+        self.assertTrue(composition_root.exists(), "application composition root should live under src/app")
+        self.assertTrue(composition_component.exists(), "composition root should be mounted by React after shell commit")
+        composition_component_source = composition_component.read_text(encoding="utf-8")
         document_session_source = document_session.read_text(encoding="utf-8")
         manual_adjustment_source = manual_adjustment.read_text(encoding="utf-8")
-        self.assertIn('import { LegacyBootstrap } from "./legacy/LegacyBootstrap";', app)
-        self.assertIn("<LegacyBootstrap />", app)
-        self.assertNotIn("startLegacyApp();", entry)
-        self.assertIn("useEffect", legacy_bootstrap_source)
-        self.assertIn("startLegacyApp();", legacy_bootstrap_source)
+        self.assertIn('import { AppCompositionRoot } from "./app/AppCompositionRoot";', app)
+        self.assertIn("<AppCompositionRoot />", app)
+        self.assertNotIn("startApplicationComposition();", entry)
+        self.assertIn("useEffect", composition_component_source)
+        self.assertIn("startApplicationComposition();", composition_component_source)
         removed_bridge_name = "withLegacy" + "BridgeElements"
-        self.assertNotIn(removed_bridge_name, legacy_bootstrap_source)
-        self.assertIn('invoke<MaskingResult>("run_masking_pipeline"', legacy_source)
+        self.assertNotIn(removed_bridge_name, composition_component_source)
+        self.assertIn('invoke<LegacyMaskingResult>("run_masking_pipeline"', application_controller_source)
+        from test_frontend_state_helpers import run_node_helper
+        result = run_node_helper(
+            "src/features/masking-run/maskingRunController.ts",
+            "(() => { const pipelineCalls = []; const state = { maskingRunning: false, savingInFlight: false, documentProvenance: { original: { path: '/tmp/input.pdf', kind: 'pdf' }, generated: { path: '', artifactPath: '' }, manual: { path: '' }, final: { path: '' }, continuation: null }, latestExtractedPath: '', latestMaskedPath: '', latestMaskedTextPolicy: '', latestReport: null, latestReportPath: '', activeRunKind: 'none', publicRunIdentity: null, baseExtractedText: '', baseMaskedText: '', initialMaskingPreviewPdf: '', initialExtractedText: '', initialMaskedText: '', preManualPreviewPdf: '', preManualExtractedText: '', preManualMaskedText: '', boxes: [], geometryDraft: null, documentEditRevision: 0, selectedCanvasBoxIndex: -1, origDoc: null, currentOrigPage: 1, currentResultPage: 1, resultDoc: null, lastPreviewDiagnostics: '' }; const inputPathEl = { value: '/tmp/input.pdf' }; const controller = m.createMaskingRunController({ state, customRegionsEl: { value: '', focus() {} }, displayModeEl: { value: 'black' }, inputPathEl, isPdfInput: () => true, isCustomRegionScope: () => false, getResultSourcePath: () => '', analyzeMaskingRun: () => Promise.reject(new Error('analysis should not run for legal profile')), resolveMaskingReview: () => Promise.reject(new Error('resolve not used')), readTextFile: () => Promise.resolve(''), ensurePreviewWorkDir: () => Promise.resolve('/tmp/out'), collectMaskingOptions: () => ({ profile: 'legal', extract_engine: 'pypdf', display_mode: 'black', deidentification_policy: 'token', region_scope: 'national' }), clampPage: (page) => page, loadPdfDoc: () => Promise.resolve({}), loadResultPdf: () => Promise.resolve(false), renderCompare: () => Promise.resolve(), setCompareMode() {}, setStatus() {}, setBaseMaskingProgress() {}, setTextCompareContents() {}, renderFinalState() {}, renderDocumentReviewSurfaces() {}, resetDerivedArtifacts() {}, updateWorkflowReadiness() {}, updateCanvasControls() {}, runMaskingPipeline: (args) => { pipelineCalls.push({ command: 'run_masking_pipeline', payload: args }); return Promise.resolve({ masked_path: '/tmp/masked.pdf', report_path: '/tmp/report.json', report: {}, extracted_text: '', masked_text: '' }); } }); return controller.runMaskingForSelectedDocument({ outputDirOverride: '/tmp/out' }).then(() => ({ calls: pipelineCalls, maskedPath: state.latestMaskedPath, reportPath: state.latestReportPath })); })()",
+        )
+        pipeline_calls = [call for call in result["calls"] if call["command"] == "run_masking_pipeline"]
+        self.assertEqual(
+            [{
+                "command": "run_masking_pipeline",
+                "payload": {
+                    "inputFile": "/tmp/input.pdf",
+                    "originalFile": "/tmp/input.pdf",
+                    "outputDir": "/tmp/out",
+                    "opts": {
+                        "profile": "legal",
+                        "extract_engine": "pypdf",
+                        "display_mode": "black",
+                        "deidentification_policy": "token",
+                        "region_scope": "national",
+                    },
+                },
+            }],
+            [{
+                "command": call["command"],
+                "payload": {
+                    **call["payload"],
+                    "opts": {
+                        key: call["payload"]["opts"][key]
+                        for key in ("profile", "extract_engine", "display_mode", "deidentification_policy", "region_scope")
+                    },
+                },
+            } for call in pipeline_calls],
+        )
+        self.assertEqual("", result["maskedPath"])
+        self.assertEqual("", result["reportPath"])
         self.assertIn('invokeCommand<ApplyResult>("apply_manual_boxes"', manual_adjustment_source)
         self.assertIn('invokeCommand("open_mask_canvas_window"', document_session_source)
         self.assertNotIn('invoke<MaskingResult>("run_masking_pipeline"', app)
 
     def test_css_uses_refined_document_studio_tokens(self):
-        # Trust Desk: a single --dm-* light token root (REDESIGN_SPEC_V2_2 §2).
         css = style_css("variables.css")
 
-        # v4: :root 기본이 다크로 전환됨 (near-black + 단일 신뢰-블루 액센트).
-        self.assertIn("--dm-bg: #0e1116;", css)
-        self.assertIn("--dm-surface: #161b22;", css)
-        self.assertIn("--dm-text: #e8edf4;", css)
-        self.assertIn("--dm-accent: #2f81f7;", css)
+        self.assertIn("--dm-bg: #f4f5f6;", css)
+        self.assertIn("--dm-surface: #ffffff;", css)
+        self.assertIn("--dm-text: #1e2124;", css)
+        self.assertIn("--dm-accent: #256ef4;", css)
         self.assertIn("--dm-mask:", css)
         self.assertIn("--dm-radius-sm: 8px;", css)
         self.assertIn("--dm-radius: 8px;", css)
         self.assertIn("--dm-radius-lg: 12px;", css)
-        self.assertIn("--dm-radius-modal: 16px;", css)
+        self.assertIn("--dm-radius-modal: 12px;", css)
         self.assertIn("--dm-radius-pill: 9999px;", css)
-        for spacing in ("4px", "8px", "12px", "16px", "24px", "32px"):
+        for spacing in ("4px", "8px", "12px", "16px", "20px", "24px", "28px", "32px"):
             self.assertIn(spacing, css)
-        for type_size in ("12px", "14px", "15px", "16px", "20px", "22px", "26px"):
+        for type_size in ("12px", "14px", "15px", "16px", "20px", "28px"):
             self.assertIn(type_size, css)
         self.assertIn("--dm-hairline: 1px;", css)
         self.assertIn("Segoe UI", css)
-        self.assertIn("--dm-header-h: 48px;", css)
+        self.assertIn("--dm-header-h: 64px;", css)
+        self.assertIn("--dm-sidebar-w: 248px;", css)
         self.assertIn("--dm-statusbar-h: 28px;", css)
-        # 라이트 값은 themes.css light 프리셋으로 이관됨 (다크 기본에는 없다).
         themes = style_css("themes.css")
-        self.assertIn("--dm-bg: #f6f5f4;", themes)
-        self.assertIn("--dm-border: #e6e6e6;", themes)
-        self.assertIn("--dm-text: #37352f;", themes)
-        self.assertIn("--dm-accent: #0075de;", themes)
-        # 좌측 레일 폐지 → 레일 폭 토큰도 제거됨.
+        self.assertIn("--dm-bg: #f4f5f6;", themes)
+        self.assertIn("--dm-border: #e6e8ea;", themes)
+        self.assertIn("--dm-text: #1e2124;", themes)
+        self.assertIn("--dm-accent: #256ef4;", themes)
+        self.assertIn("--dm-on-accent: #ffffff;", themes)
         self.assertNotIn("--dm-rail-w", css)
-        # The retired violet/obsidian and --surface-*/--nothing-* systems are gone.
         self.assertNotIn("--surface-app:", css)
         self.assertNotIn("--nothing-ink", css)
         self.assertNotIn("#8b5cf6", css)
@@ -408,6 +426,7 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn('data-theme-preference', bootstrap)
         self.assertIn('data-theme', bootstrap)
         self.assertIn('makiiing-v2-settings', bootstrap)
+        self.assertIn('let preference = "light";', bootstrap)
         self.assertIn('prefers-color-scheme: dark', bootstrap)
         self.assertNotRegex(index, r'<script(?![^>]*\bsrc=)[^>]*>')
 
@@ -444,11 +463,10 @@ class DesignSystemTests(unittest.TestCase):
         self.assertNotIn('id="documents-screen"', html)
         self.assertIn('id="settings-screen"', html)
         # v4 P2 (문서 통합): 검토·저장 레일은 캔버스 스테이지 옆 aside 로 인라인되며
-        # 캔버스 인스펙터 클래스와 합쳐졌다(dm-canvas__inspector + dm-inspector).
-        self.assertIn('className="dm-canvas__inspector dm-inspector"', html)
-        self.assertIn("PDF 작업창 열기", html)
+        self.assertIn('classNames("dm-canvas__inspector", "dm-inspector", inspectorCollapsed && "is-collapsed")', html)
+        self.assertIn('id="btn-canvas-load-pdf"', html)
         self.assertIn('id="btn-save"', html)
-        self.assertIn(">최종 저장<", html)
+        self.assertIn("최종 저장", html)
         self.assertNotIn("브라우저 미리보기용 임시 캔버스", html)
         self.assertNotIn('id="output-folder-summary"', html)
         self.assertNotIn('className="document-pill"', html)
@@ -497,7 +515,10 @@ class DesignSystemTests(unittest.TestCase):
         # v4 P2 (문서 통합): DocumentsWorkspace 삭제 → 검토 인스펙터가 통합 문서
         # 화면 CanvasWorkspace 안으로 인라인됐다.
         canvas_workspace = (REPO_ROOT / "src" / "components" / "CanvasWorkspace.tsx").read_text(encoding="utf-8")
-        legacy_source = legacy_typescript_source()
+        dom_bindings = (REPO_ROOT / "src" / "app" / "domBindings.ts").read_text(encoding="utf-8")
+        sidebar = (REPO_ROOT / "src" / "components" / "layout" / "Sidebar.tsx").read_text(encoding="utf-8")
+        shell_store = (REPO_ROOT / "src" / "state" / "shellStore.ts").read_text(encoding="utf-8")
+        application_source = application_composition_typescript_source()
         # v4 P2: 인스펙터 규칙은 screen-documents.css → screen-canvas.css 로 이관됨.
         css = style_css("screen-canvas.css")
 
@@ -513,10 +534,17 @@ class DesignSystemTests(unittest.TestCase):
         # 통합 문서 화면은 data-screen-panel="documents" 슬롯을 차지하고, 검토·저장
         # 레일(ReviewInspector 이식)을 인라인 aside 로 품는다.
         self.assertIn('data-screen-panel="documents"', canvas_workspace)
-        self.assertIn('className="dm-canvas__inspector dm-inspector"', canvas_workspace)
-        self.assertIn("function setInspectorCollapsed", legacy_source)
-        self.assertIn("is-inspector-collapsed", legacy_source)
-        self.assertIn("btnToggleInspector.addEventListener", legacy_source)
+        self.assertIn('classNames("dm-canvas__inspector", "dm-inspector", inspectorCollapsed && "is-collapsed")', canvas_workspace)
+        self.assertIn('aria-expanded={!inspectorCollapsed}', canvas_workspace)
+        self.assertIn("reviewQueueActivationTick", canvas_workspace)
+        self.assertIn("setInspectorCollapsed(false)", canvas_workspace)
+        self.assertIn('querySelector<HTMLElement>("summary")?.focus()', canvas_workspace)
+        self.assertIn('activateScreen("review-queue")', sidebar)
+        self.assertIn("function activateScreen", shell_store)
+        self.assertIn("reviewQueueActivationTick: isReviewQueueActivation", shell_store)
+        self.assertNotIn("function setInspectorCollapsed", application_source)
+        self.assertNotIn("reviewInspectorEl", dom_bindings)
+        self.assertNotIn("btnToggleInspector", dom_bindings)
         # 통합 문서 화면(#canvas-workspace-screen)은 접이식 인스펙터와 자체 요약/저장
         # 표면을 가진 유계 그리드다. (구 doclist 는 문서 통합으로 삭제됨.)
         self.assertIn("#canvas-workspace-screen.dm-canvas {", css)
@@ -527,6 +555,23 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn(".dm-detect__list", css)
         self.assertIn("@media (max-width:", css)
 
+    def test_settings_persistence_round_trip_keeps_only_supported_preferences(self):
+        from test_frontend_state_helpers import run_node_helper
+
+        result = run_node_helper(
+            "src/settingsState.ts",
+            "(() => {"
+            "const values = new Map(); const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };"
+            "const saved = m.saveSettings({ theme: 'light', profile: 'mixed', displayMode: 'pseudonym', deidentificationMode: 'partial', regionScope: 'custom', customRegions: 'Seoul', openOutputAfterSave: true }, storage);"
+            "return { saved, restored: m.loadSettings(storage), raw: JSON.parse([...values.values()][0]) };"
+            "})()",
+        )
+        self.assertEqual({"status": "saved"}, result["saved"]["diagnostic"])
+        self.assertEqual("light", result["restored"]["settings"]["theme"])
+        self.assertEqual("pseudonym", result["restored"]["settings"]["displayMode"])
+        self.assertEqual("partial", result["restored"]["settings"]["deidentificationMode"])
+        self.assertEqual("national", result["raw"]["regionScope"])
+        self.assertNotIn("customRegions", result["raw"])
     def test_remaining_ux_css_prioritizes_workflow_steps_confirmation_and_narrow_stack(self):
         # v4 P2 (문서 통합): screen-documents.css 삭제. 살아남는 확인(save-gate)
         # 규칙은 #canvas-workspace-screen 스코프로 screen-canvas.css 에 이관됐다.
@@ -591,15 +636,15 @@ class DesignSystemTests(unittest.TestCase):
         css = style_css("screen-canvas.css")
 
         canvas_screen = html[html.index('id="canvas-workspace-screen"') :]
-        # v4 P2 (문서 통합): 캔버스 전용 요약 컨테이너(#canvas-final-save-summary)는
-        # 검토·저장 레일의 저장 요약 카드(.dm-savesummary, aria-label="저장 요약")로
-        # 대체됐다. 저장 게이트 텍스트 소스인 canvas-summary-* 프록시는 유지된다.
-        self.assertIn('aria-label="저장 요약"', canvas_screen)
-        self.assertIn('id="canvas-summary-mask-count"', canvas_screen)
-        self.assertIn('id="canvas-summary-restore-count"', canvas_screen)
-        self.assertIn('id="canvas-summary-keyword-count"', canvas_screen)
-        self.assertIn('id="canvas-summary-output-state"', canvas_screen)
-        self.assertIn("최종 저장 전 확인", canvas_screen)
+        # The visible review-rail accordion is the save summary; legacy canvas-summary
+        # proxy IDs must not be required by the React screen.
+        self.assertIn('id="save-summary-accordion"', canvas_screen)
+        self.assertIn('id="save-summary-accordion-content"', canvas_screen)
+        self.assertIn('id="review-summary-mask-count"', canvas_screen)
+        self.assertIn('id="review-summary-restore-count"', canvas_screen)
+        self.assertIn('id="review-summary-keyword-count"', canvas_screen)
+        self.assertIn('id="review-summary-output-file"', canvas_screen)
+        self.assertIn('title={workspace.finalSaveDialog.title}', canvas_screen)
         self.assertIn(".dm-canvas__summary", css)
         self.assertIn(".dm-canvas__props", css)
         self.assertIn(".canvas-editor-palette", css)
@@ -612,19 +657,16 @@ class DesignSystemTests(unittest.TestCase):
         # v4 P2 (문서 통합): 통합 문서 화면의 상단 툴바 aria-label 은 "문서 도구".
         # 편집 도구 라벨은 "마스킹"/"복원" 세그먼트(도구 선택)로, 반영은 별도 액션.
         toolbar = canvas_screen[canvas_screen.index('aria-label="문서 도구"') : canvas_screen.index('id="canvas-tool-readiness"')]
-        hidden_proxy = canvas_screen[canvas_screen.index('manual-command-proxy') :]
         self.assertIn('id="btn-canvas-tool-mask"', toolbar)
         self.assertIn(">마스킹<", toolbar)
         self.assertIn('id="btn-canvas-tool-restore"', toolbar)
         self.assertIn(">복원<", toolbar)
         self.assertIn('id="btn-canvas-apply"', toolbar)
         self.assertIn("수동 보정 반영", toolbar)
-        self.assertNotIn('id="btn-canvas-mask"', toolbar)
-        self.assertNotIn("수동 마스킹 시작", toolbar)
-        self.assertNotIn('id="btn-canvas-restore"', toolbar)
-        self.assertNotIn("수동 복원 시작", toolbar)
-        self.assertNotIn('id="btn-canvas-mask"', hidden_proxy)
-        self.assertNotIn('id="btn-canvas-restore"', hidden_proxy)
+        self.assertNotIn('id="btn-canvas-mask"', canvas_screen)
+        self.assertNotIn("수동 마스킹 시작", canvas_screen)
+        self.assertNotIn('id="btn-canvas-restore"', canvas_screen)
+        self.assertNotIn("수동 복원 시작", canvas_screen)
         # Apply is gated by a readiness banner, distinct from tool selection.
         self.assertIn(".dm-canvas__readiness", css)
         self.assertIn(".canvas-editor-palette", css)
@@ -679,26 +721,25 @@ class DesignSystemTests(unittest.TestCase):
 
     def test_canvas_focus_mode_compacts_chrome_and_uses_right_properties_panel(self):
         html = frontend_markup()
-        legacy_source = legacy_typescript_source()
+        application_source = application_composition_typescript_source()
         shell = style_css("shell.css")
         canvas_css = style_css("screen-canvas.css")
 
-        # 화면 진입은 상단 문서 홈과 화면 내부 PDF 작업창 버튼이 담당한다.
         self.assertIn('data-screen-target="documents"', html)
+        self.assertIn('data-screen-target="desk"', html)
         self.assertNotIn('data-screen-target="coordinate-template"', html)
-        self.assertIn("PDF 작업창 열기", html)
+        self.assertIn('id="btn-canvas-load-pdf"', html)
         # Legacy still toggles a body class; the redesign renders only the
         # active screen, so the canvas is inherently a full-width focus surface.
         # v4 P2 (문서 통합): 캔버스가 곧 문서 화면이므로 별도 canvas-screen-active
         # 토글은 사라지고, standalone 작업창 진입만 body 클래스로 표시한다.
-        self.assertIn('document.body.classList.toggle("standalone-canvas-window"', legacy_source)
+        self.assertIn('document.body.classList.toggle("standalone-canvas-window"', application_source)
         self.assertIn("#workspace-shell > [data-screen-panel]:not(.is-active) {", shell)
         self.assertIn("grid-template-columns: minmax(0, 1fr) var(--dm-inspector-w);", canvas_css)
         self.assertIn(".dm-canvas__toolbar {", canvas_css)
         self.assertIn(".dm-header__home {", shell)
 
     def test_top_bar_uses_document_home_and_explicit_settings_actions(self):
-        # 좌표 템플릿 퇴역 후 상단 바는 문서 홈, 실행 명령, 설정 진입만 제공한다.
         html = frontend_markup()
         css = style_css("shell.css")
 
@@ -715,10 +756,15 @@ class DesignSystemTests(unittest.TestCase):
         self.assertNotIn(".dm-rail", css)
 
         self.assertIn('className="dm-header__home"', html)
+        self.assertIn('className="dm-sidebar__item"', html)
+        self.assertIn("문서 데스크", html)
+        self.assertIn("마스킹 작업", html)
+        self.assertIn("검토 대기", html)
+        self.assertIn("저장함", html)
         self.assertIn('data-screen-target="documents"', html)
         self.assertNotIn('data-screen-target="coordinate-template"', html)
-        self.assertIn('className="dm-header__gear"', html)
         self.assertIn('data-screen-target="settings"', html)
+        self.assertIn('data-screen-target="masking-settings"', html)
         # 애매한 유니코드 글리프 네비 아이콘 금지.
         self.assertNotIn(">◇</span>", html)
         self.assertNotIn(">⌘</span>", html)
@@ -726,7 +772,7 @@ class DesignSystemTests(unittest.TestCase):
         self.assertNotIn(">⚙</span>", html)
         self.assertNotIn('className="rail-nav-icon"', html)
         self.assertIn(".dm-header__home", css)
-        self.assertIn(".dm-header__gear", css)
+        self.assertIn(".dm-sidebar", css)
 
     # v4 P4: 구 scripts/ui_risk_check.mjs 는 v3 구조(.app-shell/.app-rail/
     # .document-stage/.review-inspector/.work-log-panel)를 조회하는 죽은 스크립트라
@@ -745,7 +791,7 @@ class DesignSystemTests(unittest.TestCase):
         # v4 P2 (문서 통합): 최종 상태를 담은 검토·저장 레일이 통합 문서 화면의
         # 캔버스 인스펙터 aside 로 들어왔다. v4.1: 안전 리포트는 내부 검증 장치로
         # 내부화되어 인스펙터의 주 콘텐츠는 "검토 필요 항목" 탐지 카드가 됐다.
-        self.assertIn('className="dm-canvas__inspector dm-inspector"', html)
+        self.assertIn('classNames("dm-canvas__inspector", "dm-inspector", inspectorCollapsed && "is-collapsed")', html)
         self.assertIn("검토 필요 항목", html)
         self.assertNotIn("안전 리포트", html)
         self.assertNotIn('id="review-queue"', html)
@@ -804,17 +850,15 @@ class DesignSystemTests(unittest.TestCase):
         # v4 P2 (문서 통합): 인스펙터 폭 토큰 사용처는 screen-documents.css →
         # screen-canvas.css 로 이관됨.
         documents = style_css("screen-canvas.css")
-        # v4 셸은 레일 열을 없앤 단일 컬럼 그리드다. 레일 폭 토큰(--dm-rail-w)은
-        # 제거되고 헤더/상태바/검토 패널 폭 토큰만 semantic --dm-* 로 남는다.
         variables_contract = [
-            "--dm-header-h: 48px;",
-            "--dm-inspector-w: 320px;",
+            "--dm-header-h: 64px;",
+            "--dm-sidebar-w: 248px;",
             "--dm-statusbar-h: 28px;",
         ]
         missing = [snippet for snippet in variables_contract if snippet not in variables]
         self.assertEqual([], missing, f"missing layout tokens: {missing}")
         self.assertNotIn("--dm-rail-w", variables)
-        self.assertIn("grid-template-columns: minmax(0, 1fr);", shell)
+        self.assertIn("grid-template-columns: var(--dm-sidebar-w) minmax(0, 1fr);", shell)
         self.assertIn("var(--dm-inspector-w)", documents)
 
 

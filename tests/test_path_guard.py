@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -26,6 +27,26 @@ def write_pdf(path: Path) -> None:
     page.insert_text((32, 52), "name Hong Gil Dong")
     doc.save(path)
     doc.close()
+def directory_snapshot(root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        if path.is_symlink():
+            snapshot[relative] = f"symlink:{path.readlink()}"
+        elif path.is_dir():
+            snapshot[relative] = "directory"
+        else:
+            snapshot[relative] = f"file:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+    return snapshot
+
+
+def source_snapshot() -> dict[str, str]:
+    return {
+        str(path.relative_to(REPO_ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (MANUAL_SCRIPT, ENGINE_ENTRY, PIPELINE_SCRIPT)
+    }
+
+
 
 
 def run(script_args: list[str], env_allowed: str | None) -> subprocess.CompletedProcess:
@@ -52,12 +73,13 @@ class PathGuardUnitTests(unittest.TestCase):
         else:
             os.environ["MASK_TOOL_ALLOWED_DIRS"] = self._prior
 
-    def test_unrestricted_when_unset_and_no_defaults(self) -> None:
+    def test_unset_allowlist_fails_closed(self) -> None:
         os.environ.pop("MASK_TOOL_ALLOWED_DIRS", None)
-        self.assertIsNone(path_guard.resolve_allowed_roots())
-        self.assertTrue(path_guard.is_path_allowed("/anywhere/at/all.pdf"))
-        # require_allowed_path is a passthrough when unconfigured.
-        self.assertEqual("/x/y.pdf", path_guard.require_allowed_path("/x/y.pdf"))
+
+        self.assertEqual([], path_guard.resolve_allowed_roots())
+        self.assertFalse(path_guard.is_path_allowed("/anywhere/at/all.pdf"))
+        with self.assertRaisesRegex(PermissionError, "MASK_TOOL_ALLOWED_DIRS"):
+            path_guard.require_allowed_path("/x/y.pdf")
 
     def test_env_restricts_to_inside_paths(self) -> None:
         with tempfile.TemporaryDirectory() as allowed:
@@ -85,25 +107,149 @@ class PathGuardUnitTests(unittest.TestCase):
 
 
 class PathGuardCliTests(unittest.TestCase):
-    def test_manual_boxes_rejects_input_outside_allowlist(self) -> None:
-        with tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as elsewhere:
-            outside_pdf = Path(elsewhere) / "secret.pdf"
-            write_pdf(outside_pdf)
-            boxes = json.dumps([{"page": 0, "x0": 28, "y0": 38, "x1": 190, "y1": 62, "mode": "mask"}])
-            proc = run(
-                [
-                    str(MANUAL_SCRIPT),
-                    "--input", str(outside_pdf),
-                    "--original", str(outside_pdf),
-                    "--outdir", allowed,
-                    "--boxes", boxes,
-                ],
-                env_allowed=allowed,
-            )
-            self.assertNotEqual(0, proc.returncode)
-            self.assertEqual("MANUAL_APPLY_FAILED", proc.stderr.strip())
-            self.assertNotIn("secret.pdf", proc.stderr)
-            self.assertEqual("", proc.stdout.strip())
+    def test_all_entrypoints_reject_every_protected_path_role_without_artifacts(self) -> None:
+        boxes = json.dumps([{"page": 0, "x0": 28, "y0": 38, "x1": 190, "y1": 62, "mode": "mask"}])
+        entrypoints = {
+            "manual": lambda input_pdf, original_pdf, outdir: [
+                str(MANUAL_SCRIPT), "--input", str(input_pdf), "--original", str(original_pdf),
+                "--outdir", str(outdir), "--boxes", boxes,
+            ],
+            "engine": lambda input_pdf, original_pdf, outdir: [
+                str(ENGINE_ENTRY), "--manual-boxes", "--input", str(input_pdf), "--original", str(original_pdf),
+                "--outdir", str(outdir), "--boxes", boxes,
+            ],
+            "pipeline": lambda input_pdf, original_pdf, outdir: [
+                str(PIPELINE_SCRIPT), "--repo-root", str(REPO_ROOT), "--mode", "finalize",
+                "--input", str(input_pdf), "--original", str(original_pdf), "--outdir", str(outdir),
+                "--opts", "{}",
+            ],
+        }
+        for entrypoint, command in entrypoints.items():
+            for role in ("input", "original", "outdir"):
+                with self.subTest(entrypoint=entrypoint, role=role):
+                    with tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as elsewhere:
+                        allowed_root = Path(allowed)
+                        outside_root = Path(elsewhere)
+                        inside_pdf = allowed_root / "inside.pdf"
+                        outside_pdf = outside_root / "secret.pdf"
+                        write_pdf(inside_pdf)
+                        write_pdf(outside_pdf)
+                        before_allowed = directory_snapshot(allowed_root)
+                        before_outside = directory_snapshot(outside_root)
+                        before_sources = source_snapshot()
+                        paths = {"input": inside_pdf, "original": inside_pdf, "outdir": allowed_root}
+                        paths[role] = outside_pdf if role != "outdir" else outside_root
+
+                        proc = run(command(paths["input"], paths["original"], paths["outdir"]), env_allowed=allowed)
+                        self.assertNotEqual(0, proc.returncode)
+                        self.assertEqual("", proc.stdout.strip())
+                        self.assertNotIn(str(outside_root), proc.stderr)
+                        self.assertNotIn("secret.pdf", proc.stderr)
+                        self.assertEqual(before_allowed, directory_snapshot(allowed_root))
+                        self.assertEqual(before_outside, directory_snapshot(outside_root))
+                        self.assertEqual(before_sources, source_snapshot())
+
+                        if entrypoint == "manual":
+                            self.assertEqual("MANUAL_APPLY_FAILED", proc.stderr.strip())
+                        elif entrypoint == "engine":
+                            self.assertEqual(
+                                "PATH_ACCESS_REJECTED",
+                                json.loads(proc.stderr)["error"]["code"],
+                            )
+                        else:
+                            self.assertEqual(
+                                "MASKING_PIPELINE_PATH_SYMLINK_REJECTED",
+                                json.loads(proc.stderr)["error"]["code"],
+                            )
+
+    def test_all_entrypoints_reject_symlink_escape_for_each_protected_role_without_artifacts(self) -> None:
+        boxes = json.dumps([{"page": 0, "x0": 28, "y0": 38, "x1": 190, "y1": 62, "mode": "mask"}])
+        entrypoints = {
+            "manual": lambda input_pdf, original_pdf, outdir: [
+                str(MANUAL_SCRIPT), "--input", str(input_pdf), "--original", str(original_pdf),
+                "--outdir", str(outdir), "--boxes", boxes,
+            ],
+            "engine": lambda input_pdf, original_pdf, outdir: [
+                str(ENGINE_ENTRY), "--manual-boxes", "--input", str(input_pdf), "--original", str(original_pdf),
+                "--outdir", str(outdir), "--boxes", boxes,
+            ],
+            "pipeline": lambda input_pdf, original_pdf, outdir: [
+                str(PIPELINE_SCRIPT), "--repo-root", str(REPO_ROOT), "--mode", "finalize",
+                "--input", str(input_pdf), "--original", str(original_pdf), "--outdir", str(outdir),
+                "--opts", "{}",
+            ],
+        }
+        for entrypoint, command in entrypoints.items():
+            for role in ("input", "original", "outdir"):
+                with self.subTest(entrypoint=entrypoint, role=role):
+                    with tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as elsewhere:
+                        allowed_root = Path(allowed)
+                        outside_root = Path(elsewhere)
+                        inside_pdf = allowed_root / "inside.pdf"
+                        outside_pdf = outside_root / "secret.pdf"
+                        write_pdf(inside_pdf)
+                        write_pdf(outside_pdf)
+                        escape = allowed_root / "escape"
+                        escape.symlink_to(outside_root, target_is_directory=True)
+                        before_allowed = directory_snapshot(allowed_root)
+                        before_outside = directory_snapshot(outside_root)
+                        before_sources = source_snapshot()
+                        paths = {
+                            "input": inside_pdf,
+                            "original": inside_pdf,
+                            "outdir": allowed_root,
+                        }
+                        paths[role] = escape / outside_pdf.name if role != "outdir" else escape
+
+                        proc = run(command(paths["input"], paths["original"], paths["outdir"]), env_allowed=allowed)
+                        self.assertNotEqual(0, proc.returncode)
+                        self.assertEqual("", proc.stdout.strip())
+                        self.assertNotIn(str(outside_root), proc.stderr)
+                        self.assertNotIn("secret.pdf", proc.stderr)
+                        self.assertEqual(before_allowed, directory_snapshot(allowed_root))
+                        self.assertEqual(before_outside, directory_snapshot(outside_root))
+                        self.assertEqual(before_sources, source_snapshot())
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction coverage is unavailable on this platform")
+    def test_all_entrypoints_reject_windows_junction_escape_for_each_protected_role(self) -> None:
+        boxes = json.dumps([{"page": 0, "x0": 28, "y0": 38, "x1": 190, "y1": 62, "mode": "mask"}])
+        entrypoints = {
+            "manual": lambda input_pdf, original_pdf, outdir: [str(MANUAL_SCRIPT), "--input", str(input_pdf), "--original", str(original_pdf), "--outdir", str(outdir), "--boxes", boxes],
+            "engine": lambda input_pdf, original_pdf, outdir: [str(ENGINE_ENTRY), "--manual-boxes", "--input", str(input_pdf), "--original", str(original_pdf), "--outdir", str(outdir), "--boxes", boxes],
+            "pipeline": lambda input_pdf, original_pdf, outdir: [str(PIPELINE_SCRIPT), "--repo-root", str(REPO_ROOT), "--mode", "finalize", "--input", str(input_pdf), "--original", str(original_pdf), "--outdir", str(outdir), "--opts", "{}"],
+        }
+        for entrypoint, command in entrypoints.items():
+            for role in ("input", "original", "outdir"):
+                with self.subTest(entrypoint=entrypoint, role=role), tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as elsewhere:
+                    allowed_root, outside_root = Path(allowed), Path(elsewhere)
+                    inside_pdf, outside_pdf = allowed_root / "inside.pdf", outside_root / "secret.pdf"
+                    write_pdf(inside_pdf)
+                    write_pdf(outside_pdf)
+                    junction = allowed_root / "escape"
+                    junction_result = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside_root)], capture_output=True, text=True)
+                    self.assertEqual(0, junction_result.returncode, junction_result.stderr)
+                    before_allowed = directory_snapshot(allowed_root)
+                    before_outside = directory_snapshot(outside_root)
+                    before_sources = source_snapshot()
+                    paths = {"input": inside_pdf, "original": inside_pdf, "outdir": allowed_root}
+                    paths[role] = junction / outside_pdf.name if role != "outdir" else junction
+                    proc = run(command(paths["input"], paths["original"], paths["outdir"]), env_allowed=allowed)
+                    self.assertNotEqual(0, proc.returncode)
+                    self.assertEqual("", proc.stdout.strip())
+                    self.assertNotIn(str(outside_root), proc.stderr)
+                    self.assertNotIn("secret.pdf", proc.stderr)
+                    self.assertEqual(before_allowed, directory_snapshot(allowed_root))
+                    self.assertEqual(before_outside, directory_snapshot(outside_root))
+                    self.assertEqual(before_sources, source_snapshot())
+                    if entrypoint == "manual":
+                        self.assertEqual("MANUAL_APPLY_FAILED", proc.stderr.strip())
+                    elif entrypoint == "engine":
+                        self.assertEqual("PATH_ACCESS_REJECTED", json.loads(proc.stderr)["error"]["code"])
+                    else:
+                        self.assertEqual(
+                            "MASKING_PIPELINE_PATH_SYMLINK_REJECTED",
+                            json.loads(proc.stderr)["error"]["code"],
+                        )
 
     def test_manual_boxes_allows_input_inside_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as allowed:
@@ -123,26 +269,6 @@ class PathGuardCliTests(unittest.TestCase):
             self.assertEqual(0, proc.returncode, proc.stderr)
             payload = json.loads(proc.stdout)
             self.assertEqual("applied", payload["status"])
-
-    def test_engine_entry_manual_boxes_rejects_output_dir_outside_allowlist(self) -> None:
-        with tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as elsewhere:
-            inside_pdf = Path(allowed) / "doc.pdf"
-            write_pdf(inside_pdf)
-            boxes = json.dumps([{"page": 0, "x0": 28, "y0": 38, "x1": 190, "y1": 62, "mode": "mask"}])
-            proc = run(
-                [
-                    str(ENGINE_ENTRY),
-                    "--manual-boxes",
-                    "--input", str(inside_pdf),
-                    "--original", str(inside_pdf),
-                    "--outdir", elsewhere,  # outside the allowlist
-                    "--boxes", boxes,
-                ],
-                env_allowed=allowed,
-            )
-            self.assertNotEqual(0, proc.returncode)
-            self.assertEqual("MASKING_ENGINE_FAILED", proc.stderr.strip())
-            self.assertNotIn(str(elsewhere), proc.stderr)
 
 
 if __name__ == "__main__":

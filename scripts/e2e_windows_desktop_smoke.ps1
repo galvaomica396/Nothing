@@ -29,6 +29,7 @@ $requiredRuntimeFiles = @(
   "masking_runtime\data\kr_regions.json",
   "masking_runtime\data\kr_regions.seed.json",
   "masking_runtime\document_masker_ocr_gui.py",
+  "masking_runtime\public_detection.py",
   "masking_runtime\privacy_detection.py",
   "masking_runtime\masking_context.py",
   "masking_runtime\privacy_false_positive.py",

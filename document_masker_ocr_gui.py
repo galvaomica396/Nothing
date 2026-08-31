@@ -16,6 +16,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
+import math
 import os
 import re
 import shutil
@@ -25,6 +28,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from contextvars import ContextVar
 from typing import Any
 
 DEFAULT_MASKING_OPTIONS = {
@@ -48,7 +52,7 @@ DEFAULT_MASKING_OPTIONS = {
     "korean_tokens": False,
     "custom_keywords": "",
     "custom_regions": "",
-    "profile": "official",
+    "profile": "mixed",
     "extract_engine": "auto",
     "output_artifacts": "pdf_safe_report",
     "display_mode": "black",
@@ -67,12 +71,21 @@ DEFAULT_MASKING_OPTIONS = {
     "local_llm_model": "",
     "local_llm_max_calls": 25,
 }
+_ACTIVE_SOURCE_SNAPSHOT: ContextVar[str | None] = ContextVar("_ACTIVE_SOURCE_SNAPSHOT", default=None)
 
 
 def normalize_opts(opts: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(DEFAULT_MASKING_OPTIONS)
     if opts:
         normalized.update(opts)
+    if "autoMaskThreshold" in normalized:
+        normalized["auto_threshold"] = normalized["autoMaskThreshold"]
+    elif "auto_mask_threshold" in normalized:
+        normalized["auto_threshold"] = normalized["auto_mask_threshold"]
+    if "reviewThreshold" in normalized:
+        normalized["review_threshold"] = normalized["reviewThreshold"]
+    raw_profile = normalized.get("profile", "mixed")
+    normalized["profile"] = _profile_value(raw_profile if isinstance(raw_profile, str) else "")
     return normalized
 
 
@@ -94,9 +107,38 @@ from privacy_spans import (
     detection_spans_from_matches,
     merge_detection_spans,
     tag_for_label,
+    match_occurrence_id,
+)
+from document_routing import (
+    BoundaryCorrection,
+    COMMON_DOCUMENT_HEADER,
+    CONTINUATION_NO_START_SIGNAL,
+    CONTINUATION_PAGE_NUMBER_SEQUENCE,
+    CONTINUATION_REPEATED_HEADER_FOOTER,
+    PageEvidence,
+    PdfRect,
+    apply_boundary_correction,
+    route_logical_documents,
+)
+from official_layout import (
+    EVIDENCE_LABEL_VALUE_DISTANCE_MAX,
+    RegionEvidence,
+    detect_internal_review_regions,
+    detect_official_dispatch_regions,
+)
+from approval_layout import (
+    DISPATCH_REQUIRED_KINDS,
+    INTERNAL_REQUIRED_KINDS,
+    analyze_approval_layout,
+)
+from privacy_detection import (
+    PUBLIC_NAME_TEST_AUTO_MASK_THRESHOLD,
+    PUBLIC_NAME_TEST_REVIEW_THRESHOLD,
+    score_public_body_name,
 )
 from privacy_transformers import TransformState, apply_deidentification_policy, normalize_deidentification_policy
 from ko_pii_detector import build_ko_pii_detector
+from public_detection import build_public_candidates
 from pdf_redaction_rendering import (
     MANUAL_REDACTION_TAG,
     MASK_TOKEN_LABELS,
@@ -109,7 +151,9 @@ from pdf_redaction_rendering import (
 )
 from masking_extraction import (
     ExtractResult,
+    ExtractedPage,
     extract_document,
+    extract_document_for_public_analysis,
     read_text_file,
     write_text_file,
     _extract_pdf_with_marker,
@@ -141,18 +185,23 @@ from masking_reporting import (
     safe_review_item_summaries,
 )
 from masking_redaction import (
+    ManualActionV1,
     ManualCorrectionBox,
     ManualRedactionBox,
+    OccurrenceRedactionInput,
     ScannedPdfRedactionError,
-    apply_manual_edits_with_restore,
+    apply_manual_actions_v1,
     apply_manual_pdf_corrections,
     apply_manual_redactions,
+    automatic_masks_preserve_manual_neighbors,
     redact_pdf_native,
+    occurrence_rect_text_hash,
     _finish_pdf_save,
     _fresh_pdf_output_path,
     _normalized_pdf_save_target,
     _redaction_search_terms,
 )
+from scan_raster_verification import ScanManualRasterVerifier
 from masking_rules import (
     ACCOUNT_CONTEXT_PAT,
     ACTING_APPROVER_NAME_PAT,
@@ -198,6 +247,8 @@ from masking_rules import (
     OFFICIAL_COMBINED_ROLE_NAME_PAT,
     OFFICIAL_ROLE_NAME_PAT,
     PASSPORT_PAT,
+    POSTAL_CODE_ADDRESS_LABEL_PAT,
+    POSTAL_CODE_PREFIX_PAT,
     PHONE_LABEL_PAT,
     PHONE_PATS,
     PHONE_VALUE_BODY,
@@ -212,7 +263,6 @@ from masking_rules import (
     ROAD_NO_PAT,
     RRN_PAT,
     RedactionMatch,
-    SEOUL_GU_OFFICE_PAT,
     SEOUL_GU_ONLY_PAT,
     SEOUL_GU_PAT,
     SIHAENG_DOCNO_PAT,
@@ -259,8 +309,11 @@ from masking_rules import (
 APP_VERSION = "v4.6.3"
 
 PROFILE_DISPLAY_TO_VALUE = {
-    "공공문서": "official",
+    "내부 검토": "internal_review",
+    "공문 발송": "official_dispatch",
+    "혼합": "mixed",
     "법률문서": "legal",
+    "공공문서": "mixed",
 }
 PROFILE_VALUE_TO_DISPLAY = {value: label for label, value in PROFILE_DISPLAY_TO_VALUE.items()}
 
@@ -297,8 +350,13 @@ OUTPUT_ARTIFACTS_MAP: dict[str, set[str]] = {
     "pdf+report": {"pdf", "report"},
 }
 def _profile_value(label_or_value: str) -> str:
-    value = (label_or_value or "official").strip()
-    return PROFILE_DISPLAY_TO_VALUE.get(value, value).lower()
+    value = label_or_value
+    normalized = PROFILE_DISPLAY_TO_VALUE.get(value, value).lower()
+    if normalized not in {"internal_review", "official_dispatch", "mixed", "legal"}:
+        raise ValueError("MASKING_PROFILE_UNSUPPORTED")
+    return normalized
+
+
 
 
 def _engine_value(label_or_value: str) -> str:
@@ -333,6 +391,20 @@ class ChunkProcessResult:
     counts: dict[str, int]
     matches: list[RedactionMatch]
     source_boundaries: tuple[int, ...] = ()
+@dataclass(frozen=True, slots=True)
+class RequiredMaskMappingError(RuntimeError):
+    failures: tuple[dict[str, Any], ...]
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "degraded": True,
+            "stage_failure_codes": ["REQUIRED_MASK_MAPPING_FAILED"],
+            "review_items": list(self.failures),
+        }
+
+    def __str__(self) -> str:
+        return "REQUIRED_MASK_MAPPING_FAILED"
 
 
 
@@ -412,7 +484,7 @@ def _chunk_text(text: str, chunk_size: int, overlap: int = 0) -> list[tuple[str,
 @tracked_masking_offsets
 def _mask_text_chunk(chunk: str, opts: dict[str, Any]) -> ChunkProcessResult:
     opts = normalize_opts(opts)
-    profile = str(opts.get("profile", "official") or "official").lower()
+    profile = _profile_value(str(opts.get("profile", "mixed") or "mixed"))
 
     use_approval_line = bool(opts.get("approval_line", True))
     use_region_context = bool(opts.get("region_context", True))
@@ -424,6 +496,10 @@ def _mask_text_chunk(chunk: str, opts: dict[str, Any]) -> ChunkProcessResult:
         use_approval_line = False
         use_region_context = False
         use_doc_meta = False
+    # Public approval-name masking is emitted only by trusted geometry finalization;
+    # text-queue candidates remain review evidence.
+    if profile in {"internal_review", "official_dispatch", "mixed"}:
+        use_approval_line = False
 
     masked, counts, matches = mask_text(
         chunk,
@@ -466,18 +542,60 @@ def _mask_text_chunk(chunk: str, opts: dict[str, Any]) -> ChunkProcessResult:
         tag="REGION",
     )
 
+    if profile == "legal":
+        matches = [
+            replace(item, action="mask") if item.action == "review" else item
+            for item in matches
+        ]
+    # Review/exclude actions and ungrounded approval candidates are reporting-only.
+    boundaries = list(current_masking_source_boundaries())
+    unauthorized_approval = [
+        item for item in matches if item.tag in {"APPROVAL_LINE", "APPROVAL_FLOW"}
+    ]
+    restore = [
+        item for item in matches
+        if item.action != "mask" or item in unauthorized_approval
+    ]
+    restoration_failures: list[dict[str, Any]] = []
+    if len(boundaries) != len(masked) + 1:
+        restoration_failures.extend(_mapping_failure(match, "source_boundary_invalid") for match in restore)
+    for match in sorted(restore, key=lambda item: item.start, reverse=True):
+        try:
+            output_start = boundaries.index(match.start)
+            output_end = boundaries.index(match.end)
+        except ValueError:
+            restoration_failures.append(_mapping_failure(match, "source_boundary_missing"))
+            continue
+        if output_end <= output_start:
+            restoration_failures.append(_mapping_failure(match, "source_boundary_invalid"))
+            continue
+        masked = masked[:output_start] + chunk[match.start:match.end] + masked[output_end:]
+        boundaries = boundaries[:output_start] + list(range(match.start, match.end + 1)) + boundaries[output_end + 1:]
+    if restoration_failures:
+        raise RequiredMaskMappingError(tuple(restoration_failures))
+    if unauthorized_approval:
+        unauthorized_ids = {id(item) for item in unauthorized_approval}
+        matches = [
+            replace(item, action="review") if id(item) in unauthorized_ids else item
+            for item in matches
+        ]
     return ChunkProcessResult(
         masked_text=masked,
         counts=counts,
         matches=matches,
-        source_boundaries=current_masking_source_boundaries(),
+        source_boundaries=tuple(boundaries),
     )
 
 
 def _document_match(match: RedactionMatch, base_offset: int) -> RedactionMatch:
     if match.start < 0 or match.end <= match.start:
         return match
-    return replace(match, start=base_offset + match.start, end=base_offset + match.end)
+    return replace(
+        match,
+        start=base_offset + match.start,
+        end=base_offset + match.end,
+        occurrence_id="",
+    )
 
 
 def _occurrence_key(text: str, match: RedactionMatch) -> tuple[int, int, str, str] | None:
@@ -572,19 +690,34 @@ def _source_to_output_offsets(
     return offsets
 
 
+def _mapping_failure(match: RedactionMatch, reason: str) -> dict[str, Any]:
+    return {
+        "code": "REQUIRED_MASK_MAPPING_FAILED",
+        "reason": reason,
+        "review_required": True,
+        "tag": match.tag,
+        "start": match.start,
+        "end": match.end,
+        "source": match.source,
+        "occurrence_id": match.occurrence_id,
+    }
+
+
 def _apply_source_occurrences(
     masked_text: str,
     matches: list[RedactionMatch],
     source_to_output: dict[int, int],
     korean_tokens: bool,
-) -> str:
+) -> tuple[str, list[dict[str, Any]]]:
     edits: list[tuple[int, int, str]] = []
-    unmapped: list[RedactionMatch] = []
+    failures: list[dict[str, Any]] = []
     for match in matches:
+        if match.action != "mask":
+            continue
         output_start = source_to_output.get(match.start)
         output_end = source_to_output.get(match.end)
         if output_start is None or output_end is None or output_end <= output_start:
-            unmapped.append(match)
+            failures.append(_mapping_failure(match, "source_output_offset_missing"))
             continue
         token = _mask_token(match.tag) if korean_tokens else f"[{match.tag}]"
         edits.append((output_start, output_end, token))
@@ -595,31 +728,60 @@ def _apply_source_occurrences(
             continue
         result = result[:start] + token + result[end:]
         last_start = start
-    for match in unmapped:
-        token = _mask_token(match.tag) if korean_tokens else f"[{match.tag}]"
-        result = re.sub(re.escape(match.text), lambda _matched: token, result)
-    return result
+    return result, failures
 
 
 def _ai_redaction_matches(text: str, detector: PrivacyDetector) -> list[RedactionMatch]:
     matches: list[RedactionMatch] = []
-    for index, span in enumerate(detector.detect(text), 1):
+    for span in detector.detect(text):
         if span.start < 0 or span.end <= span.start or span.end > len(text):
             continue
         value = text[span.start:span.end]
         if len(value.strip()) < 2:
             continue
+        tag = tag_for_label(span.label)
+        action = "mask" if tag == "ACCOUNT" else (
+            span.action if span.action in {"mask", "review", "exclude"} else "review"
+        )
         matches.append(
             RedactionMatch(
-                tag=tag_for_label(span.label),
+                tag=tag,
                 text=value,
                 start=span.start,
                 end=span.end,
-                occurrence_id=f"ai_occ_{index:06d}",
                 source="optional_ai_detector",
+                sources=("optional_ai_detector",),
+                action=action,
+                occurrence_id=span.occurrence_id,
+                page=span.page,
+                analysis_revision=span.analysis_revision,
+                bbox=span.bbox,
+                rects=span.rects,
+                evidence=span.evidence,
+                provenance=span.provenance,
+                coordinate_space=span.coordinate_space,
+                confidence=span.confidence,
             )
         )
     return matches
+
+
+def _eligible_source_occurrences(
+    source_text: str,
+    match: RedactionMatch,
+    existing_matches: list[RedactionMatch],
+) -> list[tuple[int, int]]:
+    """Return source occurrences whose text remains eligible in the rendered output."""
+    masked_spans = [
+        (item.start, item.end)
+        for item in existing_matches
+        if item.action == "mask" and item.start >= 0 and item.end > item.start
+    ]
+    return [
+        (found.start(), found.end())
+        for found in re.finditer(re.escape(match.text), source_text)
+        if not any(start < found.end() and found.start() < end for start, end in masked_spans)
+    ]
 
 
 def _apply_ai_redactions(
@@ -628,35 +790,37 @@ def _apply_ai_redactions(
     matches: list[RedactionMatch],
     existing_matches: list[RedactionMatch],
     korean_tokens: bool,
-) -> str:
+) -> tuple[str, list[dict[str, Any]]]:
     result = masked_text
+    failures: list[dict[str, Any]] = []
     existing_spans = {(item.start, item.end) for item in existing_matches if item.start >= 0}
-    grouped: dict[tuple[str, str], list[RedactionMatch]] = {}
-    for match in matches:
-        grouped.setdefault((match.tag, match.text), []).append(match)
-    for (tag, value), grouped_matches in sorted(grouped.items(), key=lambda item: -len(item[0][1])):
-        source_spans = [
-            (found.start(), found.end())
-            for found in re.finditer(re.escape(value), source_text)
-            if (found.start(), found.end()) not in existing_spans
-        ]
-        targets = {(match.start, match.end) for match in grouped_matches}
-        target_ordinals = [index for index, span in enumerate(source_spans) if span in targets]
-        output_spans = [(found.start(), found.end()) for found in re.finditer(re.escape(value), result)]
-        token = _mask_token(tag) if korean_tokens else f"[{tag}]"
-        if not target_ordinals or max(target_ordinals) >= len(output_spans):
-            result = re.sub(re.escape(value), lambda _matched: token, result)
+    for match in sorted(matches, key=lambda item: item.start, reverse=True):
+        if match.action != "mask":
             continue
-        for ordinal in reversed(target_ordinals):
-            start, end = output_spans[ordinal]
-            result = result[:start] + token + result[end:]
-    return result
+        if (match.start, match.end) in existing_spans:
+            continue
+        output_spans = [(found.start(), found.end()) for found in re.finditer(re.escape(match.text), result)]
+        source_spans = _eligible_source_occurrences(source_text, match, existing_matches)
+        try:
+            ordinal = source_spans.index((match.start, match.end))
+        except ValueError:
+            failures.append(_mapping_failure(match, "source_ordinal_missing"))
+            continue
+        if ordinal >= len(output_spans):
+            failures.append(_mapping_failure(match, "output_ordinal_missing"))
+            continue
+        start, end = output_spans[ordinal]
+        token = _mask_token(match.tag) if korean_tokens else f"[{match.tag}]"
+        result = result[:start] + token + result[end:]
+    return result, failures
 
 
 def _deidentification_matches(text: str, matches: list[RedactionMatch]) -> list[RedactionMatch]:
     unique: list[RedactionMatch] = []
     seen: set[tuple[int, int, str, str]] = set()
     for match in matches:
+        if match.action != "mask":
+            continue
         key = _occurrence_key(text, match)
         if key is not None and key in seen:
             continue
@@ -697,7 +861,7 @@ def process_masking_queue(
         while True:
             attempts += 1
             try:
-                result = chunk_processor(chunk, opts)
+                result = chunk_processor(chunk, {**opts, "_chunk_base_offset": base_offset})
                 if chunk_processor is _mask_text_chunk:
                     result = _defer_partial_name_matches(text, (chunk, base_offset), result)
                 masked_chunks.append(result.masked_text)
@@ -714,8 +878,11 @@ def process_masking_queue(
                     continue
 
                 failed_chunks += 1
-                logger(f"[청크] {idx}/{len(chunks)} 실패 - 기본 규칙 엔진으로 계속 진행")
-                fallback = _mask_text_chunk(chunk, opts)
+                failure_code = "CHUNK_PROCESSOR_FAILED"
+                if bool(opts.get("require_chunk_processor", False)):
+                    raise RuntimeError(failure_code) from None
+                logger(f"[청크] {idx}/{len(chunks)} 실패 - 기본 규칙 엔진으로 계속 진행 ({failure_code})")
+                fallback = _mask_text_chunk(chunk, {**opts, "_chunk_base_offset": base_offset})
                 if chunk_processor is _mask_text_chunk:
                     fallback = _defer_partial_name_matches(text, (chunk, base_offset), fallback)
                 fallback_chunks += 1
@@ -733,7 +900,10 @@ def process_masking_queue(
         for _boundary_index, (_chunk, boundary_offset) in enumerate(chunks[1:]):
             window_start = max(0, boundary_offset - chunk_overlap)
             window_end = min(len(text), boundary_offset + chunk_overlap)
-            boundary_result = _mask_text_chunk(text[window_start:window_end], opts)
+            boundary_result = _mask_text_chunk(
+                text[window_start:window_end],
+                {**opts, "_chunk_base_offset": window_start},
+            )
             for local_match in boundary_result.matches:
                 match = _document_match(local_match, window_start)
                 key = _occurrence_key(text, match)
@@ -756,23 +926,39 @@ def process_masking_queue(
                 _count_up(total_counts, match.tag)
 
     if boundary_matches:
-        joined_masked = _apply_source_occurrences(
+        joined_masked, mapping_failures = _apply_source_occurrences(
             joined_masked,
             boundary_matches,
             _source_to_output_offsets(chunks, chunk_results),
             korean_tokens=bool(opts.get("korean_tokens", False)),
         )
+        if mapping_failures:
+            raise RequiredMaskMappingError(tuple(mapping_failures))
 
+    detector_failure = False
     detector = opts.get("_privacy_detector")
     uses_default_detector = detector is None
     if uses_default_detector:
         detector = build_ko_pii_detector(logger)
+    if detector is None:
+        detector_failure = True
+        logger("[AI] 선택 탐지기를 사용할 수 없음 (code=OPTIONAL_DETECTOR_FAILED)")
+        if bool(opts.get("require_privacy_detector", False)):
+            raise RuntimeError("OPTIONAL_DETECTOR_FAILED")
     if detector is not None:
         existing_matches = list(total_matches)
+        restored_occurrence_keys = {
+            key
+            for match in existing_matches
+            if match.action != "mask" and (key := _occurrence_key(text, match)) is not None
+        }
         try:
             ai_matches = _ai_redaction_matches(text, detector)
-        except Exception:  # noqa: BROAD_EXCEPT_OK - preserve regex masking at the optional detector boundary
-            logger("[AI] 선택 탐지기 처리 실패 - 규칙 기반 결과 유지 (count=0)")
+        except Exception:  # noqa: BROAD_EXCEPT_OK - optional detector boundary
+            detector_failure = True
+            logger("[AI] 선택 탐지기 처리 실패 - 규칙 기반 결과 유지 (code=OPTIONAL_DETECTOR_FAILED)")
+            if bool(opts.get("require_privacy_detector", False)):
+                raise RuntimeError("OPTIONAL_DETECTOR_FAILED") from None
             ai_matches = []
         unique_ai_matches: list[RedactionMatch] = []
         for match in ai_matches:
@@ -781,26 +967,60 @@ def process_masking_queue(
                 continue
             if key in occurrence_keys:
                 if not uses_default_detector:
-                    total_matches.append(match)
+                    duplicate_index = next(
+                        (
+                            index
+                            for index, existing in enumerate(total_matches)
+                            if _occurrence_key(text, existing) == key
+                        ),
+                        None,
+                    )
+                    if duplicate_index is not None:
+                        existing = total_matches[duplicate_index]
+                        sources = tuple(dict.fromkeys((
+                            existing.source,
+                            *existing.sources,
+                            match.source,
+                            *match.sources,
+                        )))
+                        action = (
+                            existing.action
+                            if key in restored_occurrence_keys
+                            else "mask" if "mask" in {existing.action, match.action} else existing.action
+                        )
+                        merged = replace(
+                            existing,
+                            source=existing.source,
+                            sources=sources,
+                            action=action,
+                            occurrence_id=match.occurrence_id or existing.occurrence_id,
+                        )
+                        total_matches[duplicate_index] = replace(
+                            merged,
+                            occurrence_id=match_occurrence_id(merged, merged.start, merged.end),
+                        )
                 continue
             occurrence_keys.add(key)
             unique_ai_matches.append(match)
             total_matches.append(match)
             _count_up(total_counts, match.tag)
-        joined_masked = _apply_ai_redactions(
+        joined_masked, mapping_failures = _apply_ai_redactions(
             joined_masked,
             text,
             unique_ai_matches,
             existing_matches,
             korean_tokens=bool(opts.get("korean_tokens", False)),
         )
+        if mapping_failures:
+            raise RequiredMaskMappingError(tuple(mapping_failures))
 
     total_matches.sort(key=lambda match: (match.start if match.start >= 0 else len(text), match.end, match.tag, match.text))
     total_matches = [
-        match
-        if match.source == "optional_ai_detector"
-        else replace(match, occurrence_id=f"occ_{index:06d}")
-        for index, match in enumerate(total_matches, 1)
+        replace(
+            match,
+            occurrence_id=match_occurrence_id(match, match.start, match.end),
+        )
+        for match in total_matches
     ]
     deidentification_policy = normalize_deidentification_policy(opts.get("deidentification_policy", "token"))
     joined_masked = apply_deidentification_policy(
@@ -819,6 +1039,11 @@ def process_masking_queue(
         "retried_chunks": retried_chunks,
         "failed_chunks": failed_chunks,
         "fallback_chunks": fallback_chunks,
+        "degraded": bool(failed_chunks or detector_failure),
+        "stage_failure_codes": (
+            (["CHUNK_PROCESSOR_FAILED"] if failed_chunks else [])
+            + (["OPTIONAL_DETECTOR_FAILED"] if detector_failure else [])
+        ),
         "deidentification_policy": deidentification_policy,
     }
     return joined_masked, total_counts, total_matches, meta
@@ -843,6 +1068,7 @@ def _sub_court_when(
     return _tracked_sub(pattern, repl, text)
 
 
+
 _APPROVAL_INLINE_NAME_PAT = re.compile(
     r"(?:^|[\s|/,])(?P<label>[가-힣A-Za-z0-9]{1,30}?(?:관|장|급|긍|금))\s*"
     r"(?P<value>[가-힣]{2,4}?)(?=\s*(?:[|/,]|$)|\s+[가-힣A-Za-z0-9]{1,30}?(?:관|장|급|긍|금))"
@@ -861,7 +1087,14 @@ def _sub_approval_name_when(
         value = match.group("value")
         start = match.start("value")
         end = match.end("value")
-        if not is_likely_person_name(value, text, start, end):
+        decision = score_public_body_name(
+            approval_role=True,
+            punctuation_or_label_boundary=True,
+            distance_from_label=start - match.start(),
+            page_position_match=True,
+            region_state="confirmed",
+        )
+        if decision["action"] == "preserve" or not is_likely_person_name(value, text, start, end):
             return match.group(0)
         _record_redaction_match(matches, "APPROVAL_LINE", value, start, end)
         _count_up(report, "APPROVAL_LINE")
@@ -1003,13 +1236,21 @@ def mask_text(
     use_region_context: bool = True,
     use_doc_meta: bool = True,
     use_email: bool = True,
-    profile: str = "official",
+    profile: str = "mixed",
 ) -> tuple[str, dict[str, int], list[RedactionMatch]]:
-    profile = profile.lower()
+    profile = _profile_value(profile)
     if profile == "legal":
         use_approval_line = False
         use_region_context = False
         use_doc_meta = False
+    elif profile in {"internal_review", "official_dispatch", "mixed"}:
+        use_legal_party = False
+        use_court = False
+        use_case_title = False
+        use_case_number = False
+        use_law_firm = False
+        use_attorney = False
+        use_approval_line = False
 
     report: dict[str, int] = {}
     matches: list[RedactionMatch] = []
@@ -1041,6 +1282,22 @@ def mask_text(
             matches=matches,
         )
     if use_address:
+        text = _sub_keep_label(
+            text,
+            POSTAL_CODE_PREFIX_PAT,
+            "ADDRESS",
+            report,
+            value_group="value",
+            matches=matches,
+        )
+        text = _sub_keep_label(
+            text,
+            POSTAL_CODE_ADDRESS_LABEL_PAT,
+            "ADDRESS",
+            report,
+            value_group="value",
+            matches=matches,
+        )
         text = _sub_keep_label_when(
             text,
             ADDRESS_CONTEXT_PAT,
@@ -1066,7 +1323,16 @@ def mask_text(
         for p in PLACE_PATS:
             text = _sub_simple(text, p, "PLACE", report, matches=matches)
         for p in _weak_place_patterns():
-            text = _sub_simple(text, p, "WEAK_PLACE", report, matches=matches, value_group="value")
+            text = _sub_simple(
+                text,
+                p,
+                "WEAK_PLACE",
+                report,
+                matches=matches,
+                value_group="value",
+                action="review",
+                transform=False,
+            )
 
     # 주소 상세는 주소/지명 문맥이 있을 때만
     if use_address and (("[PLACE]" in text) or ("주소" in text)):
@@ -1255,6 +1521,10 @@ def mask_text(
         text = _sub_simple(text, TEAM_EXT_PAT, "DOC_META", report, matches=matches, value_group="value")
         text = _sub_simple(text, PUBLIC_LEVEL_PAT, "DOC_META", report, matches=matches, value_group="value")
 
+    matches = [
+        replace(match, occurrence_id=match_occurrence_id(match, match.start, match.end))
+        for match in matches
+    ]
     return text, report, matches
 
 
@@ -1365,9 +1635,73 @@ class SafeReport(dict):
         self.runtime_manifest = runtime_manifest
 
 
+def _safe_runtime_review_items(items: Any) -> list[dict[str, Any]]:
+    """Project runtime-only review evidence onto a PII-free geometry schema."""
+    if not isinstance(items, list):
+        return []
+    safe_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        safe: dict[str, Any] = {}
+        for key in ("tag", "status", "display_token", "source", "reason_code"):
+            value = item.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_\-\[\] :]{1,128}", value):
+                safe[key] = value
+        for key in ("page", "count"):
+            value = item.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                safe[key] = value
+        bbox = item.get("bbox")
+        if isinstance(bbox, dict):
+            normalized_bbox: dict[str, float] = {}
+            for key in ("x", "y", "width", "height"):
+                value = bbox.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                    normalized_bbox[key] = float(value)
+            if len(normalized_bbox) == 4 and normalized_bbox["width"] >= 0 and normalized_bbox["height"] >= 0:
+                safe["bbox"] = normalized_bbox
+        rects = item.get("rects")
+        if isinstance(rects, list):
+            normalized_rects: list[dict[str, float]] = []
+            for rect in rects:
+                if not isinstance(rect, dict):
+                    continue
+                values = {key: rect.get(key) for key in ("x0", "y0", "x1", "y1")}
+                if all(
+                    isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+                    for value in values.values()
+                ):
+                    normalized = {key: float(value) for key, value in values.items()}
+                    if normalized["x1"] >= normalized["x0"] and normalized["y1"] >= normalized["y0"]:
+                        normalized_rects.append(normalized)
+            if normalized_rects:
+                safe["rects"] = normalized_rects
+        reason_codes = item.get("reason_codes")
+        if isinstance(reason_codes, list):
+            codes = [
+                code for code in reason_codes
+                if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_:-]{0,95}", code)
+            ]
+            if codes:
+                safe["reason_codes"] = codes
+        if safe:
+            safe_items.append(safe)
+    return safe_items
+
 def runtime_manifest_for_report(report: dict[str, Any]) -> dict[str, Any]:
     manifest = getattr(report, "runtime_manifest", None)
-    return dict(manifest) if isinstance(manifest, dict) else {"outputs": {}, "review_items": []}
+    if not isinstance(manifest, dict):
+        return {"outputs": {}, "review_items": []}
+    return {
+        "outputs": {
+            key: value for key, value in manifest.get("outputs", {}).items()
+            if isinstance(key, str) and isinstance(value, bool)
+        } if isinstance(manifest.get("outputs"), dict) else {},
+        "review_items": _safe_runtime_review_items(manifest.get("review_items")),
+        "detected_spans": manifest.get("detected_spans", []),
+        "detection_candidates": manifest.get("detection_candidates", []),
+    }
 
 
 
@@ -1406,13 +1740,14 @@ def build_safe_report(
     )
     active_verification = safe_pdf.get("verification", {})
     runtime_manifest = {
-        "outputs": dict(output_paths),
-        "review_items": runtime_review_items,
+        "outputs": {name: bool(path) for name, path in output_paths.items()},
+        "review_items": _safe_runtime_review_items(runtime_review_items),
         "detected_spans": detected_spans,
         "detection_candidates": detection_candidates,
     }
     return SafeReport({
         "app_version": APP_VERSION,
+        "schema_version": 1,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "raw_values_saved": False,
         "raw_text_returned": False,
@@ -1421,14 +1756,18 @@ def build_safe_report(
             "path_saved_in_report": False,
         },
         "extract": {
+            "schema_version": extract_meta.get("schema_version"),
             "engine_selected": extract_meta.get("engine_selected", opts.get("extract_engine", "auto")),
             "engine_used": extract_meta.get("engine_used"),
+            "engine_chain": list(extract_meta.get("engine_chain", []) or []),
+            "fallback_chain": list(extract_meta.get("fallback_chain", []) or []),
             "duration_sec": extract_meta.get("duration_sec"),
             "notes_count": len(extract_meta.get("notes", []) or []),
             "chars": extract_meta.get("chars", 0),
+            "page_count": extract_meta.get("page_count", 0),
         },
         "rules": {
-            "profile": str(opts.get("profile", "official") or "official"),
+            "profile": _profile_value(str(opts.get("profile", "mixed") or "mixed")),
             "region_scope": str(opts.get("region_scope", "national") or "national"),
             "region_data_source": region_meta["region_data_source"],
             "region_data_version": region_meta["region_data_version"],
@@ -1489,22 +1828,2800 @@ def build_safe_report(
 
 
 
-def process_file(
+
+def _manifest_digest(material: dict[str, Any], prefix: str = "") -> str:
+    """Semantic IDs deliberately bind evidence, never candidate ordering or text."""
+    return prefix + hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()[:24]
+
+
+def _canonical_json_hash(material: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            material,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+_OCCURRENCE_ID_PATTERN = re.compile(r"occ_[0-9a-f]{24}\Z")
+_IDENTITY_COORDINATE_SCALE = 1_000_000
+
+
+def _identity_coordinate(value: float) -> int:
+    return int(math.floor(value * _IDENTITY_COORDINATE_SCALE + 0.5))
+
+
+def _occurrence_id(document_hash: str, revision: int, page: int, rects: list[dict[str, float]],
+                   tag: str, category: str, value_hash: str, source: str, policy: str,
+                   proposed_action: str, *, segment_id: str | None = None, region_id: str | None = None) -> str:
+    """Return the canonical, occurrence-scoped public identity."""
+    if (
+        not isinstance(document_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", document_hash.lower()) is None
+        or type(revision) is not int
+        or revision < 1
+        or type(page) is not int
+        or page < 0
+        or not all(isinstance(value, str) and value for value in (tag, category, source, policy))
+        or (segment_id is not None and (not isinstance(segment_id, str) or not segment_id))
+        or (region_id is not None and (not isinstance(region_id, str) or not region_id))
+        or re.fullmatch(r"[0-9a-f]{64}", value_hash.lower()) is None
+        or proposed_action not in {"mask", "review", "exclude"}
+    ):
+        raise ValueError("OCCURRENCE_IDENTITY_INVALID")
+    normalized_rects: list[list[int]] = []
+    for rect in rects:
+        if not isinstance(rect, dict) or set(rect) != {"x0", "y0", "x1", "y1"}:
+            raise ValueError("OCCURRENCE_IDENTITY_INVALID")
+        try:
+            values = {key: float(rect[key]) for key in ("x0", "y0", "x1", "y1")}
+        except (TypeError, ValueError):
+            raise ValueError("OCCURRENCE_IDENTITY_INVALID") from None
+        if (
+            not all(math.isfinite(value) and value >= 0.0 for value in values.values())
+            or values["x1"] <= values["x0"]
+            or values["y1"] <= values["y0"]
+        ):
+            raise ValueError("OCCURRENCE_IDENTITY_INVALID")
+        normalized_rects.append([
+            _identity_coordinate(values[key])
+            for key in ("x0", "y0", "x1", "y1")
+        ])
+    if not normalized_rects:
+        raise ValueError("OCCURRENCE_IDENTITY_INVALID")
+    material = {
+        "analysisRevision": revision, "category": category, "documentHash": document_hash.lower(),
+        "page": page, "policy": policy, "proposedAction": proposed_action,
+        "rects": sorted(normalized_rects),
+        "source": source, "tag": tag, "valueHash": value_hash.lower(),
+        **(
+            {"segmentId": segment_id, "regionId": region_id}
+            if segment_id is not None else {}
+        ),
+    }
+    occurrence_id = "occ_" + hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()[:24]
+    if _OCCURRENCE_ID_PATTERN.fullmatch(occurrence_id) is None:
+        raise ValueError("OCCURRENCE_IDENTITY_INVALID")
+    return occurrence_id
+
+
+
+def _manifest_rect(word: Any) -> dict[str, float] | None:
+    x0, y0, x1, y1 = (float(value) for value in word.bbox)
+    if not all(math.isfinite(value) for value in (x0, y0, x1, y1)) or x1 <= x0 or y1 <= y0:
+        return None
+    return {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+
+
+def _page_word_offsets(page: Any) -> list[tuple[int, int, Any, dict[str, float]]]:
+    """Return only extractor-proven, ordered page-local word offsets."""
+    cursor = 0
+    result: list[tuple[int, int, Any, dict[str, float]]] = []
+    for word in page.words:
+        rect = _manifest_rect(word)
+        token = str(word.text)
+        start = getattr(word, "page_start", None)
+        end = getattr(word, "page_end", None)
+        if (
+            rect is None
+            or not token
+            or type(start) is not int
+            or type(end) is not int
+            or start < cursor
+            or end <= start
+            or end > len(page.text)
+            or (
+                page.text[start:end] != token
+                and (
+                    getattr(word, "source", "") != "pymupdf_table_cell"
+                    or "".join(character for character in page.text[start:end] if not character.isspace())
+                    != "".join(character for character in token if not character.isspace())
+                )
+            )
+        ):
+            raise ValueError("WORD_OFFSET_EVIDENCE_INVALID")
+        cursor = end
+        result.append((start, end, word, rect))
+    if not result:
+        raise ValueError("WORD_OFFSET_EVIDENCE_INVALID")
+    return result
+
+
+def _compact_keyword_text(value: str) -> str:
+    return "".join(
+        character.casefold()
+        for character in value
+        if character.isalnum() or character == "_"
+    )
+
+
+def _same_keyword_line(left: dict[str, float], right: dict[str, float]) -> bool:
+    line_height = max(left["y1"] - left["y0"], right["y1"] - right["y0"])
+    left_center = (left["y0"] + left["y1"]) / 2
+    right_center = (right["y0"] + right["y1"]) / 2
+    return abs(right_center - left_center) <= max(2.0, line_height * 0.75)
+
+
+def _source_offset_for_compact_index(value: str, compact_index: int) -> int:
+    seen = 0
+    for index, character in enumerate(value):
+        if not (character.isalnum() or character == "_"):
+            continue
+        if seen == compact_index:
+            return index
+        seen += 1
+    return 0
+
+
+def _keyword_words_are_neighbors(
+    first: dict[str, float], previous: dict[str, float], candidate: dict[str, float],
+) -> bool:
+    line_height = max(
+        first["y1"] - first["y0"],
+        previous["y1"] - previous["y0"],
+        candidate["y1"] - candidate["y0"],
+    )
+    if _same_keyword_line(first, candidate):
+        return _same_keyword_line(previous, candidate) and (
+            -line_height <= candidate["x0"] - previous["x1"] <= max(36.0, line_height * 4)
+        )
+    first_to_candidate_gap = candidate["y0"] - first["y1"]
+    if not (
+        0 <= first_to_candidate_gap <= max(24.0, line_height * 2)
+        and abs(candidate["x0"] - first["x0"]) <= max(144.0, line_height * 12)
+    ):
+        return False
+    if _same_keyword_line(previous, candidate):
+        return -line_height <= candidate["x0"] - previous["x1"] <= max(36.0, line_height * 4)
+    return 0 <= candidate["y0"] - previous["y1"] <= max(24.0, line_height * 2)
+
+
+def _custom_keyword_word_matches(
+    page_text: str,
+    words: list[tuple[int, int, Any, dict[str, float]]],
+    keyword: str,
+) -> list[tuple[int, int, list[tuple[Any, dict[str, float]]]]]:
+    target = _compact_keyword_text(keyword)
+    if not target:
+        return []
+    matches: list[tuple[int, int, list[tuple[Any, dict[str, float]]]]] = []
+    for first_index, (start, end, word, rect) in enumerate(words):
+        value = _compact_keyword_text(str(word.text))
+        if not value:
+            continue
+        contained_start = value.find(target)
+        if contained_start >= 0:
+            source_text = page_text[start:end]
+            matches.append((
+                start + _source_offset_for_compact_index(source_text, contained_start),
+                end,
+                [(word, rect)],
+            ))
+            continue
+        suffix_start = next((index for index in range(len(value)) if target.startswith(value[index:])), None)
+        if suffix_start is None:
+            continue
+        selected = [(word, rect)]
+        matched = value[suffix_start:]
+        match_end = end
+        for next_start, next_end, next_word, next_rect in words[first_index + 1:]:
+            if page_text[match_end:next_start].strip() or not _keyword_words_are_neighbors(rect, selected[-1][1], next_rect):
+                break
+            next_value = _compact_keyword_text(str(next_word.text))
+            if not next_value or not target.startswith(matched + next_value):
+                break
+            selected.append((next_word, next_rect))
+            matched += next_value
+            match_end = next_end
+            if matched == target:
+                matches.append((start, match_end, selected))
+                break
+    return matches
+
+
+def _exact_pdf_subtext_rect(
+    pdf_path: str,
+    page_index: int,
+    value_text: str,
+    container: dict[str, float],
+) -> dict[str, float] | None:
+    """Resolve value glyph geometry from the PDF text layer, never by width estimation."""
+    if not value_text:
+        return None
+    try:
+        import fitz  # type: ignore
+
+        with fitz.open(pdf_path) as document:
+            if not 0 <= page_index < document.page_count:
+                return None
+            matches = document[page_index].search_for(value_text)
+    except Exception:
+        return None
+    contained = [
+        match for match in matches
+        if container["x0"] - 0.5 <= match.x0
+        and container["y0"] - 0.5 <= match.y0
+        and match.x1 <= container["x1"] + 0.5
+        and match.y1 <= container["y1"] + 0.5
+    ]
+    if len(contained) != 1:
+        return None
+    match = contained[0]
+    return {"x0": match.x0, "y0": match.y0, "x1": match.x1, "y1": match.y1}
+
+
+
+
+def _effective_policy_material(opts: dict[str, Any]) -> dict[str, Any]:
+    public_option_keys = (
+        "rrn", "phone", "business_reg", "name", "address", "place",
+        "legal_party", "company", "court", "case_title", "case_number",
+        "law_firm", "attorney", "approval_line", "region_context", "doc_meta", "email",
+        "pdf_redaction", "custom_keywords", "extract_engine", "profile",
+        "output_artifacts", "display_mode", "deidentification_policy",
+        "region_scope", "custom_regions", "return_text_preview",
+    )
+    material = {key: opts[key] for key in public_option_keys}
+    thresholds = {
+        "auto_mask_threshold": opts.get("auto_mask_threshold", opts.get("auto_threshold")),
+        "review_threshold": opts.get("review_threshold"),
+    }
+    for key, value in thresholds.items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+            raise ValueError("THRESHOLD_ARTIFACT_MISSING")
+        material[key] = float(value)
+    if not 0.0 <= material["review_threshold"] <= material["auto_mask_threshold"] <= 1.0:
+        raise ValueError("THRESHOLD_ARTIFACT_INVALID")
+    return material
+def _threshold_artifact(auto_mask_threshold: Any, review_threshold: Any) -> dict[str, Any]:
+    if (
+        not isinstance(auto_mask_threshold, (int, float))
+        or isinstance(auto_mask_threshold, bool)
+        or not isinstance(review_threshold, (int, float))
+        or isinstance(review_threshold, bool)
+        or not math.isfinite(float(auto_mask_threshold))
+        or not math.isfinite(float(review_threshold))
+        or not 0.0 <= float(review_threshold) <= float(auto_mask_threshold) <= 1.0
+    ):
+        raise ValueError("THRESHOLD_ARTIFACT_INVALID")
+    auto_value = float(auto_mask_threshold)
+    review_value = float(review_threshold)
+    material = {
+        "auto_threshold": auto_value,
+        "policy_version": "masking-policy-v1",
+        "review_threshold": review_value,
+    }
+    content_hash = hashlib.sha256(
+        json.dumps(
+            material,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "version": "thresholds-v2",
+        "content_hash": content_hash,
+        "auto_mask_threshold": auto_value,
+        "review_threshold": review_value,
+    }
+def _measured_region_position(marker: str, rect: dict[str, float], page_rects: tuple[PdfRect, ...]) -> bool:
+    """Accept only measured header/footer placement for a profile label."""
+    if not page_rects:
+        return False
+    page_top = min(item.y0 for item in page_rects)
+    page_bottom = max(item.y1 for item in page_rects)
+    page_height = page_bottom - page_top
+    if page_height <= 0:
+        return False
+    relative_y = ((rect["y0"] + rect["y1"]) / 2 - page_top) / page_height
+    return relative_y >= 0.65 if marker in {"발신", "담당", *_FOOTER_CONTACT_LABELS} else relative_y <= 0.35
+
+
+_PROFILE_REGION_BOUNDARY_TOLERANCE = 1e-6
+
+
+def _rects_within_region(rects: list[dict[str, float]], region_rects: tuple[PdfRect, ...]) -> bool:
+    return bool(rects) and all(any(
+        region.x0 <= rect["x0"] + _PROFILE_REGION_BOUNDARY_TOLERANCE
+        and region.y0 <= rect["y0"] + _PROFILE_REGION_BOUNDARY_TOLERANCE
+        and rect["x1"] <= region.x1 + _PROFILE_REGION_BOUNDARY_TOLERANCE
+        and rect["y1"] <= region.y1 + _PROFILE_REGION_BOUNDARY_TOLERANCE
+        for region in region_rects
+    ) for rect in rects)
+
+
+def _profile_candidate_matches_occurrence(
+    occurrence: dict[str, Any],
+    page: int,
+    rects: list[dict[str, float]],
+    value_hash: str,
+) -> bool:
+    return (
+        occurrence["page"] == page
+        and occurrence["value_hash"] == value_hash
+        and any(
+            max(existing_rect["x0"], candidate_rect["x0"])
+            <= min(existing_rect["x1"], candidate_rect["x1"])
+            and max(existing_rect["y0"], candidate_rect["y0"])
+            <= min(existing_rect["y1"], candidate_rect["y1"])
+            for existing_rect in occurrence["rects"]
+            for candidate_rect in rects
+        )
+    )
+
+
+def _label_value_distance(label_rect: dict[str, float], value_rects: list[dict[str, float]]) -> float | None:
+    """Measure the intentional horizontal-only gap used by fixed label rows."""
+    if not value_rects:
+        return None
+    return min(max(value_rect["x0"] - label_rect["x1"], 0.0) for value_rect in value_rects)
+
+
+_HEADER_LABEL_SUFFIXES = {
+    "결재": frozenset({"결재"}),
+    "검토": frozenset({"검토"}),
+    "승인": frozenset({"승인"}),
+    "attachment": frozenset({"붙임", "첨부"}),
+    "수신": frozenset({"수신", "수신자"}),
+    "참조": frozenset({"참조"}),
+    "시행": frozenset({"시행"}),
+    "발신": frozenset({"발신"}),
+    "담당": frozenset({"담당"}),
+    "문서번호": frozenset({"문서번호"}),
+    "방침번호": frozenset({"방침번호"}),
+    "생산등록번호": frozenset({"생산등록번호"}),
+    "등록일": frozenset({"등록일", "생산등록일"}),
+    "결재일자": frozenset({"결재일자"}),
+    "결재일": frozenset({"결재일"}),
+    "공개여부": frozenset({"공개여부"}),
+    "우편번호": frozenset({"우편번호", "우"}),
+    "전화": frozenset({"전화", "전화번호", "대표전화"}),
+    "전송": frozenset({"전송", "팩스", "fax"}),
+    "이메일": frozenset({"이메일", "email", "전자우편"}),
+    "title": frozenset({"제목"}),
+}
+
+_COMMON_DOCUMENT_HEADER_LABELS = frozenset({"문서번호", "결재일자", "공개여부"})
+_DISPATCH_HEADER_LABELS = frozenset({"수신", "시행"})
+_INTERNAL_REVIEW_HEADER_LABELS = frozenset({"검토"})
+_FOOTER_CONTACT_LABELS = frozenset({"우편번호", "전화", "전송", "이메일"})
+_COMPACT_FOOTER_POSTAL_CODE_RE = re.compile(r"우\s?\d{5}\Z")
+_DISPATCH_TITLE_TOKENS = frozenset({"알림", "통보", "송부"})
+_INTERNAL_REVIEW_TITLE_RE = re.compile(r"검토보고(?:서)?(?:\([^()]{1,12}\))?\Z")
+_PREREVIEW_TITLE_RE = re.compile(r"(?:사전\s*검토서|사전\s*검토\s*보고서)\Z")
+_PREREVIEW_LABELS = frozenset({"공모명", "공모사업명"})
+_TITLE_LINE_MIN_HEIGHT = 18.0
+_RUNNING_TITLE_LINE_MIN_HEIGHT = 14.0
+_TITLE_LINE_MAX_PAGE_RATIO = 0.7
+_TITLE_LINE_LEFT_RATIO = 0.4
+_TITLE_LINE_CENTER_TOLERANCE_RATIO = 0.12
+_TITLE_LINE_MAX_CHARACTERS = 32
+_RUNNING_TITLE_TOP_RATIO = 0.2
+_RUNNING_TITLE_MIN_CHARACTERS = 8
+_RUNNING_TITLE_MIN_WIDTH_RATIO = 0.5
+_RUNNING_TITLE_NON_TITLE_PREFIX_RE = re.compile(r"^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ□■▪●○]")
+_TITLE_LINE_PREDICATE_RE = re.compile(
+    r"(?:합니다|드립니다|됩니다|알립니다|했습니다|하였다|했다|한다|된다|입니다|였습니다|습니다|이었다|이다)[.!?]?"
+)
+
+_CONTINUATION_EDGE_RATIO = 0.15
+_CONTINUATION_SIGNATURE_MIN_TOKENS = 2
+_CONTINUATION_SIGNATURE_MIN_CHARACTERS = 4
+_FOOTER_PAGE_NUMBER_RE = re.compile(
+    r"(?<!\d)(?:-\s*)?(?P<page>[1-9]\d{0,3})(?:\s*-\s*|\s*/\s*(?P<total>[1-9]\d{0,3}))(?!\d)"
+)
+_FOOTER_STANDALONE_PAGE_NUMBER_RE = re.compile(r"\A\s*(?P<page>[1-9]\d{0,3})\s*\Z")
+
+
+def _edge_tokens(
+    words: list[tuple[int, int, Any, dict[str, float]]], page_height: float,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if page_height <= 0:
+        return (), ()
+    edge = page_height * _CONTINUATION_EDGE_RATIO
+    header = tuple(str(word.text).strip() for _, _, word, rect in words if rect["y1"] <= edge)
+    footer = tuple(str(word.text).strip() for _, _, word, rect in words if rect["y0"] >= page_height - edge)
+    return header, footer
+
+
+def _edge_signatures(header: tuple[str, ...], footer: tuple[str, ...]) -> frozenset[str]:
+    signatures: set[str] = set()
+    for tokens in (header, footer):
+        normalized = tuple(re.sub(r"\W+", "", token) for token in tokens)
+        source = " ".join(token for token in normalized if token)
+        if len(normalized) >= _CONTINUATION_SIGNATURE_MIN_TOKENS and len(source) >= _CONTINUATION_SIGNATURE_MIN_CHARACTERS:
+            signatures.add(hashlib.sha256(source.encode("utf-8")).hexdigest())
+    return frozenset(signatures)
+
+
+def _footer_page_number(footer: tuple[str, ...]) -> int | None:
+    footer_text = " ".join(footer)
+    match = _FOOTER_STANDALONE_PAGE_NUMBER_RE.fullmatch(footer_text)
+    if match is None:
+        match = _FOOTER_PAGE_NUMBER_RE.search(footer_text)
+    return int(match.group("page")) if match is not None else None
+
+
+def _continuity_evidence(
+    words: list[tuple[int, int, Any, dict[str, float]]],
+    page_height: float,
+    start_signals: set[str],
+    previous_page_number: int | None,
+    previous_edge_signatures: frozenset[str],
+) -> tuple[frozenset[str], int | None, frozenset[str]]:
+    header, footer = _edge_tokens(words, page_height)
+    page_number = _footer_page_number(footer)
+    edge_signatures = _edge_signatures(header, footer)
+    signals = {CONTINUATION_NO_START_SIGNAL} if not start_signals else set()
+    if (
+        not start_signals
+        and page_number != 1
+        and previous_page_number is not None
+        and page_number == previous_page_number + 1
+    ):
+        signals.add(CONTINUATION_PAGE_NUMBER_SEQUENCE)
+    if not start_signals and previous_edge_signatures & edge_signatures:
+        signals.add(CONTINUATION_REPEATED_HEADER_FOOTER)
+    return frozenset(signals), page_number, edge_signatures
+
+
+def _normalized_header_label(value: str) -> str | None:
+    compact = re.sub(r"[\s:：;；,./]+", "", value)
+    for marker, variants in _HEADER_LABEL_SUFFIXES.items():
+        if compact in variants:
+            return marker
+    return None
+
+
+def _header_label_position(marker: str, rect: dict[str, float], page_rects: tuple[PdfRect, ...]) -> bool:
+    if not page_rects:
+        return False
+    page_top = min(item.y0 for item in page_rects)
+    page_bottom = max(item.y1 for item in page_rects)
+    height = page_bottom - page_top
+    if height <= 0:
+        return False
+    relative_y = ((rect["y0"] + rect["y1"]) / 2 - page_top) / height
+    return relative_y >= 0.65 if marker in {"발신", "담당", *_FOOTER_CONTACT_LABELS} else relative_y <= 0.35
+
+
+def _label_is_first_in_line(
+    words: tuple[Any, ...], start: int, rect: dict[str, float],
+) -> bool:
+    return not any(
+        (candidate_rect := _manifest_rect(candidate)) is not None
+        and abs((candidate_rect["y0"] + candidate_rect["y1"] - rect["y0"] - rect["y1"]) / 2)
+        <= max(8.0, rect["y1"] - rect["y0"])
+        and candidate_rect["x1"] <= rect["x0"]
+        for candidate in words[:start]
+    )
+
+
+def _header_label_candidates(
+    words: tuple[Any, ...], page_rects: tuple[PdfRect, ...], *, header_only: bool = True,
+) -> list[tuple[int, int, str, dict[str, float]]]:
+    candidates: list[tuple[int, int, str, dict[str, float]]] = []
+    for start, word in enumerate(words):
+        rect = _manifest_rect(word)
+        if rect is None:
+            continue
+        if not _label_is_first_in_line(words, start, rect):
+            continue
+        compact = ""
+        last_rect = rect
+        best_match: tuple[int, int, str, dict[str, float]] | None = None
+        for end in range(start, min(len(words), start + 4)):
+            current = words[end]
+            current_rect = _manifest_rect(current)
+            if current_rect is None:
+                break
+            if end > start and (
+                abs((current_rect["y0"] + current_rect["y1"] - last_rect["y0"] - last_rect["y1"]) / 2)
+                > max(8.0, last_rect["y1"] - last_rect["y0"])
+                or current_rect["x0"] - last_rect["x1"] > max(24.0, 2 * (last_rect["y1"] - last_rect["y0"]))
+            ):
+                if best_match is not None:
+                    candidates.append(best_match)
+                break
+            compact += re.sub(r"[\s:：;；,.]+", "", str(current.text))
+            marker = _normalized_header_label(compact)
+            if marker is not None:
+                candidate_rect = {
+                    "x0": rect["x0"], "y0": min(rect["y0"], current_rect["y0"]),
+                    "x1": current_rect["x1"], "y1": max(rect["y1"], current_rect["y1"]),
+                }
+                if not header_only or _header_label_position(marker, candidate_rect, page_rects):
+                    best_match = (start, end, marker, candidate_rect)
+            has_longer_variant = any(
+                variant.startswith(compact) and variant != compact
+                for variants in _HEADER_LABEL_SUFFIXES.values()
+                for variant in variants
+            )
+            if not has_longer_variant:
+                if best_match is not None:
+                    candidates.append(best_match)
+                break
+            last_rect = current_rect
+        else:
+            if best_match is not None:
+                candidates.append(best_match)
+    return candidates
+
+
+def _drawing_supports_rect(rect: dict[str, float], drawing: tuple[float, float, float, float]) -> bool:
+    left, top, right, bottom = drawing
+    return (
+        left - 1.0 <= rect["x0"] <= rect["x1"] <= right + 1.0
+        and top - 1.0 <= rect["y0"] <= rect["y1"] <= bottom + 1.0
+    )
+
+
+def _row_box_structure(rects: list[dict[str, float]], drawings: tuple[tuple[float, float, float, float], ...]) -> bool:
+    return bool(drawings) and bool(rects) and all(
+        any(_drawing_supports_rect(rect, drawing) for drawing in drawings)
+        for rect in rects
+    )
+
+
+def _header_row_value_words(
+    words: list[tuple[int, int, Any, dict[str, float]]], label_end: int, label_rect: dict[str, float],
+) -> list[tuple[int, int, Any, dict[str, float]]]:
+    row_words = [entry for entry in words[label_end + 1:] if entry[3]["x0"] >= label_rect["x1"]
+                 and entry[3]["x0"] - label_rect["x1"] <= EVIDENCE_LABEL_VALUE_DISTANCE_MAX
+                 and abs((entry[3]["y0"] + entry[3]["y1"] - label_rect["y0"] - label_rect["y1"]) / 2)
+                 <= max(8.0, label_rect["y1"] - label_rect["y0"])][:3]
+    return [entry for entry in row_words if _normalized_header_label(str(entry[2].text)) is None]
+
+
+def _footer_contact_value_kind(value: str) -> str | None:
+    if _COMPACT_FOOTER_POSTAL_CODE_RE.fullmatch(value) is not None:
+        return "postal_code"
+    if PHONE_VALUE_PAT.fullmatch(value) is not None:
+        return "phone"
+    if EMAIL_PAT.fullmatch(value) is not None:
+        return "email"
+    return None
+
+
+def _routing_title_evidence(
+    words: list[tuple[int, int, Any, dict[str, float]]], page_rects: tuple[PdfRect, ...],
+    *, top_zone_only: bool = False,
+) -> tuple[set[str], tuple[str, ...], str | None]:
+    if not words or not page_rects:
+        return set(), (), None
+    page_left = min(rect.x0 for rect in page_rects)
+    page_top = min(rect.y0 for rect in page_rects)
+    page_right = max(rect.x1 for rect in page_rects)
+    page_bottom = max(rect.y1 for rect in page_rects)
+    page_height = page_bottom - page_top
+    if page_height <= 0 or page_right <= page_left:
+        return set(), (), None
+    lines: list[list[tuple[int, int, Any, dict[str, float]]]] = []
+    for entry in sorted(words, key=lambda item: (item[3]["y0"], item[3]["x0"])):
+        rect = entry[3]
+        if lines:
+            prior_rect = lines[-1][0][3]
+            tolerance = max(3.0, (prior_rect["y1"] - prior_rect["y0"]) / 2, (rect["y1"] - rect["y0"]) / 2)
+            if abs((prior_rect["y0"] + prior_rect["y1"] - rect["y0"] - rect["y1"]) / 2) <= tolerance:
+                lines[-1].append(entry)
+                continue
+        lines.append([entry])
+    signals: set[str] = set()
+    titles: list[str] = []
+    qualified_lines: list[tuple[str, bool]] = []
+    running_title_lines: list[tuple[int, str, float, float, float, float]] = []
+    for line_index, line in enumerate(lines):
+        line_rects = [entry[3] for entry in line]
+        line_left = min(rect["x0"] for rect in line_rects)
+        line_top = min(rect["y0"] for rect in line_rects)
+        line_bottom = max(rect["y1"] for rect in line_rects)
+        relative_y = ((line_top + line_bottom) / 2 - page_top) / page_height
+        raw_tokens = tuple(str(entry[2].text).strip() for entry in line)
+        title_text = " ".join(raw_tokens)
+        is_short_standalone_line = (
+            0 < len(re.sub(r"\s+", "", title_text)) <= _TITLE_LINE_MAX_CHARACTERS
+            and _TITLE_LINE_PREDICATE_RE.search(title_text) is None
+        )
+        is_left_aligned = line_left <= page_left + (page_right - page_left) * _TITLE_LINE_LEFT_RATIO
+        is_centered = abs(
+            (line_left + max(rect["x1"] for rect in line_rects)) / 2 - (page_left + page_right) / 2
+        ) <= (page_right - page_left) * _TITLE_LINE_CENTER_TOLERANCE_RATIO
+        is_qualified_title_line = (
+            relative_y >= 0
+            and relative_y <= (_RUNNING_TITLE_TOP_RATIO if top_zone_only else _TITLE_LINE_MAX_PAGE_RATIO)
+            and is_short_standalone_line
+            and (is_left_aligned or is_centered)
+        )
+        normalized_line = re.sub(r"[\W_]+", "", title_text)
+        if (
+            top_zone_only
+            and is_qualified_title_line
+            and max(rect["y1"] - rect["y0"] for rect in line_rects) >= _RUNNING_TITLE_LINE_MIN_HEIGHT
+            and _RUNNING_TITLE_NON_TITLE_PREFIX_RE.match(title_text.strip()) is None
+            and ":" not in title_text
+            and normalized_line
+        ):
+            running_title_lines.append((
+                line_index, normalized_line, line_left, max(rect["x1"] for rect in line_rects), line_top, line_bottom,
+            ))
+        is_dispatch_title = (
+            is_qualified_title_line
+            and _normalized_header_label(raw_tokens[0]) == "title"
+        )
+        is_dispatch_document_title = is_dispatch_title and (
+            re.sub(r"[\W_]+", "", raw_tokens[-1]) in _DISPATCH_TITLE_TOKENS
+        )
+        compact_title_text = re.sub(r"\s+", "", title_text)
+        is_internal_document_title = (
+            is_qualified_title_line
+            and max(rect["y1"] - rect["y0"] for rect in line_rects) >= _TITLE_LINE_MIN_HEIGHT
+            and _INTERNAL_REVIEW_TITLE_RE.search(compact_title_text) is not None
+        )
+        if is_dispatch_document_title:
+            signals.add("dispatch")
+            titles.append(re.sub(r"[\W_]+", "", " ".join(raw_tokens[1:])))
+        if is_internal_document_title:
+            signals.add("internal")
+            prior_title, prior_is_qualified = qualified_lines[-1] if qualified_lines else ("", False)
+            title_source = f"{prior_title} {title_text}" if prior_is_qualified else title_text
+            titles.append(re.sub(r"[\W_]+", "", title_source))
+        qualified_lines.append((title_text, is_qualified_title_line))
+    if top_zone_only and not signals:
+        running_title_candidates = [
+            title
+            for _line_index, title, line_left, line_right, _line_top, _line_bottom in running_title_lines
+            if len(title) >= _RUNNING_TITLE_MIN_CHARACTERS
+            and line_right - line_left >= (page_right - page_left) * _RUNNING_TITLE_MIN_WIDTH_RATIO
+            and abs((line_left + line_right) / 2 - (page_left + page_right) / 2)
+            <= (page_right - page_left) * _TITLE_LINE_CENTER_TOLERANCE_RATIO
+        ]
+        running_title_candidates.extend(
+            running_title_lines[index][1] + running_title_lines[index + 1][1]
+            for index in range(len(running_title_lines) - 1)
+            if running_title_lines[index + 1][0] == running_title_lines[index][0] + 1
+            and len(running_title_lines[index][1] + running_title_lines[index + 1][1]) >= _RUNNING_TITLE_MIN_CHARACTERS
+            and max(running_title_lines[index][3], running_title_lines[index + 1][3])
+            - min(running_title_lines[index][2], running_title_lines[index + 1][2])
+            >= (page_right - page_left) * _RUNNING_TITLE_MIN_WIDTH_RATIO
+            and abs(
+                (
+                    min(running_title_lines[index][2], running_title_lines[index + 1][2])
+                    + max(running_title_lines[index][3], running_title_lines[index + 1][3])
+                ) / 2 - (page_left + page_right) / 2
+            ) <= (page_right - page_left) * _TITLE_LINE_CENTER_TOLERANCE_RATIO
+        )
+        titles.extend(running_title_candidates)
+    normalized_titles = tuple(dict.fromkeys(title for title in titles if title))
+    kind = (
+        "internal_review"
+        if signals == {"internal"}
+        else "official_dispatch"
+        if signals == {"dispatch"}
+        else None
+    )
+    return signals, normalized_titles, kind
+
+
+def _routing_title_signals(
+    words: list[tuple[int, int, Any, dict[str, float]]], page_rects: tuple[PdfRect, ...],
+) -> set[str]:
+    return _routing_title_evidence(words, page_rects)[0]
+
+
+def _prereview_routing_signal(
+    words: list[tuple[int, int, Any, dict[str, float]]],
+    structural_layout: Any,
+) -> bool:
+    """Require independent title, contest-label, and approval evidence for 09.
+
+    A generic approval box is shared by both public profiles and must not be a
+    fallback route.  The prereview signal is emitted only when the page also
+    carries a dedicated ``사전검토서`` title and an explicit ``공모명`` label.
+    """
+    if not words:
+        return False
+    lines: list[list[tuple[int, int, Any, dict[str, float]]]] = []
+    for entry in sorted(words, key=lambda item: (item[3]["y0"], item[3]["x0"])):
+        if lines:
+            prior_rect = lines[-1][0][3]
+            rect = entry[3]
+            tolerance = max(
+                3.0,
+                (prior_rect["y1"] - prior_rect["y0"]) / 2,
+                (rect["y1"] - rect["y0"]) / 2,
+            )
+            if abs((prior_rect["y0"] + prior_rect["y1"] - rect["y0"] - rect["y1"]) / 2) <= tolerance:
+                lines[-1].append(entry)
+                continue
+        lines.append([entry])
+    has_title = any(
+        _PREREVIEW_TITLE_RE.search(re.sub(r"\s+", "", " ".join(str(entry[2].text) for entry in line)))
+        is not None
+        for line in lines
+        if line and ((min(entry[3]["y0"] for entry in line) + max(entry[3]["y1"] for entry in line)) / 2)
+        <= max(entry[3]["y1"] for entry in words) * 0.7
+    )
+    has_contest_label = any(
+        re.sub(r"[\s:：]+", "", str(entry[2].text)) in _PREREVIEW_LABELS
+        for entry in words
+    )
+    approval_values = getattr(structural_layout, "values", ())
+    approval_count = sum(
+        getattr(value, "kind", None) == "approval_staff"
+        for value in approval_values
+    )
+    return has_title and has_contest_label and approval_count >= 2
+
+
+def _selected_word_text_hash(
+    selected: Sequence[tuple[Any, dict[str, float]]],
+) -> str:
+    ordered = sorted(
+        selected,
+        key=lambda item: (
+            float(item[1]["x0"]),
+            float(item[1]["y0"]),
+            float(item[1]["x1"]),
+            float(item[1]["y1"]),
+        ),
+    )
+    return hashlib.sha256(
+        "\n".join(str(word.text) for word, _ in ordered).encode("utf-8")
+    ).hexdigest()
+
+
+def trusted_analysis_manifest(
+    infile: str,
+    opts: dict[str, Any] | None = None,
+    *,
+    session_hash_key: bytes | None = None,
+    source_bytes: bytes | None = None,
+    extracted: ExtractResult | None = None,
+    reanalysis: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a PII-safe, geometry-grounded analysis manifest; never write artifacts."""
+    if not isinstance(session_hash_key, bytes) or len(session_hash_key) != 32:
+        raise ValueError("SESSION_HASH_KEY_INVALID")
+    opts = normalize_opts(opts)
+    profile = _profile_value(str(opts.get("profile", "mixed") or "mixed"))
+    if profile == "legal":
+        raise ValueError("PUBLIC_PROFILE_REQUIRED")
+    try:
+        source_on_disk = Path(infile).read_bytes()
+    except OSError:
+        raise ValueError("SOURCE_UNAVAILABLE") from None
+    if source_bytes is None:
+        source_bytes = source_on_disk
+    elif source_bytes != source_on_disk:
+        raise ValueError("ORIGINAL_CHANGED")
+    document_hash = hashlib.sha256(source_bytes).hexdigest()
+    revision = opts.get("analysis_revision", 1)
+    if reanalysis is not None:
+        # Boundary routing validates the prior revision; applying its correction mints the successor revision.
+        revision = reanalysis["analysis_revision"] - 1 if reanalysis["kind"] == "boundary" else reanalysis["analysis_revision"]
+    if type(revision) is not int or revision < 1:
+        raise ValueError("ANALYSIS_REVISION_INVALID")
+    extracted = extracted if extracted is not None else extract_document_for_public_analysis(
+        infile,
+        str(opts.get("extract_engine", "auto")),
+        extractor=extract_document,
+    )
+    thresholds = _effective_policy_material(opts)
+    if not extracted.pages:
+        raise ValueError("PUBLIC_PAGE_EVIDENCE_UNAVAILABLE")
+
+    pages: list[PageEvidence] = []
+    evidence: list[RegionEvidence] = []
+    fixed_value_candidates: list[tuple[int, str, list[dict[str, float]], str]] = []
+    layout_coverage_by_page: dict[int, dict[str, str]] = {}
+    public_footer_band_pages: set[int] = set()
+    geometry_block_pages: list[int] = []
+    page_words: dict[int, list[tuple[int, int, Any, dict[str, float]]]] = {}
+    previous_page_number: int | None = None
+    previous_edge_signatures = frozenset()
+    label_kinds = {
+        "결재": ("approval", "approval_staff"), "검토": ("approval", "approval_staff"),
+        "승인": ("approval", "approval_staff"), "수신": ("recipient_reference",),
+        "참조": ("recipient_reference",), "시행": ("dispatch_metadata",),
+        "발신": ("sender_institution",), "담당": ("labeled_staff", "footer_contact"),
+        "문서번호": ("header_meta", "dispatch_metadata"),
+        "방침번호": ("header_meta",), "생산등록번호": ("header_meta",),
+        "등록일": ("header_meta",), "결재일": ("header_meta",), "결재일자": ("header_meta",),
+        "공개여부": ("header_meta",),
+        "우편번호": ("footer_contact",), "전화": ("footer_contact",),
+        "전송": ("footer_contact",), "이메일": ("footer_contact",),
+    }
+    mask_value_kind = {
+        "결재": "approval_staff",
+        "검토": "approval_staff",
+        "승인": "approval_staff",
+        "수신": "recipient_reference",
+        "참조": "recipient_reference",
+        "시행": "dispatch_metadata",
+        "발신": "sender_institution",
+        "담당": "staff_contact",
+        "문서번호": "document_header",
+        "방침번호": "header_meta", "생산등록번호": "header_meta",
+        "등록일": "header_meta", "결재일": "header_meta", "결재일자": "header_meta",
+        "공개여부": "header_meta",
+        "우편번호": "footer_contact", "전화": "footer_contact",
+        "전송": "footer_contact", "이메일": "footer_contact",
+    }
+    for page in extracted.pages:
+        trustworthy_geometry = (
+            page.source == "pymupdf_text_layer"
+            and page.evidence_status == "available"
+            and bool(page.words)
+            and page.coordinate_space == "pdf_points_top_left"
+        )
+        try:
+            words = _page_word_offsets(page) if trustworthy_geometry else []
+        except ValueError:
+            words = []
+            trustworthy_geometry = False
+        if not trustworthy_geometry:
+            geometry_block_pages.append(page.page_index)
+        page_words[page.page_index] = words
+        page_rects = tuple(
+            PdfRect(rect["x0"], rect["y0"], rect["x1"], rect["y1"])
+            for _, _, _, rect in words
+        )
+        position_rects = (
+            (PdfRect(0.0, 0.0, float(page.width), float(page.height)),)
+            if isinstance(page.width, (int, float)) and isinstance(page.height, (int, float))
+            and page.width > 0 and page.height > 0
+            else page_rects
+        )
+        confidence_source = (
+            "text_layer"
+            if page.source == "pymupdf_text_layer" and page.evidence_reason is None
+            else "ocr"
+        )
+        confidence = 1.0 if confidence_source == "text_layer" else min(
+            (word.confidence for _, _, word, _ in words if word.confidence is not None),
+            default=None,
+        )
+        structural_layout = analyze_approval_layout(
+            [word for _, _, word, _ in words],
+            page_index=page.page_index,
+            drawings=page.drawings,
+            page_rect=(0.0, 0.0, float(page.width), float(page.height))
+            if isinstance(page.width, (int, float)) and isinstance(page.height, (int, float))
+            and page.width > 0 and page.height > 0
+            else None,
+        )
+        layout_coverage_by_page[page.page_index] = dict(structural_layout.coverage)
+        for value in structural_layout.values:
+            value_rects = [
+                {"x0": rect[0], "y0": rect[1], "x1": rect[2], "y1": rect[3]}
+                for rect in value.value_rects
+            ]
+            protected_rects = [
+                {"x0": rect[0], "y0": rect[1], "x1": rect[2], "y1": rect[3]}
+                for rect in value.protected_neighbor_rects
+            ]
+            if value.source == "pymupdf_subword":
+                container_rects = [*value_rects, *protected_rects]
+                container = {
+                    "x0": min(rect["x0"] for rect in container_rects),
+                    "y0": min(rect["y0"] for rect in container_rects),
+                    "x1": max(rect["x1"] for rect in container_rects),
+                    "y1": max(rect["y1"] for rect in container_rects),
+                }
+                exact_value_rect = _exact_pdf_subtext_rect(
+                    infile, page.page_index, value.value_text, container,
+                )
+                if exact_value_rect is None:
+                    layout_coverage_by_page[page.page_index][value.kind] = "indeterminate"
+                    continue
+                value_rects = [exact_value_rect]
+            region_kinds = (
+                ("approval", "approval_staff")
+                if value.kind == "approval_staff"
+                else (value.kind,)
+            )
+            all_rects = [*value_rects, *protected_rects]
+            for region_kind in region_kinds:
+                evidence.append(RegionEvidence(
+                    region_kind,
+                    page.page_index,
+                    (PdfRect(
+                        min(item["x0"] for item in all_rects),
+                        min(item["y0"] for item in all_rects),
+                        max(item["x1"] for item in all_rects),
+                        max(item["y1"] for item in all_rects),
+                    ),),
+                    box_structure_match=value.box_structure_match,
+                    label_match=True,
+                    structural_match=True,
+                    label_value_distance=value.label_value_distance,
+                    approval_row_pattern=value.approval_row_pattern,
+                    page_position_match=True,
+                    ocr_confidence=confidence,
+                    confidence_source=confidence_source,
+                ))
+            fixed_value_candidates.append((
+                page.page_index,
+                value.kind,
+                value_rects,
+                hmac.new(
+                    session_hash_key, value.value_text.encode("utf-8"), hashlib.sha256,
+                ).hexdigest(),
+            ))
+        header_labels = _header_label_candidates(
+            tuple(word for _, _, word, _ in words), position_rects, header_only=True,
+        )
+        header_rows = [
+            (label_start, label_end, marker, rect, _header_row_value_words(words, label_end, rect))
+            for label_start, label_end, marker, rect in header_labels
+        ]
+        routing_header_labels = _header_label_candidates(
+            tuple(word for _, _, word, _ in words), position_rects, header_only=False,
+        )
+        header_markers = {label for _, _, label, _ in header_labels}
+        routing_markers = {label for _, _, label, _ in routing_header_labels}
+        labeled_footer_values: list[tuple[list[dict[str, float]], str]] = []
+        signals: set[str] = set()
+        if _COMMON_DOCUMENT_HEADER_LABELS <= header_markers:
+            signals.add(COMMON_DOCUMENT_HEADER)
+        if _DISPATCH_HEADER_LABELS & routing_markers:
+            signals.add("dispatch")
+        if _INTERNAL_REVIEW_HEADER_LABELS & header_markers:
+            signals.add("internal")
+        if "attachment" in header_markers:
+            signals.add("attachment")
+        title_signals: set[str] = set()
+        routing_titles: tuple[str, ...] = ()
+        routing_title_kind: str | None = None
+        if page.page_index == 0 or not {"internal", "dispatch", "attachment"} & signals:
+            title_signals, routing_titles, routing_title_kind = _routing_title_evidence(
+                words,
+                position_rects,
+                top_zone_only=page.page_index > 0,
+            )
+        if _prereview_routing_signal(words, structural_layout):
+            signals.add("prereview")
+        if page.page_index == 0:
+            signals.update(title_signals)
+        boundary_confidence = (
+            1.0
+            if confidence_source == "text_layer" and signals
+            else None
+        )
+        continuity_signals, previous_page_number, previous_edge_signatures = _continuity_evidence(
+            words,
+            float(page.height) if isinstance(page.height, (int, float)) else 0.0,
+            signals,
+            previous_page_number,
+            previous_edge_signatures,
+        )
+        pages.append(PageEvidence(
+            page.page_index,
+            frozenset(signals),
+            continuity_signals,
+            confidence,
+            page_rects,
+            boundary_confidence,
+            confidence_source,
+            routing_titles=routing_titles,
+            routing_title_kind=routing_title_kind,
+        ))
+        for label_start, label_end, marker, rect, value_words in header_rows:
+            kinds = label_kinds.get(marker)
+            if kinds is None:
+                continue
+            if marker in {"결재", "검토", "승인"}:
+                continue
+            if not value_words:
+                continue
+            row = [rect, *(entry[3] for entry in value_words)]
+            geometry = (PdfRect(min(item["x0"] for item in row), min(item["y0"] for item in row),
+                                max(item["x1"] for item in row), max(item["y1"] for item in row)),)
+            box_structure_match = _row_box_structure(
+                [rect, *(entry[3] for entry in value_words)], page.drawings,
+            )
+            for kind in kinds:
+                if kind == "footer_contact":
+                    continue
+                evidence.append(RegionEvidence(
+                    kind,
+                    page.page_index,
+                    geometry,
+                    box_structure_match=box_structure_match,
+                    label_match=(
+                        _normalized_header_label("".join(
+                            str(words[index][2].text)
+                            for index in range(label_start, label_end + 1)
+                        )) == marker
+                    ),
+                    structural_match=bool(value_words),
+                    label_value_distance=_label_value_distance(rect, [entry[3] for entry in value_words]),
+                    page_position_match=_measured_region_position(marker, rect, position_rects),
+                    ocr_confidence=confidence,
+                    confidence_source=confidence_source,
+                ))
+                layout_coverage_by_page[page.page_index][kind] = "present"
+            candidate_kind = mask_value_kind.get(marker)
+            if candidate_kind is not None:
+                value_rects = [entry[3] for entry in value_words]
+                value_hash = hmac.new(
+                    session_hash_key,
+                    "".join(str(entry[2].text) for entry in value_words).encode("utf-8"),
+                    hashlib.sha256,
+                ).hexdigest()
+                if candidate_kind == "footer_contact":
+                    if any(
+                        _footer_contact_value_kind(str(entry[2].text)) is None
+                        for entry in value_words
+                    ):
+                        labeled_footer_values.append((value_rects, value_hash))
+                    continue
+                fixed_value_candidates.append((page.page_index, candidate_kind, value_rects, value_hash))
+        footer_value_rect_keys = {
+            (rect["x0"], rect["y0"], rect["x1"], rect["y1"])
+            for rects, _value_hash in labeled_footer_values
+            for rect in rects
+        }
+        footer_values = [*labeled_footer_values]
+        for _start, _end, word, rect in words:
+            if (
+                not _measured_region_position("우편번호", rect, position_rects)
+                or (rect["x0"], rect["y0"], rect["x1"], rect["y1"]) in footer_value_rect_keys
+                or _footer_contact_value_kind(str(word.text)) is None
+            ):
+                continue
+            footer_values.append((
+                [rect],
+                hmac.new(session_hash_key, str(word.text).encode("utf-8"), hashlib.sha256).hexdigest(),
+            ))
+        footer_labels = {
+            marker
+            for _start, _end, marker, rect in _header_label_candidates(
+                tuple(word for _, _, word, _ in words), position_rects, header_only=False,
+            )
+            if marker in _FOOTER_CONTACT_LABELS
+            and _measured_region_position(marker, rect, position_rects)
+        }
+        footer_band_structure = bool(footer_values) and (
+            len(footer_values) >= 2 or len(footer_labels) >= 2
+        )
+        if footer_band_structure:
+            public_footer_band_pages.add(page.page_index)
+        for value_rects, value_hash in footer_values:
+            geometry = (PdfRect(
+                min(rect["x0"] for rect in value_rects),
+                min(rect["y0"] for rect in value_rects),
+                max(rect["x1"] for rect in value_rects),
+                max(rect["y1"] for rect in value_rects),
+            ),)
+            evidence.append(RegionEvidence(
+                "footer_contact",
+                page.page_index,
+                geometry,
+                box_structure_match=footer_band_structure,
+                label_match=bool(footer_labels) or len(footer_values) >= 2,
+                structural_match=True,
+                label_value_distance=0.0,
+                page_position_match=True,
+                ocr_confidence=confidence,
+                confidence_source=confidence_source,
+            ))
+            layout_coverage_by_page[page.page_index]["footer_contact"] = "present"
+            fixed_value_candidates.append((
+                page.page_index,
+                "footer_contact",
+                value_rects,
+                value_hash,
+            ))
+
+    routing = route_logical_documents(
+        profile,
+        pages,
+        document_hash=document_hash,
+        analysis_revision=revision,
+        profile_authority=opts.get("profile_authority"),
+    )
+    if reanalysis is not None:
+        if reanalysis["kind"] == "boundary":
+            routing = apply_boundary_correction(
+                routing,
+                BoundaryCorrection(
+                    reanalysis["page_start"], reanalysis["page_end"], reanalysis["segment_kind"],
+                ),
+                correction_authority={
+                    "document_sha256": document_hash,
+                    "prior_analysis_revision": revision,
+                    "profile": profile,
+                    "decision_code": "boundary_correction_confirmed",
+                    "correction_sha256": hashlib.sha256(json.dumps({
+                        "page_start": reanalysis["page_start"],
+                        "page_end": reanalysis["page_end"],
+                        "kind": reanalysis["segment_kind"],
+                    }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+                },
+            ).routing_result
+        revision = routing.analysis_revision
+    layout = (
+        detect_internal_review_regions(evidence, document_hash=document_hash, analysis_revision=revision)
+        if profile == "internal_review" else
+        detect_official_dispatch_regions(evidence, document_hash=document_hash, analysis_revision=revision)
+        if profile == "official_dispatch" else
+        (*detect_internal_review_regions(evidence, document_hash=document_hash, analysis_revision=revision),
+         *detect_official_dispatch_regions(evidence, document_hash=document_hash, analysis_revision=revision))
+    )
+    scan_pages = frozenset(geometry_block_pages)
+    routed_segments: list[dict[str, Any]] = []
+    for routed in routing.segments:
+        page_start = routed.page_start
+        while page_start <= routed.page_end:
+            scanned = page_start in scan_pages
+            page_end = page_start
+            while page_end < routed.page_end and (page_end + 1 in scan_pages) == scanned:
+                page_end += 1
+            if scanned:
+                kind = "unknown"
+                state = "review_required"
+                common_only = False
+                source = "scanned_geometry_unavailable"
+            else:
+                kind = routed.kind
+                state = routed.state
+                common_only = routed.common_only
+                source = "routing"
+            routed_segments.append({
+                "segment_id": _manifest_digest({
+                    "document_hash": document_hash,
+                    "analysis_revision": revision,
+                    "kind": kind,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                    "common_only": common_only,
+                }, "seg_"),
+                "analysis_revision": revision,
+                "page_start": page_start,
+                "page_end": page_end,
+                "kind": kind,
+                "state": state,
+                "common_only": common_only,
+                "source": source,
+            })
+            page_start = page_end + 1
+    segment_for_page = {
+        page: segment for segment in routed_segments
+        for page in range(segment["page_start"], segment["page_end"] + 1)
+    }
+    segments = routed_segments
+    regions = [{
+        "region_id": region.region_id, "segment_id": segment_for_page[region.page_index]["segment_id"],
+        "analysis_revision": revision, "page": region.page_index,
+        "rects": [{"x0": rect.x0, "y0": rect.y0, "x1": rect.x1, "y1": rect.y1} for rect in region.rect_list],
+        "kind": region.kind, "state": region.state, "confirmation_source": region.confirmation_source,
+        "reason_codes": list(region.reason_codes), "source": "official_layout",
+    } for region in layout]
+    reviews = [{
+        "review_id": _manifest_digest({
+            "document_hash": document_hash,
+            "analysis_revision": revision,
+            "kind": "acknowledge",
+            "segment_id": segment["segment_id"],
+            "reason_code": "scanned_geometry_unavailable",
+        }, "review_"),
+        "analysis_revision": revision,
+        "kind": "acknowledge",
+        "target_id": segment["segment_id"],
+        "page_start": segment["page_start"],
+        "page_end": segment["page_end"],
+        "status": "pending",
+        "reason_codes": ["scanned_geometry_unavailable"],
+        "requires_acknowledgment": True,
+        "common_only": False,
+        "provenance": "extraction_evidence",
+    } for segment in segments if segment["source"] == "scanned_geometry_unavailable"]
+    for item in routing.review_items:
+        for segment in segments:
+            if segment["source"] != "routing":
+                continue
+            page_start = max(item.page_start, segment["page_start"])
+            page_end = min(item.page_end, segment["page_end"])
+            if page_start > page_end:
+                continue
+            review_id = (
+                item.review_id
+                if page_start == item.page_start and page_end == item.page_end
+                else _manifest_digest({
+                    "routing_review_id": item.review_id,
+                    "segment_id": segment["segment_id"],
+                    "page_start": page_start,
+                    "page_end": page_end,
+                }, "review_")
+            )
+            reviews.append({
+                "review_id": review_id, "analysis_revision": revision,
+                "kind": "acknowledge" if item.common_only else item.kind,
+                "target_id": segment["segment_id"],
+                "page_start": page_start, "page_end": page_end, "status": "pending",
+                "reason_codes": list(item.reason_codes),
+                "requires_acknowledgment": item.requires_acknowledgment,
+                "common_only": item.common_only, "provenance": "routing",
+            })
+    occurrences: list[dict[str, Any]] = []
+    occurrence_keys: set[tuple[int, str, tuple[tuple[float, float, float, float], ...], str]] = set()
+    public_region_data = load_region_data()
+    public_address_patterns = _national_address_patterns()
+    profile_region_kinds = {
+        "internal_review": {"approval", "header_meta", "labeled_staff"},
+        "official_dispatch": {
+            "recipient_reference", "sender_institution", "approval_staff",
+            "dispatch_metadata", "footer_contact",
+        },
+    }
+
+    def profile_fixed_category(
+        segment_kind: str,
+        candidate_kind: str,
+    ) -> tuple[str, str]:
+        category = (
+            "labeled_staff" if candidate_kind == "staff_contact" and segment_kind == "internal_review"
+            else "footer_contact" if candidate_kind == "staff_contact" and segment_kind == "official_dispatch"
+            else "header_meta" if candidate_kind == "document_header" and segment_kind == "internal_review"
+            else "dispatch_metadata" if candidate_kind == "document_header" and segment_kind == "official_dispatch"
+            else candidate_kind
+        )
+        region_kind = (
+            "approval" if category == "approval_staff" and segment_kind == "internal_review"
+            else category
+        )
+        return category, region_kind
+
+    def append_public_occurrence(
+        *,
+        page: ExtractedPage,
+        segment: dict[str, Any],
+        rects: list[dict[str, float]],
+        value_text: str,
+        tag: str,
+        category: str,
+        source: str,
+        provenance: str,
+        proposed_action: str,
+        reason_codes: tuple[str, ...] = (),
+        review_kind: str | None = None,
+        expected_text_hash: str | None = None,
+    ) -> str | None:
+        if not rects or proposed_action not in {"mask", "review", "exclude"}:
+            return None
+        if expected_text_hash is None:
+            expected_text_hash = occurrence_rect_text_hash(
+                infile,
+                page.page_index,
+                [(rect["x0"], rect["y0"], rect["x1"], rect["y1"]) for rect in rects],
+            )
+        if expected_text_hash is None:
+            raise ValueError("EXTRACTED_SOURCE_MISMATCH")
+        key = (
+            page.page_index,
+            category,
+            tuple(
+                (rect["x0"], rect["y0"], rect["x1"], rect["y1"])
+                for rect in rects
+            ),
+            expected_text_hash,
+        )
+        if key in occurrence_keys:
+            return None
+        occurrence_keys.add(key)
+        value_hash = hmac.new(
+            session_hash_key, value_text.strip().encode("utf-8"), hashlib.sha256,
+        ).hexdigest()
+        occurrence_id = _occurrence_id(
+            document_hash,
+            revision,
+            page.page_index,
+            rects,
+            tag,
+            category,
+            value_hash,
+            source,
+            "masking-policy-v1",
+            proposed_action,
+            segment_id=segment["segment_id"],
+            region_id=None,
+        )
+        occurrences.append({
+            "occurrence_id": occurrence_id,
+            "segment_id": segment["segment_id"],
+            "region_id": None,
+            "analysis_revision": revision,
+            "page": page.page_index,
+            "rects": rects,
+            "tag": tag,
+            "category": category,
+            "value_hash": value_hash,
+            "expected_text_hash": expected_text_hash,
+            "source": source,
+            "policy": "masking-policy-v1",
+            "proposed_action": proposed_action,
+            "state": "confirmed" if proposed_action == "mask" else "review_required",
+            "provenance": provenance,
+        })
+        if proposed_action == "review":
+            kind = review_kind or (
+                "institution"
+                if category in {"institution_value", "institution_address", "region_name"}
+                else "name"
+            )
+            reviews.append({
+                "review_id": _manifest_digest({
+                    "document_hash": document_hash,
+                    "analysis_revision": revision,
+                    "kind": kind,
+                    "occurrence_id": occurrence_id,
+                }, "review_"),
+                "analysis_revision": revision,
+                "kind": kind,
+                "target_id": occurrence_id,
+                "page_start": page.page_index,
+                "page_end": page.page_index,
+                "status": "pending",
+                "reason_codes": list(reason_codes or ("detector_review_required",)),
+                "requires_acknowledgment": False,
+                "common_only": False,
+                "provenance": provenance,
+            })
+        return occurrence_id
+
+    detector = build_ko_pii_detector(lambda _message: None)
+    if detector is None:
+        raise ValueError("COMMON_DETECTOR_UNAVAILABLE")
+    for page in extracted.pages:
+        words = page_words.get(page.page_index, [])
+        if not words:
+            continue
+        try:
+            detector_spans = detector.detect(page.text)
+        except Exception:
+            raise ValueError("COMMON_DETECTOR_FAILED") from None
+        blocked_spans = [
+            (span.start, span.end, str(span.label))
+            for span in detector_spans
+            if str(span.label) == "address"
+            and bool(opts.get("address", True))
+            and 0 <= span.start < span.end <= len(page.text)
+        ]
+        for span in detector_spans:
+            if span.start < 0 or span.end <= span.start or span.end > len(page.text):
+                raise ValueError("DETECTOR_SPAN_INVALID")
+            option_key = {
+                "rrn": "rrn",
+                "foreign_id": "rrn",
+                "business_number": "business_reg",
+                "phone": "phone",
+                "email": "email",
+                "address": "address",
+                "person_name": "name",
+            }.get(str(span.label))
+            if option_key is not None and not bool(opts.get(option_key, True)):
+                continue
+            selected = [(word, rect) for start, end, word, rect in words
+                        if start < span.end and end > span.start]
+            if not selected:
+                reviews.append({
+                    "review_id": _manifest_digest({"document_hash": document_hash, "analysis_revision": revision,
+                        "kind": "ocr", "page": page.page_index, "tag": tag_for_label(span.label)}, "review_"),
+                    "analysis_revision": revision, "kind": "ocr",
+                    "target_id": segment_for_page[page.page_index]["segment_id"],
+                    "page_start": page.page_index, "page_end": page.page_index, "status": "pending",
+                    "reason_codes": ["candidate_geometry_missing"], "requires_acknowledgment": True,
+                    "common_only": False, "provenance": "common_detector",
+                })
+                continue
+            rects = [rect for _, rect in selected]
+            if (
+                str(span.label) == "address"
+                and page.page_index in public_footer_band_pages
+                and isinstance(page.height, (int, float))
+                and page.height > 0
+                and all(rect["y0"] >= float(page.height) * 0.65 for rect in rects)
+            ):
+                continue
+            extracted_text_hash = _selected_word_text_hash(selected)
+            expected_text_hash = occurrence_rect_text_hash(
+                infile,
+                page.page_index,
+                [(rect["x0"], rect["y0"], rect["x1"], rect["y1"]) for rect in rects],
+            )
+            if expected_text_hash is None or extracted_text_hash != expected_text_hash:
+                raise ValueError("EXTRACTED_SOURCE_MISMATCH")
+            segment = segment_for_page[page.page_index]
+            proposed_action = span.action if span.action in {"mask", "review"} else "review"
+            tag = tag_for_label(span.label)
+            append_public_occurrence(
+                page=page,
+                segment=segment,
+                rects=rects,
+                value_text=page.text[span.start:span.end],
+                tag=tag,
+                category=str(span.label),
+                source="common_detector",
+                provenance="common_detector",
+                proposed_action=proposed_action,
+                expected_text_hash=expected_text_hash,
+            )
+        for candidate in build_public_candidates(
+            page.text,
+            words,
+            page_height=float(page.height) if isinstance(page.height, (int, float)) else 0.0,
+            region_data=public_region_data,
+            address_patterns=public_address_patterns,
+            options=opts,
+            blocked_spans=blocked_spans,
+            footer_contact_value_kind=lambda value: _footer_contact_value_kind(value) is not None,
+        ):
+            selected = [
+                (word, rect)
+                for start, end, word, rect in words
+                if start < candidate.end and end > candidate.start
+            ]
+            if not selected:
+                continue
+            selected_offsets = [
+                (start, end)
+                for start, end, word, rect in words
+                if start < candidate.end and end > candidate.start
+            ]
+            if (
+                min(start for start, _end in selected_offsets) != candidate.start
+                or max(end for _start, end in selected_offsets) != candidate.end
+            ):
+                # Public candidates are emitted only when their word boundaries
+                # prove the complete value; a partial glyph match cannot be
+                # passed to the native finalizer.
+                continue
+            rects = [rect for _, rect in selected]
+            fixed_rects = [
+                fixed_rect
+                for fixed_page, _fixed_kind, fixed_value_rects, _fixed_hash in fixed_value_candidates
+                if fixed_page == page.page_index
+                and not segment_for_page[fixed_page]["common_only"]
+                and profile_fixed_category(
+                    segment_for_page[fixed_page]["kind"], _fixed_kind,
+                )[1] in profile_region_kinds.get(segment_for_page[fixed_page]["kind"], set())
+                for fixed_rect in fixed_value_rects
+            ]
+            if any(
+                max(rect["x0"], fixed_rect["x0"]) < min(rect["x1"], fixed_rect["x1"])
+                and max(rect["y0"], fixed_rect["y0"]) < min(rect["y1"], fixed_rect["y1"])
+                for rect in rects
+                for fixed_rect in fixed_rects
+            ):
+                # Fixed profile rows already have their own category and
+                # region linkage. Do not create a second public-context
+                # occurrence for the same glyphs.
+                continue
+            extracted_text_hash = _selected_word_text_hash(selected)
+            expected_text_hash = occurrence_rect_text_hash(
+                infile,
+                page.page_index,
+                [(rect["x0"], rect["y0"], rect["x1"], rect["y1"]) for rect in rects],
+            )
+            if expected_text_hash is None or extracted_text_hash != expected_text_hash:
+                raise ValueError("EXTRACTED_SOURCE_MISMATCH")
+            append_public_occurrence(
+                page=page,
+                segment=segment_for_page[page.page_index],
+                rects=rects,
+                value_text=page.text[candidate.start:candidate.end],
+                tag=candidate.tag,
+                category=candidate.category,
+                source=candidate.source,
+                provenance=candidate.provenance,
+                proposed_action=candidate.action,
+                reason_codes=candidate.reason_codes,
+                expected_text_hash=expected_text_hash,
+            )
+    custom_keywords = _parse_custom_keywords(opts.get("custom_keywords", ""))
+    for page in extracted.pages:
+        words = page_words.get(page.page_index, [])
+        if not words:
+            continue
+        page_occupied_spans: list[tuple[int, int]] = []
+        for keyword in custom_keywords:
+            for match_start, match_end, selected in _custom_keyword_word_matches(page.text, words, keyword):
+                if any(start < match_end and end > match_start for start, end in page_occupied_spans):
+                    continue
+                if not selected:
+                    raise ValueError("EXTRACTED_SOURCE_MISMATCH")
+                rects = [rect for _, rect in selected]
+                value_text = page.text[match_start:match_end]
+                value_hash = hmac.new(
+                    session_hash_key, value_text.encode("utf-8"), hashlib.sha256,
+                ).hexdigest()
+                expected_text_hash = occurrence_rect_text_hash(
+                    infile, page.page_index,
+                    [(rect["x0"], rect["y0"], rect["x1"], rect["y1"]) for rect in rects],
+                )
+                extracted_text_hash = _selected_word_text_hash(selected)
+                if expected_text_hash is None or extracted_text_hash != expected_text_hash:
+                    raise ValueError("EXTRACTED_SOURCE_MISMATCH")
+                segment = segment_for_page[page.page_index]
+                occurrence_id = _occurrence_id(
+                    document_hash, revision, page.page_index, rects, "KEYWORD", "custom_keyword",
+                    value_hash, "custom_keyword", "masking-policy-v1", "mask",
+                    segment_id=segment["segment_id"], region_id=None,
+                )
+                occurrences.append({
+                    "occurrence_id": occurrence_id, "segment_id": segment["segment_id"], "region_id": None,
+                    "analysis_revision": revision, "page": page.page_index, "rects": rects, "tag": "KEYWORD",
+                    "category": "custom_keyword", "value_hash": value_hash, "expected_text_hash": expected_text_hash,
+                    "source": "custom_keyword", "policy": "masking-policy-v1", "proposed_action": "mask",
+                    "state": "confirmed", "provenance": "custom_keyword",
+                })
+                page_occupied_spans.append((match_start, match_end))
+    layout_regions: dict[tuple[int, str], list[Any]] = {}
+    for region in layout:
+        layout_regions.setdefault((region.page_index, region.kind), []).append(region)
+    for page, candidate_kind, rects, value_hash in fixed_value_candidates:
+        segment = segment_for_page[page]
+        if segment["common_only"]:
+            continue
+        category, region_kind = profile_fixed_category(segment["kind"], candidate_kind)
+        if region_kind not in profile_region_kinds.get(segment["kind"], set()):
+            continue
+        region = next((
+            item for item in sorted(
+                layout_regions.get((page, region_kind), ()),
+                key=lambda candidate: candidate.state != "confirmed",
+            )
+            if _rects_within_region(rects, item.rect_list)
+        ), None)
+        if region is None:
+            continue
+        expected_text_hash = occurrence_rect_text_hash(
+            infile, page, [(rect["x0"], rect["y0"], rect["x1"], rect["y1"]) for rect in rects],
+        )
+        if expected_text_hash is None:
+            reviews.append({
+                "review_id": _manifest_digest({
+                    "document_hash": document_hash, "analysis_revision": revision,
+                    "kind": "ocr", "page": page, "category": category,
+                    "value_hash": value_hash, "reason": "profile_rectangle_text_unavailable",
+                }, "review_"),
+                "analysis_revision": revision, "kind": "ocr", "target_id": segment["segment_id"],
+                "page_start": page, "page_end": page, "status": "pending",
+                "reason_codes": ["profile_rectangle_text_unavailable"],
+                "requires_acknowledgment": True, "common_only": False,
+                "provenance": "profile_layout",
+            })
+            continue
+        if region.state == "confirmed" and category == "approval_staff":
+            # A confirmed approval line has server-owned value-only geometry. Public
+            # policy omits that value without scoring it as an ungrounded body name.
+            action = "mask"
+        elif region.state == "confirmed" and category == "footer_contact":
+            action = "mask"
+        elif region.state == "confirmed" and category == "labeled_staff":
+            name_score = score_public_body_name(
+                authoritative_label=region.confirmation_source in {"automatic", "user"},
+                approval_role=False,
+                punctuation_or_label_boundary=False,
+                distance_from_label=None,
+                page_position_match=_rects_within_region(rects, region.rect_list),
+                region_state=region.state,
+                auto_mask_threshold=float(opts.get("auto_threshold", PUBLIC_NAME_TEST_AUTO_MASK_THRESHOLD)),
+                review_threshold=float(opts.get("review_threshold", PUBLIC_NAME_TEST_REVIEW_THRESHOLD)),
+            )
+            action = "mask" if name_score["action"] == "auto_mask" else "review"
+        else:
+            action = "mask" if region.state == "confirmed" else "review"
+        existing = next(
+            (
+                item for item in occurrences
+                if _profile_candidate_matches_occurrence(item, page, rects, value_hash)
+            ),
+            None,
+        )
+        if (
+            region.state == "unconfirmed"
+            and existing is not None
+            and existing["proposed_action"] == "mask"
+            and existing["state"] == "confirmed"
+        ):
+            continue
+        if existing is not None:
+            old_id = existing["occurrence_id"]
+            updated_occurrence = dict(existing)
+            if category in {"header_meta", "dispatch_metadata"}:
+                updated_occurrence["rects"] = rects
+                updated_occurrence["expected_text_hash"] = expected_text_hash
+            updated_occurrence["region_id"] = region.region_id
+            if action == "mask" and updated_occurrence["proposed_action"] == "review":
+                updated_occurrence["proposed_action"] = "mask"
+                updated_occurrence["state"] = "confirmed"
+                updated_occurrence["provenance"] = "common_detector_profile_layout"
+            updated_id = _occurrence_id(
+                document_hash, revision, page, rects, updated_occurrence["tag"], updated_occurrence["category"],
+                updated_occurrence["value_hash"], updated_occurrence["source"], updated_occurrence["policy"],
+                updated_occurrence["proposed_action"], segment_id=updated_occurrence["segment_id"],
+                region_id=updated_occurrence["region_id"],
+            )
+            updated_occurrence["occurrence_id"] = updated_id
+            if updated_occurrence["proposed_action"] == "mask":
+                updated_reviews = [item for item in reviews if item.get("target_id") != old_id]
+            else:
+                updated_reviews = [
+                    {
+                        **item,
+                        "target_id": updated_id,
+                        "review_id": _manifest_digest({
+                            "document_hash": document_hash,
+                            "analysis_revision": revision,
+                            "kind": item["kind"],
+                            "occurrence_id": updated_id,
+                        }, "review_"),
+                    }
+                    if item.get("target_id") == old_id else item
+                    for item in reviews
+                ]
+            existing.clear()
+            existing.update(updated_occurrence)
+            reviews = updated_reviews
+            continue
+        occurrence_id = _occurrence_id(
+            document_hash, revision, page, rects, "profile_value", category, value_hash,
+            "profile_layout", "masking-policy-v1", action,
+            segment_id=segment["segment_id"], region_id=region.region_id,
+        )
+        occurrences.append({
+            "occurrence_id": occurrence_id, "segment_id": segment["segment_id"], "region_id": region.region_id,
+            "analysis_revision": revision, "page": page, "rects": rects, "tag": "profile_value",
+            "category": category, "value_hash": value_hash, "expected_text_hash": expected_text_hash,
+            "source": "profile_layout", "policy": "masking-policy-v1", "proposed_action": action,
+            "state": "confirmed" if action == "mask" else "review_required", "provenance": "profile_layout",
+        })
+        if action == "review":
+            review_kind = "institution" if category in {"recipient_reference", "sender_institution"} else "name"
+            reviews.append({
+                "review_id": _manifest_digest({
+                    "document_hash": document_hash, "analysis_revision": revision,
+                    "kind": review_kind, "occurrence_id": occurrence_id,
+                }, "review_"),
+                "analysis_revision": revision, "kind": review_kind, "target_id": occurrence_id,
+                "page_start": page, "page_end": page, "status": "pending",
+                "reason_codes": [
+                    "unconfirmed_region_candidate"
+                    if region.state == "unconfirmed"
+                    else "profile_region_review_required"
+                ], "requires_acknowledgment": False,
+                "common_only": False, "provenance": "profile_layout",
+            })
+    threshold_artifact = _threshold_artifact(
+        thresholds["auto_mask_threshold"],
+        thresholds["review_threshold"],
+    )
+    required_coverage = (
+        INTERNAL_REQUIRED_KINDS if profile == "internal_review"
+        else DISPATCH_REQUIRED_KINDS if profile == "official_dispatch"
+        else (*INTERNAL_REQUIRED_KINDS, *DISPATCH_REQUIRED_KINDS)
+    )
+    for region in regions:
+        if region["state"] == "confirmed":
+            continue
+        linked_occurrences = [
+            occurrence for occurrence in occurrences
+            if occurrence.get("region_id") == region["region_id"]
+        ]
+        automatically_confirmed = not linked_occurrences or all(
+            occurrence.get("proposed_action") == "mask"
+            and occurrence.get("state") in {"confirmed", "user_confirmed"}
+            for occurrence in linked_occurrences
+        )
+        if automatically_confirmed:
+            region["state"] = "confirmed"
+            region["confirmation_source"] = "automatic"
+            layout_coverage_by_page[region["page"]][region["kind"]] = "present"
+            continue
+        reviews.append({
+            "review_id": _manifest_digest({"document_hash": document_hash, "analysis_revision": revision,
+                "kind": "region_geometry", "region_id": region["region_id"], "reason_codes": region["reason_codes"]}, "review_"),
+            "analysis_revision": revision, "kind": "region_geometry", "target_id": region["region_id"],
+            "page_start": region["page"], "page_end": region["page"], "status": "pending",
+            "reason_codes": list(region["reason_codes"]), "requires_acknowledgment": True,
+            "common_only": False, "provenance": "official_layout",
+        })
+    layout_coverage = {
+        kind: (
+            "present" if any(page.get(kind) == "present" for page in layout_coverage_by_page.values())
+            else "indeterminate" if any(
+                page.get(kind) == "indeterminate" for page in layout_coverage_by_page.values()
+            )
+            else "absent"
+        )
+        for kind in required_coverage
+    }
+    canonical_reviews: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for review in reviews:
+        if review.get("common_only") is True:
+            review = {**review, "kind": "acknowledge"}
+        key = (
+            review.get("kind"), review.get("target_id"), review.get("page_start"),
+            review.get("page_end"), review.get("common_only"),
+        )
+        existing_review = canonical_reviews.get(key)
+        if existing_review is None:
+            canonical_reviews[key] = review
+        else:
+            existing_review["reason_codes"] = list(dict.fromkeys([
+                *existing_review.get("reason_codes", ()),
+                *review.get("reason_codes", ()),
+            ]))
+    reviews = list(canonical_reviews.values())
+    approval_occurrences = [
+        occurrence for occurrence in occurrences
+        if occurrence.get("category") in {"approval", "approval_staff"}
+        and occurrence.get("proposed_action") == "mask"
+    ]
+    approval_kind = "approval" if profile == "internal_review" else "approval_staff"
+    approval_state = (
+        "present" if approval_occurrences
+        else "indeterminate" if layout_coverage.get(approval_kind) == "indeterminate"
+        else "absent"
+    )
+    approval_coverage = {
+        "schema_version": 1,
+        "state": approval_state,
+        "signer_count": len(approval_occurrences),
+        "protected_neighbor_count": sum(
+            len(occurrence.get("protected_neighbor_refs", ()))
+            for occurrence in approval_occurrences
+        ),
+    }
+    required_region_coverage = {
+        "schema_version": 1,
+        "profile": profile,
+        "kinds": [
+            {"kind": kind, "state": layout_coverage[kind]}
+            for kind in required_coverage
+        ],
+        "blocking": "indeterminate" in layout_coverage.values(),
+    }
+    return {
+        "schema_version": 1, "original_document_hash": document_hash, "analysis_revision": revision,
+        "profile": profile, "coordinate_space": "pdf_points_top_left", "policy_version": "masking-policy-v1",
+        "options_version": "options-v2", "options_hash": _canonical_json_hash(_effective_policy_material(opts)),
+        "threshold_version": threshold_artifact["version"],
+        "threshold_hash": threshold_artifact["content_hash"],
+        "threshold_artifact": threshold_artifact,
+        "segments": segments, "regions": regions, "occurrences": occurrences, "review_items": reviews,
+        "approval_coverage": approval_coverage,
+        "required_region_coverage": required_region_coverage,
+        "manual_actions": [],
+    }
+
+
+def _trusted_finalize_cleanup(staging_output: str) -> bool:
+    """Remove all finalization artifacts without exposing path details."""
+    cleaned = True
+    for output in (f"{staging_output}.manual.pdf", f"{staging_output}.render.pdf", staging_output):
+        try:
+            Path(output).unlink(missing_ok=True)
+        except OSError:
+            cleaned = False
+    return cleaned
+
+
+def _trusted_manifest_covers_pdf(
+    manifest: dict[str, Any],
+    original_bytes: bytes,
+    revision: int,
+) -> bool:
+    try:
+        import fitz  # type: ignore
+
+        with fitz.open(stream=original_bytes, filetype="pdf") as document:
+            page_count = document.page_count
+    except Exception:
+        return False
+    segments = manifest.get("segments")
+    if page_count < 1 or not isinstance(segments, list) or not segments:
+        return False
+    covered_pages: list[int] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            return False
+        page_start = segment.get("pageStart")
+        page_end = segment.get("pageEnd")
+        if (
+            type(segment.get("analysisRevision")) is not int
+            or segment.get("analysisRevision") != revision
+            or type(page_start) is not int
+            or type(page_end) is not int
+            or page_start < 0
+            or page_end < page_start
+            or page_end >= page_count
+        ):
+            return False
+        covered_pages.extend(range(page_start, page_end + 1))
+    return covered_pages == list(range(page_count))
+def _trusted_occurrence_validation_error(item: object, revision: int) -> str | None:
+    if not isinstance(item, dict):
+        return "TRUSTED_FINALIZE_INVALID"
+    occurrence_id = item.get("occurrenceId")
+    expected_text_hash = item.get("expectedTextHash")
+    if (
+        not isinstance(occurrence_id, str)
+        or _OCCURRENCE_ID_PATTERN.fullmatch(occurrence_id) is None
+        or item.get("analysisRevision") != revision
+        or not isinstance(expected_text_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_text_hash.lower()) is None
+    ):
+        return "STALE_ANALYSIS"
+    page = item.get("page")
+    rects = item.get("rects")
+    if (
+        type(page) is not int
+        or page < 0
+        or item.get("proposedAction") not in {"mask", "exclude", "review"}
+        or not isinstance(item.get("provenance"), str)
+        or re.fullmatch(r"[a-z][a-z0-9_:-]{0,95}", item["provenance"]) is None
+        or not isinstance(rects, list)
+        or not rects
+    ):
+        return "TRUSTED_FINALIZE_OCCURRENCE_INVALID"
+    for rect in rects:
+        if not isinstance(rect, dict) or set(rect) != {"x0", "y0", "x1", "y1"}:
+            return "TRUSTED_FINALIZE_OCCURRENCE_INVALID"
+        try:
+            x0, y0, x1, y1 = (float(rect[key]) for key in ("x0", "y0", "x1", "y1"))
+        except (TypeError, ValueError):
+            return "TRUSTED_FINALIZE_OCCURRENCE_INVALID"
+        if not all(math.isfinite(value) for value in (x0, y0, x1, y1)) or x1 <= x0 or y1 <= y0:
+            return "TRUSTED_FINALIZE_OCCURRENCE_INVALID"
+    return None
+
+
+def _manual_excluded_occurrence_ids(manifest: dict[str, Any]) -> set[str]:
+    linked_ids = {
+        action["linkedOccurrenceId"]
+        for action in manifest["manualActions"]
+        if isinstance(action.get("linkedOccurrenceId"), str) and action["linkedOccurrenceId"]
+    }
+    protected_ids = {
+        occurrence["occurrenceId"]
+        for occurrence in manifest["occurrences"]
+        for action in manifest["manualActions"]
+        if occurrence["page"] == action["page"]
+        and occurrence["rects"] == action["protectedNeighborRefs"]
+    }
+    return linked_ids | protected_ids
+
+
+_TRUSTED_REVIEW_KINDS = {"name", "institution", "acknowledge", "boundary", "ocr", "region_geometry"}
+_TRUSTED_SAFE_CODE = re.compile(r"[a-z][a-z0-9_:-]{0,95}\Z")
+
+
+class TrustedFinalizeOccurrenceIntrinsicError(ValueError):
+    def __init__(self, diagnostics: list[dict[str, Any]]) -> None:
+        super().__init__("TRUSTED_FINALIZE_OCCURRENCE_INTRINSIC_FAILED")
+        self.diagnostics = diagnostics
+
+
+class TrustedFinalizeManualResultError(ValueError):
+    def __init__(self, diagnostics: list[dict[str, Any]]) -> None:
+        super().__init__("TRUSTED_FINALIZE_MANUAL_RESULT_FAILED")
+        self.diagnostics = diagnostics
+
+
+def _trusted_occurrence_intrinsic_diagnostics(result: dict[str, Any]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    contextual: list[dict[str, Any]] = []
+    review_items = result.get("review_items")
+    if isinstance(review_items, list):
+        for item in review_items:
+            if not isinstance(item, dict):
+                continue
+            reason_code = item.get("reason_code")
+            if (
+                item.get("status") != "review_required"
+                or reason_code == "review_action_unresolved"
+                or not isinstance(reason_code, str)
+                or _TRUSTED_SAFE_CODE.fullmatch(reason_code) is None
+            ):
+                continue
+            count = item.get("count")
+            increment = count if type(count) is int and 0 < count <= 10_000 else 1
+            category = item.get("category")
+            if (
+                isinstance(category, str)
+                and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", category) is not None
+            ):
+                diagnostic: dict[str, Any] = {
+                    "kind": "occurrence_failure",
+                    "reason_code": reason_code,
+                    "count": increment,
+                    "category": category,
+                }
+                occurrence_id = item.get("occurrence_id")
+                if (
+                    isinstance(occurrence_id, str)
+                    and _OCCURRENCE_ID_PATTERN.fullmatch(occurrence_id) is not None
+                ):
+                    diagnostic["occurrence_id"] = occurrence_id
+                page = item.get("page")
+                if type(page) is int and 0 <= page <= 2_000:
+                    diagnostic["page"] = page
+                for field in ("rect_fingerprint", "expected_text_hash", "observed_text_hash"):
+                    value = item.get(field)
+                    if (
+                        isinstance(value, str)
+                        and re.fullmatch(r"[0-9a-fA-F]{64}", value) is not None
+                    ):
+                        diagnostic[field] = value.lower()
+                contextual.append(diagnostic)
+            else:
+                counts[reason_code] = counts.get(reason_code, 0) + increment
+    diagnostics = [
+        {
+            "kind": "occurrence_failure",
+            "reason_code": reason_code,
+            "count": count,
+        }
+        for reason_code, count in sorted(counts.items())
+    ]
+    diagnostics.extend(sorted(
+        contextual,
+        key=lambda item: (
+            str(item.get("reason_code")),
+            str(item.get("occurrence_id", "")),
+            int(item.get("page", -1)),
+            str(item.get("category")),
+        ),
+    ))
+    diagnostics = diagnostics[:15]
+    if not diagnostics:
+        diagnostics.append({
+            "kind": "occurrence_failure",
+            "reason_code": "occurrence_intrinsic_verification_failed",
+            "count": 1,
+        })
+    diagnostics.append({
+        "kind": "pii_non_exposure",
+        "reason_code": "final_output_not_published",
+        "count": 1,
+    })
+    return diagnostics
+
+
+def _trusted_manual_result_diagnostics(result: object) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    review_items = result.get("review_items") if isinstance(result, dict) else None
+    if isinstance(review_items, list):
+        for item in review_items:
+            if not isinstance(item, dict):
+                continue
+            reason_code = item.get("reason_code")
+            if (
+                item.get("status") != "review_required"
+                or not isinstance(reason_code, str)
+                or _TRUSTED_SAFE_CODE.fullmatch(reason_code) is None
+            ):
+                continue
+            count = item.get("count")
+            increment = count if type(count) is int and 0 < count <= 10_000 else 1
+            counts[reason_code] = counts.get(reason_code, 0) + increment
+    diagnostics = [
+        {
+            "kind": "manual_failure",
+            "reason_code": reason_code,
+            "count": count,
+        }
+        for reason_code, count in sorted(counts.items())
+    ]
+    if not diagnostics:
+        diagnostics.append({
+            "kind": "manual_failure",
+            "reason_code": "manual_intrinsic_verification_failed",
+            "count": 1,
+        })
+    diagnostics.append({
+        "kind": "pii_non_exposure",
+        "reason_code": "final_output_not_published",
+        "count": 1,
+    })
+    return diagnostics
+
+
+def _trusted_review_validation_error(
+    item: object,
+    manifest: dict[str, Any],
+    revision: int,
+) -> str | None:
+    if not isinstance(item, dict):
+        return "TRUSTED_FINALIZE_INVALID"
+    if item.get("analysisRevision") != revision:
+        return "STALE_ANALYSIS"
+    kind = item.get("kind")
+    target_id = item.get("targetId")
+    page_start = item.get("pageStart")
+    page_end = item.get("pageEnd")
+    if (
+        not isinstance(kind, str)
+        or kind not in _TRUSTED_REVIEW_KINDS
+        or not isinstance(target_id, str)
+        or not target_id
+        or type(page_start) is not int
+        or page_start < 0
+        or type(page_end) is not int
+        or page_end < page_start
+        or item.get("status") not in {"pending", "resolved"}
+        or not isinstance(item.get("reasonCodes"), list)
+        or not all(isinstance(code, str) and _TRUSTED_SAFE_CODE.fullmatch(code) for code in item["reasonCodes"])
+        or type(item.get("requiresAcknowledgment")) is not bool
+        or type(item.get("commonOnly")) is not bool
+        or not isinstance(item.get("provenance"), str)
+        or _TRUSTED_SAFE_CODE.fullmatch(item["provenance"]) is None
+    ):
+        return "TRUSTED_FINALIZE_INVALID"
+    if kind in {"name", "institution"}:
+        target = next(
+            (occurrence for occurrence in manifest.get("occurrences", [])
+             if isinstance(occurrence, dict) and occurrence.get("occurrenceId") == target_id),
+            None,
+        )
+        target_start = target_end = target.get("page") if isinstance(target, dict) else None
+    elif kind == "region_geometry":
+        target = next(
+            (region for region in manifest.get("regions", [])
+             if isinstance(region, dict) and region.get("regionId") == target_id),
+            None,
+        )
+        target_start = target_end = target.get("page") if isinstance(target, dict) else None
+    else:
+        target = next(
+            (segment for segment in manifest.get("segments", [])
+             if isinstance(segment, dict) and segment.get("segmentId") == target_id),
+            None,
+        )
+        target_start = target.get("pageStart") if isinstance(target, dict) else None
+        target_end = target.get("pageEnd") if isinstance(target, dict) else None
+    if (
+        not isinstance(target_start, int)
+        or not isinstance(target_end, int)
+        or page_start < target_start
+        or page_end > target_end
+    ):
+        return "TRUSTED_FINALIZE_INVALID"
+    return None
+
+
+def _trusted_review_category(manifest: dict[str, Any], review: dict[str, Any]) -> str:
+    kind = review.get("kind")
+    target_id = review.get("targetId")
+    if kind in {"name", "institution"}:
+        for occurrence in manifest.get("occurrences", []):
+            if isinstance(occurrence, dict) and occurrence.get("occurrenceId") == target_id:
+                category = occurrence.get("category")
+                if isinstance(category, str) and _TRUSTED_SAFE_CODE.fullmatch(category):
+                    return category
+    if kind == "region_geometry":
+        for region in manifest.get("regions", []):
+            if isinstance(region, dict) and region.get("regionId") == target_id:
+                region_kind = region.get("kind")
+                if isinstance(region_kind, str) and _TRUSTED_SAFE_CODE.fullmatch(region_kind):
+                    return region_kind
+    return str(kind)
+
+
+def _trusted_coverage_page_range(manifest: dict[str, Any], kind: str) -> tuple[int, int]:
+    pages = [
+        region.get("page")
+        for region in manifest.get("regions", [])
+        if isinstance(region, dict) and region.get("kind") == kind and type(region.get("page")) is int
+    ]
+    if pages:
+        return min(pages), max(pages)
+    segment_pages = [
+        page
+        for segment in manifest.get("segments", [])
+        if isinstance(segment, dict)
+        for page in (segment.get("pageStart"), segment.get("pageEnd"))
+        if type(page) is int
+    ]
+    return (min(segment_pages), max(segment_pages)) if segment_pages else (0, 0)
+
+
+def _trusted_save_confirmation_reviews(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    pending_region_kinds = {
+        region.get("kind")
+        for review in manifest.get("reviewItems", [])
+        if isinstance(review, dict)
+        and review.get("status") != "resolved"
+        and review.get("kind") == "region_geometry"
+        for region in manifest.get("regions", [])
+        if isinstance(region, dict)
+        and isinstance(region.get("kind"), str)
+        and region.get("regionId") == review.get("targetId")
+    }
+    unresolved_reviews = [
+        {
+            "kind": review["kind"],
+            "target_id": review["targetId"],
+            "category": _trusted_review_category(manifest, review),
+            "page_start": review["pageStart"],
+            "page_end": review["pageEnd"],
+            "reason_codes": list(review["reasonCodes"]) or ["unresolved_review"],
+        }
+        for review in manifest.get("reviewItems", [])
+        if isinstance(review, dict) and review.get("status") != "resolved"
+    ]
+    approval_coverage = manifest.get("approvalCoverage")
+    if (
+        isinstance(approval_coverage, dict)
+        and approval_coverage.get("state") == "indeterminate"
+        and "approval" not in pending_region_kinds
+    ):
+        page_start, page_end = _trusted_coverage_page_range(manifest, "approval")
+        unresolved_reviews.append({
+            "kind": "coverage",
+            "target_id": "approval",
+            "category": "approval",
+            "page_start": page_start,
+            "page_end": page_end,
+            "reason_codes": ["indeterminate_coverage"],
+        })
+    required_coverage = manifest.get("requiredRegionCoverage")
+    if isinstance(required_coverage, dict):
+        coverage_kinds = required_coverage.get("kinds")
+        if isinstance(coverage_kinds, list):
+            for item in coverage_kinds:
+                if (
+                    not isinstance(item, dict)
+                    or item.get("state") != "indeterminate"
+                    or (
+                        isinstance(item.get("kind"), str)
+                        and item.get("kind") in pending_region_kinds
+                    )
+                    or (
+                        item.get("kind") == "approval"
+                        and isinstance(approval_coverage, dict)
+                        and approval_coverage.get("state") == "indeterminate"
+                    )
+                ):
+                    continue
+                kind = item.get("kind")
+                if not isinstance(kind, str) or _TRUSTED_SAFE_CODE.fullmatch(kind) is None:
+                    continue
+                page_start, page_end = _trusted_coverage_page_range(manifest, kind)
+                unresolved_reviews.append({
+                    "kind": "coverage",
+                    "target_id": kind,
+                    "category": kind,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                    "reason_codes": ["indeterminate_coverage"],
+                })
+    return unresolved_reviews
+
+
+
+def _validate_trusted_finalize_manifest(manifest: Any, original: str, opts: dict[str, Any]) -> tuple[int, bytes]:
+    """Validate immutable, Rust-owned finalization inputs before rendering."""
+    if not isinstance(manifest, dict):
+        raise ValueError("TRUSTED_FINALIZE_INVALID")
+    try:
+        original_bytes = Path(original).read_bytes()
+    except OSError:
+        raise ValueError("TRUSTED_FINALIZE_ORIGINAL_UNAVAILABLE") from None
+
+    expected_hash = manifest.get("originalDocumentHash")
+    if (
+        not isinstance(expected_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_hash.lower())
+        or hashlib.sha256(original_bytes).hexdigest() != expected_hash.lower()
+    ):
+        raise ValueError("ORIGINAL_CHANGED")
+
+    revision = manifest.get("analysisRevision")
+    run_id = manifest.get("runId")
+    expected_run_id = opts.get("run_id", opts.get("runId"))
+    expected_analysis_revision = opts.get("analysis_revision")
+    expected_profile = opts.get("profile")
+    expected_options_hash = opts.get("options_hash", opts.get("optionsHash"))
+    expected_threshold_hash = opts.get("threshold_hash", opts.get("thresholdHash"))
+    expected_threshold_version = opts.get("threshold_version", opts.get("thresholdVersion"))
+    expected_threshold_artifact = opts.get("threshold_artifact")
+    warnings_confirmed = opts.get("warnings_confirmed")
+    if (
+        not isinstance(expected_run_id, str)
+        or not expected_run_id
+        or type(expected_analysis_revision) is not int
+        or expected_analysis_revision < 1
+        or expected_profile not in {"internal_review", "official_dispatch", "mixed"}
+        or not isinstance(expected_options_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_options_hash) is None
+        or not isinstance(expected_threshold_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_threshold_hash) is None
+        or not isinstance(expected_threshold_version, str)
+        or not expected_threshold_version
+        or not isinstance(expected_threshold_artifact, dict)
+        or set(expected_threshold_artifact) != {
+            "version", "content_hash", "auto_mask_threshold", "review_threshold",
+        }
+        or type(warnings_confirmed) is not bool
+    ):
+        raise ValueError("TRUSTED_FINALIZE_AUTHORITY_MISSING")
+    try:
+        canonical_expected_threshold = _threshold_artifact(
+            opts.get("auto_mask_threshold"),
+            opts.get("review_threshold"),
+        )
+    except ValueError:
+        raise ValueError("TRUSTED_FINALIZE_AUTHORITY_MISSING") from None
+    if (
+        expected_threshold_version != canonical_expected_threshold["version"]
+        or expected_threshold_hash != canonical_expected_threshold["content_hash"]
+    ):
+        raise ValueError("STALE_ANALYSIS")
+    if expected_threshold_artifact != canonical_expected_threshold:
+        raise ValueError("TRUSTED_FINALIZE_AUTHORITY_MISSING")
+
+    manifest_threshold = manifest.get("thresholdArtifact")
+    if not isinstance(manifest_threshold, dict) or set(manifest_threshold) != {
+        "version", "contentHash", "autoMaskThreshold", "reviewThreshold",
+    }:
+        raise ValueError("STALE_ANALYSIS")
+    normalized_manifest_threshold = {
+        "version": manifest_threshold.get("version"),
+        "content_hash": manifest_threshold.get("contentHash"),
+        "auto_mask_threshold": manifest_threshold.get("autoMaskThreshold"),
+        "review_threshold": manifest_threshold.get("reviewThreshold"),
+    }
+    if (
+        type(revision) is not int
+        or revision < 1
+        or revision != expected_analysis_revision
+        or not isinstance(run_id, str)
+        or run_id != expected_run_id
+        or manifest.get("profile") != expected_profile
+        or manifest.get("policyVersion") != "masking-policy-v1"
+        or manifest.get("optionsHash") != expected_options_hash
+        or manifest.get("thresholdVersion") != expected_threshold_version
+        or manifest.get("thresholdHash") != expected_threshold_hash
+        or normalized_manifest_threshold != canonical_expected_threshold
+        or manifest.get("coordinateSpace") != "pdf_points_top_left"
+    ):
+        raise ValueError("STALE_ANALYSIS")
+    occurrences = manifest.get("occurrences")
+    if not isinstance(occurrences, list):
+        raise ValueError("TRUSTED_FINALIZE_INVALID")
+    occurrence_ids: set[str] = set()
+    for occurrence in occurrences:
+        occurrence_error = _trusted_occurrence_validation_error(occurrence, revision)
+        if occurrence_error is not None:
+            raise ValueError(occurrence_error)
+        occurrence_id = occurrence["occurrenceId"]
+        if occurrence_id in occurrence_ids:
+            raise ValueError("TRUSTED_FINALIZE_INVALID")
+        occurrence_ids.add(occurrence_id)
+    manual_actions = manifest.get("manualActions")
+    if not isinstance(manual_actions, list):
+        raise ValueError("TRUSTED_FINALIZE_INVALID")
+    for action in manual_actions:
+        scan_manual = isinstance(action, dict) and action.get("sourceKind") == "scan"
+        if (
+            not isinstance(action, dict)
+            or type(action.get("analysisRevision")) is not int
+            or action.get("analysisRevision") != revision
+            or not isinstance(action.get("protectedNeighborRefs"), list)
+            or (
+                action.get("mode") == "restore"
+                and (
+                    action.get("sourceKind") != "text_pdf"
+                    or not isinstance(action.get("linkedOccurrenceId"), str)
+                    or not isinstance(action.get("expectedTextHash"), str)
+                    or not isinstance(action.get("restoreAuthorizationHash"), str)
+                    or re.fullmatch(r"[0-9a-fA-F]{64}", action["restoreAuthorizationHash"]) is None
+                    or action["protectedNeighborRefs"]
+                )
+            )
+            or (
+                action.get("mode") == "mask"
+                and action.get("restoreAuthorizationHash") is not None
+            )
+            or (scan_manual and (
+                action.get("linkedOccurrenceId") is not None
+                or action.get("expectedTextHash") is not None
+                or action["protectedNeighborRefs"]
+            ))
+            or (
+                not scan_manual
+                and action.get("mode") != "restore"
+                and not action["protectedNeighborRefs"]
+            )
+            or any(
+                not isinstance(rect, dict)
+                or set(rect) != {"x0", "y0", "x1", "y1"}
+                or not all(isinstance(rect[key], (int, float)) and math.isfinite(float(rect[key]))
+                           for key in ("x0", "y0", "x1", "y1"))
+                or float(rect["x1"]) <= float(rect["x0"]) or float(rect["y1"]) <= float(rect["y0"])
+                for rect in action["protectedNeighborRefs"]
+            )
+        ):
+            raise ValueError("STALE_ANALYSIS")
+        if action.get("mode") == "restore":
+            linked = next(
+                (
+                    occurrence
+                    for occurrence in occurrences
+                    if occurrence.get("occurrenceId") == action.get("linkedOccurrenceId")
+                ),
+                None,
+            )
+            if (
+                linked is None
+                or linked.get("page") != action.get("page")
+                or linked.get("proposedAction") != "mask"
+                or linked.get("state") not in {"confirmed", "user_confirmed"}
+                or linked.get("expectedTextHash") != action.get("expectedTextHash")
+                or linked.get("rects") != action.get("rects")
+            ):
+                raise ValueError("STALE_ANALYSIS")
+    # A later manual edit may add protected label/role/date/status neighbors.
+    # Automatic masks are monotonic only when none of their geometry expands
+    # into those protected rectangles.
+    manual_excluded_occurrence_ids = _manual_excluded_occurrence_ids(manifest)
+    for occurrence in occurrences:
+        if (
+            occurrence.get("proposedAction") != "mask"
+            or occurrence["occurrenceId"] in manual_excluded_occurrence_ids
+        ):
+            continue
+        for action in manual_actions:
+            if action.get("page") != occurrence.get("page"):
+                continue
+            mask_rects = [
+                tuple(float(rect[key]) for key in ("x0", "y0", "x1", "y1"))
+                for rect in occurrence["rects"]
+            ]
+            protected_rects = [
+                tuple(float(rect[key]) for key in ("x0", "y0", "x1", "y1"))
+                for rect in action["protectedNeighborRefs"]
+            ]
+            if not automatic_masks_preserve_manual_neighbors(mask_rects, protected_rects):
+                raise ValueError("AUTOMATIC_MASK_PROTECTED_NEIGHBOR_OVERLAP")
+    reviews = manifest.get("reviewItems")
+    if not isinstance(reviews, list):
+        raise ValueError("TRUSTED_FINALIZE_INVALID")
+    for review in reviews:
+        review_error = _trusted_review_validation_error(review, manifest, revision)
+        if review_error is not None:
+            raise ValueError(review_error)
+    if any(review.get("status") != "resolved" for review in reviews) and not warnings_confirmed:
+        raise ValueError("UNRESOLVED_REVIEW")
+    if not _trusted_manifest_covers_pdf(manifest, original_bytes, revision):
+        raise ValueError("TRUSTED_FINALIZE_INVALID")
+    covered_pages = {
+        page
+        for segment in manifest["segments"]
+        for page in range(segment["pageStart"], segment["pageEnd"] + 1)
+    }
+    if any(occurrence["page"] not in covered_pages for occurrence in occurrences):
+        raise ValueError("TRUSTED_FINALIZE_OCCURRENCE_OUTSIDE_SEGMENT")
+    return revision, original_bytes
+
+
+def trusted_finalize_manifest(
+    original: str, manifest: dict[str, Any], opts: dict[str, Any], staging_output: str,
+) -> dict[str, Any]:
+    """Geometry-only finalizer for the immutable Rust-owned manifest."""
+    snapshot_path: str | None = None
+    staging_path = Path(staging_output)
+    reserved_staging = (
+        staging_path.exists()
+        and not staging_path.is_symlink()
+        and staging_path.is_file()
+        and staging_path.stat().st_size == 0
+    )
+    render_output = f"{staging_output}.render.pdf" if reserved_staging else staging_output
+    try:
+        if Path(original).resolve() == Path(staging_output).resolve():
+            raise ValueError("TRUSTED_FINALIZE_ALIAS_BLOCKED")
+    except OSError:
+        raise ValueError("TRUSTED_FINALIZE_INVALID") from None
+    try:
+        revision, original_bytes = _validate_trusted_finalize_manifest(manifest, original, opts)
+        descriptor, snapshot_path = tempfile.mkstemp(prefix="trusted_finalize_", suffix=Path(original).suffix)
+        os.close(descriptor)
+        Path(snapshot_path).write_bytes(original_bytes)
+        manual_excluded_occurrence_ids = _manual_excluded_occurrence_ids(manifest)
+        occurrence_inputs = tuple(
+            OccurrenceRedactionInput(
+                occurrence_id=item["occurrenceId"], run_id=manifest["runId"],
+                document_sha256=manifest["originalDocumentHash"], analysis_revision=item["analysisRevision"],
+                page_index=item["page"], rect_list=tuple(
+                    (float(rect["x0"]), float(rect["y0"]), float(rect["x1"]), float(rect["y1"]))
+                    for rect in item["rects"]),
+                action="exclude" if item["occurrenceId"] in manual_excluded_occurrence_ids else item["proposedAction"],
+                provenance=item["provenance"],
+                expected_text_hash=item["expectedTextHash"],
+                category=item.get("category"),
+            ) for item in manifest["occurrences"]
+        )
+        manual_actions = tuple(
+            ManualActionV1(
+                manual_action_id=item["actionId"], run_id=manifest["runId"],
+                document_sha256=manifest["originalDocumentHash"],
+                analysis_revision=item["analysisRevision"], page_index=item["page"],
+                rect_list=tuple((float(rect["x0"]), float(rect["y0"]), float(rect["x1"]), float(rect["y1"]))
+                               for rect in item["rects"]),
+                mode=item["mode"], source_kind=item["sourceKind"],
+                linked_occurrence_id=item.get("linkedOccurrenceId"),
+                expected_text_hash=item.get("expectedTextHash"),
+                protected_neighbor_refs=tuple(
+                    (float(rect["x0"]), float(rect["y0"]), float(rect["x1"]), float(rect["y1"]))
+                    for rect in item["protectedNeighborRefs"]
+                ),
+                restore_authorization_hash=item.get("restoreAuthorizationHash"),
+            ) for item in manifest["manualActions"]
+        )
+        if hashlib.sha256(Path(snapshot_path).read_bytes()).hexdigest() != manifest["originalDocumentHash"].lower():
+            raise ValueError("ORIGINAL_CHANGED")
+        if occurrence_inputs:
+            try:
+                result = redact_pdf_native(
+                    snapshot_path,
+                    render_output,
+                    (),
+                    display_mode=str(opts.get("display_mode", "black")),
+                    occurrence_inputs=occurrence_inputs,
+                    expected_run_id=manifest["runId"],
+                    expected_document_sha256=manifest["originalDocumentHash"].lower(),
+                    expected_analysis_revision=revision,
+                    profile=manifest["profile"],
+                )
+            except Exception:
+                raise ValueError("TRUSTED_FINALIZE_REDACTION_EXECUTION_FAILED") from None
+        else:
+            shutil.copyfile(snapshot_path, staging_output)
+            if Path(staging_output).read_bytes() != original_bytes:
+                raise ValueError("TRUSTED_FINALIZE_CLEAN_COPY_MISMATCH")
+            render_output = staging_output
+            result = {
+                "status": "applied",
+                "output_file": staging_output,
+                "verification": {"verified": True, "reason_code": "clean_document"},
+            }
+        if not isinstance(result, dict):
+            raise ValueError("TRUSTED_FINALIZE_REDACTION_RESULT_FAILED")
+        verification = result.get("verification")
+        reason_code = verification.get("reason_code") if isinstance(verification, dict) else None
+        if reason_code == "occurrence_intrinsic_verification_failed":
+            raise TrustedFinalizeOccurrenceIntrinsicError(
+                _trusted_occurrence_intrinsic_diagnostics(result)
+            )
+        if (
+            result.get("status") != "applied"
+            or not isinstance(verification, dict)
+            or verification.get("verified") is not True
+        ):
+            raise ValueError("TRUSTED_FINALIZE_REDACTION_RESULT_FAILED")
+        occurrence_masks_applied = result.get("occurrences_applied", 0)
+        if (
+            type(occurrence_masks_applied) is not int
+            or occurrence_masks_applied < 0
+        ):
+            raise ValueError("TRUSTED_FINALIZE_REDACTION_RESULT_FAILED")
+
+        manual_masks_applied = 0
+        manual_restores_applied = 0
+        scan_manual_verification: dict[str, bool] | None = None
+        if manual_actions:
+            try:
+                manual_source_hash = hashlib.sha256(Path(render_output).read_bytes()).hexdigest()
+            except OSError:
+                raise ValueError("TRUSTED_FINALIZE_STAGING_READ_FAILED") from None
+            manual_render_actions = tuple(
+                replace(action, document_sha256=manual_source_hash)
+                for action in manual_actions
+            )
+            manual_output = f"{staging_output}.manual.pdf"
+            scan_verifier = (
+                ScanManualRasterVerifier({
+                    page: tuple(
+                        rect
+                        for action in manual_render_actions
+                        if action.source_kind == "scan" and action.page_index == page
+                        for rect in action.rect_list
+                    )
+                    for page in {action.page_index for action in manual_render_actions if action.source_kind == "scan"}
+                })
+                if any(action.source_kind == "scan" for action in manual_render_actions)
+                else None
+            )
+            try:
+                manual_result = apply_manual_actions_v1(
+                    render_output,
+                    manual_output,
+                    manual_render_actions,
+                    expected_run_id=manifest["runId"],
+                    expected_document_sha256=manual_source_hash,
+                    expected_analysis_revision=revision,
+                    display_mode=str(opts.get("display_mode", "black")),
+                    raster_adapter=scan_verifier,
+                    ocr_adapter=scan_verifier,
+                    restore_source_pdf_path=snapshot_path,
+                )
+            except Exception:
+                raise ValueError("TRUSTED_FINALIZE_MANUAL_EXECUTION_FAILED") from None
+            if (
+                not isinstance(manual_result, dict)
+                or manual_result.get("status") != "applied"
+                or not isinstance(manual_result.get("verification"), dict)
+                or manual_result["verification"].get("verified") is not True
+            ):
+                raise TrustedFinalizeManualResultError(
+                    _trusted_manual_result_diagnostics(manual_result)
+                )
+            try:
+                if reserved_staging:
+                    shutil.copyfile(manual_output, staging_output)
+                else:
+                    os.replace(manual_output, staging_output)
+            except OSError:
+                raise ValueError("TRUSTED_FINALIZE_PROMOTION_FAILED") from None
+            manual_masks_applied = manual_result.get("mask_actions_applied")
+            manual_restores_applied = manual_result.get("restore_actions_applied")
+            if manual_masks_applied is None and manual_restores_applied is None:
+                # Test doubles and older in-process callers report only the
+                # operation total. The native wrapper used by the product
+                # always supplies the split counts above.
+                operation_count = manual_result.get("actions_applied")
+                if type(operation_count) is int and operation_count == len(manual_actions):
+                    manual_masks_applied = sum(action.mode == "mask" for action in manual_actions)
+                    manual_restores_applied = sum(action.mode == "restore" for action in manual_actions)
+            if (
+                type(manual_masks_applied) is not int
+                or manual_masks_applied < 0
+                or type(manual_restores_applied) is not int
+                or manual_restores_applied < 0
+            ):
+                raise ValueError("TRUSTED_FINALIZE_MANUAL_RESULT_FAILED")
+            if scan_verifier is not None:
+                try:
+                    scan_manual_verification = scan_verifier.summary()
+                except ValueError:
+                    raise ValueError("TRUSTED_FINALIZE_MANUAL_RESULT_FAILED") from None
+        elif reserved_staging and occurrence_inputs:
+            try:
+                shutil.copyfile(render_output, staging_output)
+            except OSError:
+                raise ValueError("TRUSTED_FINALIZE_PROMOTION_FAILED") from None
+
+        for temporary_output in (f"{staging_output}.manual.pdf", f"{staging_output}.render.pdf"):
+            try:
+                Path(temporary_output).unlink(missing_ok=True)
+            except OSError:
+                raise ValueError("TRUSTED_FINALIZE_CLEANUP_FAILED") from None
+
+        try:
+            final_bytes = Path(staging_output).read_bytes()
+        except OSError:
+            raise ValueError("TRUSTED_FINALIZE_STAGING_READ_FAILED") from None
+        effective_excluded_occurrence_ids = _manual_excluded_occurrence_ids(manifest)
+        manual_mask_count = sum(
+            item.get("mode") == "mask"
+            for item in manifest["manualActions"]
+        )
+        restore_count = sum(
+            item.get("mode") == "restore"
+            for item in manifest["manualActions"]
+        )
+        expected_applied_mask_count = (
+            sum(
+                item.get("proposedAction") == "mask"
+                and item.get("state") in {"confirmed", "user_confirmed"}
+                and item["occurrenceId"] not in effective_excluded_occurrence_ids
+                for item in manifest["occurrences"]
+            )
+            + manual_mask_count
+        )
+        if (
+            occurrence_masks_applied + manual_masks_applied != expected_applied_mask_count
+            or manual_masks_applied != manual_mask_count
+            or manual_restores_applied != restore_count
+        ):
+            raise ValueError("TRUSTED_FINALIZE_REDACTION_RESULT_FAILED")
+        unresolved_reviews = _trusted_save_confirmation_reviews(manifest)
+        final_verification: dict[str, Any] = {"verified": True}
+        if scan_manual_verification is not None:
+            final_verification["scan_manual"] = scan_manual_verification
+        return {
+            "status": "applied",
+            "staging_hash": hashlib.sha256(final_bytes).hexdigest(),
+            "verification": final_verification,
+            "save_confirmation": {
+                "status": "user_confirmed" if unresolved_reviews else "not_required",
+                "unresolved_reviews": unresolved_reviews,
+            },
+            "occurrence_count": expected_applied_mask_count,
+            "applied_mask_count": expected_applied_mask_count,
+            "manual_mask_count": manual_mask_count,
+            "restore_count": restore_count,
+            "effective_mask_count": expected_applied_mask_count,
+            "raw_text_returned": False,
+        }
+    except ValueError as error:
+        if not _trusted_finalize_cleanup(staging_output):
+            raise ValueError("TRUSTED_FINALIZE_CLEANUP_FAILED") from None
+        if str(error) in {
+            "AUTOMATIC_MASK_PROTECTED_NEIGHBOR_OVERLAP",
+            "ORIGINAL_CHANGED",
+            "SCAN_VERIFICATION_ADAPTER_UNAVAILABLE",
+            "STALE_ANALYSIS",
+            "TRUSTED_FINALIZE_AUTHORITY_MISSING",
+            "TRUSTED_FINALIZE_BLOCKED",
+            "TRUSTED_FINALIZE_CLEAN_COPY_MISMATCH",
+            "TRUSTED_FINALIZE_INVALID",
+            "TRUSTED_FINALIZE_OCCURRENCE_INTRINSIC_FAILED",
+            "TRUSTED_FINALIZE_REDACTION_EXECUTION_FAILED",
+            "TRUSTED_FINALIZE_MANUAL_EXECUTION_FAILED",
+            "TRUSTED_FINALIZE_MANUAL_RESULT_FAILED",
+            "TRUSTED_FINALIZE_STAGING_READ_FAILED",
+            "TRUSTED_FINALIZE_INTERNAL_FAILED",
+            "TRUSTED_FINALIZE_ORIGINAL_UNAVAILABLE",
+            "TRUSTED_FINALIZE_PROMOTION_FAILED",
+            "UNRESOLVED_REVIEW",
+        }:
+            raise
+        raise ValueError("TRUSTED_FINALIZE_BLOCKED") from None
+    except Exception:
+        if not _trusted_finalize_cleanup(staging_output):
+            raise ValueError("TRUSTED_FINALIZE_CLEANUP_FAILED") from None
+        raise ValueError("TRUSTED_FINALIZE_INTERNAL_FAILED") from None
+    finally:
+        if snapshot_path is not None:
+            try:
+                Path(snapshot_path).unlink(missing_ok=True)
+            except OSError:
+                raise ValueError("TRUSTED_FINALIZE_CLEANUP_FAILED") from None
+
+def _extract_and_analyze_snapshot(
+    infile: str,
+    opts: dict[str, Any],
+    *,
+    session_hash_key: bytes | None = None,
+) -> tuple[bytes, str, ExtractResult, dict[str, Any] | None]:
+    """Use one immutable source copy for extraction, manifest evidence, and rendering."""
+    try:
+        source_bytes = Path(infile).read_bytes()
+    except OSError:
+        raise ValueError("SOURCE_UNAVAILABLE") from None
+    descriptor, snapshot_path = tempfile.mkstemp(
+        prefix="masking_source_",
+        suffix=Path(infile).suffix,
+    )
+    os.close(descriptor)
+    try:
+        Path(snapshot_path).write_bytes(source_bytes)
+        extracted = extract_document(snapshot_path, engine=opts.get("extract_engine", "auto"))
+        if Path(infile).read_bytes() != source_bytes:
+            raise ValueError("ORIGINAL_CHANGED")
+        manifest = None
+        if _profile_value(str(opts["profile"])) != "legal":
+            manifest = trusted_analysis_manifest(
+                snapshot_path,
+                opts,
+                session_hash_key=session_hash_key,
+                source_bytes=source_bytes,
+                extracted=extracted,
+            )
+        if Path(infile).read_bytes() != source_bytes:
+            raise ValueError("ORIGINAL_CHANGED")
+        _ACTIVE_SOURCE_SNAPSHOT.set(snapshot_path)
+        return source_bytes, snapshot_path, extracted, manifest
+    except Exception:
+        try:
+            os.unlink(snapshot_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            raise RuntimeError("SOURCE_SNAPSHOT_CLEANUP_FAILED") from None
+        raise
+
+
+
+def _process_file(
     infile: str,
     outdir: str | None = None,
     opts: dict[str, Any] | None = None,
+    *,
+    session_hash_key: bytes | None = None,
 ) -> tuple[str | None, str | None, str | None, dict[str, Any]]:
     opts = normalize_opts(opts)
+    profile = _profile_value(str(opts.get("profile", "mixed") or "mixed"))
     artifacts = resolve_output_artifacts(opts)
     output_paths = safe_output_paths(infile, outdir=outdir)
-
-    extract_engine = opts.get("extract_engine", "auto")
-    extract_result = extract_document(infile, engine=extract_engine)
+    source_bytes, snapshot_path, extract_result, canonical_manifest = _extract_and_analyze_snapshot(
+        infile, opts, session_hash_key=session_hash_key,
+    )
+    _ACTIVE_SOURCE_SNAPSHOT.set(snapshot_path)
+    def reject_changed_source() -> None:
+        try:
+            os.unlink(snapshot_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            raise RuntimeError("SOURCE_SNAPSHOT_CLEANUP_FAILED") from None
+        raise ValueError("ORIGINAL_CHANGED")
     document_context = build_document_context(
         extract_result.text,
         chunk_size=max(int(opts.get("context_chunk_size", 1200) or 1200), 1),
         overlap=max(int(opts.get("context_chunk_overlap", 120) or 120), 0),
     )
+    profile_analysis = (
+        {
+            "schema_version": "profile-analysis-v1",
+            "analysis_revision": int(opts.get("analysis_revision", 1) or 1),
+            "segments": [],
+            "regions": [],
+            "reviews": [],
+            "hard_block_review_count": 0,
+            "hard_block_reason_codes": [],
+        }
+        if canonical_manifest is None
+        else {
+            "schema_version": "profile-analysis-v1",
+            "analysis_revision": canonical_manifest["analysis_revision"],
+            "segments": canonical_manifest["segments"],
+            "regions": canonical_manifest["regions"],
+            "reviews": canonical_manifest["review_items"],
+            "hard_block_review_count": sum(
+                item["status"] == "pending" and item["requires_acknowledgment"]
+                for item in canonical_manifest["review_items"]
+            ),
+            "hard_block_reason_codes": sorted({
+                reason
+                for item in canonical_manifest["review_items"]
+                if item["status"] == "pending" and item["requires_acknowledgment"]
+                for reason in item["reason_codes"]
+            }),
+        }
+    )
+    if canonical_manifest is not None:
+        return None, None, None, {
+            "schema_version": "public-analysis-only-v1",
+            "analysis_manifest": canonical_manifest,
+            "profile_analysis": profile_analysis,
+            "raw_text_returned": False,
+        }
 
     transform_state = TransformState()
     masked, counts, redaction_matches, chunk_queue = process_masking_queue(
@@ -1514,6 +4631,8 @@ def process_file(
     )
 
     masked, llm_refine = llm_refine_masking(masked, opts, counts)
+    if Path(infile).read_bytes() != source_bytes:
+        reject_changed_source()
     extracted_path = None
     masked_path = output_paths["masked_txt"] if "masked_txt" in artifacts else None
     report_path = output_paths["report_json"] if "report" in artifacts else None
@@ -1541,22 +4660,31 @@ def process_file(
         "reason": "입력 파일이 PDF가 아닙니다." if Path(infile).suffix.lower() != ".pdf" else "비활성화됨 또는 산출물 선택에서 제외됨",
     }
     if Path(infile).suffix.lower() == ".pdf" and bool(opts.get("pdf_redaction", True)):
+        if Path(infile).read_bytes() != source_bytes:
+            reject_changed_source()
         try:
             target_pdf_path = masked_pdf_path if "pdf" in artifacts else os.path.join(
                 tempfile.mkdtemp(prefix="yangcheon_masker_pdf_preview_"),
                 Path(masked_pdf_path).name,
             )
             pdf_redaction_result = redact_pdf_native(
-                infile,
+                snapshot_path,
                 target_pdf_path,
                 redaction_matches,
                 display_mode=display_mode,
                 transform_state=transform_state,
+                profile=profile,
+                legal_compatibility=profile == "legal",
             )
+            if Path(infile).read_bytes() != source_bytes:
+                reject_changed_source()
             preview_pdf_source_path = target_pdf_path
             if "pdf" not in artifacts:
                 pdf_redaction_result["output_file"] = None
-        except Exception as e:
+        except Exception as error:
+            if isinstance(error, ValueError) and str(error) == "ORIGINAL_CHANGED":
+                raise
+            e = error
             pdf_redaction_result = {
                 "enabled": bool(opts.get("pdf_redaction", True)),
                 "status": "failed",
@@ -1580,13 +4708,28 @@ def process_file(
                 "reason_code": classify_redaction_failure_reason_code(e),
             }
         if labeled_pdf_path and display_mode == "black":
+            if Path(infile).read_bytes() != source_bytes:
+                reject_changed_source()
             try:
-                labeled_result = redact_pdf_native(infile, labeled_pdf_path, redaction_matches, display_mode="label_en")
+                labeled_result = redact_pdf_native(
+                    snapshot_path,
+                    labeled_pdf_path,
+                    redaction_matches,
+                    display_mode="label_en",
+                    profile=profile,
+                    legal_compatibility=profile == "legal",
+                )
                 pdf_redaction_result["labeled_output_file"] = labeled_result.get("output_file")
+                if Path(infile).read_bytes() != source_bytes:
+                    reject_changed_source()
+            except ValueError as error:
+                if str(error) == "ORIGINAL_CHANGED":
+                    raise
+                pdf_redaction_result["labeled_output_error"] = "PDF_LABEL_RENDER_FAILED"
             except Exception:
                 pdf_redaction_result["labeled_output_error"] = "PDF_LABEL_RENDER_FAILED"
     elif Path(infile).suffix.lower() == ".pdf":
-        preview_pdf_source_path = infile
+        preview_pdf_source_path = snapshot_path
 
     report = build_safe_report(
         input_file=infile,
@@ -1594,11 +4737,15 @@ def process_file(
         counts=counts,
         redaction_matches=redaction_matches,
         extract_meta={
-            "engine_selected": extract_engine,
+            "schema_version": extract_result.schema_version,
+            "engine_selected": str(opts.get("extract_engine", "auto")),
             "engine_used": extract_result.engine_used,
+            "engine_chain": extract_result.engine_chain,
+            "fallback_chain": extract_result.fallback_chain,
             "duration_sec": round(extract_result.duration_sec, 3),
             "notes": extract_result.notes,
             "chars": len(extract_result.text),
+            "page_count": len(extract_result.pages),
         },
         pdf_redaction_result=pdf_redaction_result,
         output_paths={
@@ -1615,6 +4762,7 @@ def process_file(
         document_context=document_context,
         source_text=extract_result.text,
     )
+    report["profile_analysis"] = profile_analysis
 
     if report_path:
         with open(report_path, "w", encoding="utf-8") as f:
@@ -1624,6 +4772,29 @@ def process_file(
         enforce_quality_gate_or_raise(report)
 
     return extracted_path, masked_path, report_path, report
+
+def process_file(
+    infile: str,
+    outdir: str | None = None,
+    opts: dict[str, Any] | None = None,
+    *,
+    session_hash_key: bytes | None = None,
+) -> tuple[str | None, str | None, str | None, dict[str, Any]]:
+    token = _ACTIVE_SOURCE_SNAPSHOT.set(None)
+    try:
+        return _process_file(
+            infile, outdir=outdir, opts=opts, session_hash_key=session_hash_key,
+        )
+    finally:
+        snapshot_path = _ACTIVE_SOURCE_SNAPSHOT.get()
+        _ACTIVE_SOURCE_SNAPSHOT.reset(token)
+        if snapshot_path is not None:
+            try:
+                os.unlink(snapshot_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                raise RuntimeError("SOURCE_SNAPSHOT_CLEANUP_FAILED") from None
 
 
 def extract_result_text_for_preview(infile: str, opts: dict[str, Any]) -> str:
@@ -1638,6 +4809,32 @@ def mask_text_for_preview(extracted_text: str, opts: dict[str, Any]) -> str:
     return masked
 
 
+_CLI_RUNTIME_FAILURE_CODES = frozenset({
+    "CHUNK_PROCESSOR_FAILED",
+    "EXTRACTION_ALL_ENGINES_FAILED",
+    "EXTRACTION_ENGINE_UNSUPPORTED",
+    "EXTRACTION_MARKER_CLEANUP_FAILED",
+    "EXTRACTION_MARKER_EMPTY",
+    "EXTRACTION_MARKER_FAILED",
+    "EXTRACTION_MARKER_UNAVAILABLE",
+    "EXTRACTION_PADDLE_EMPTY",
+    "EXTRACTION_PADDLE_FAILED",
+    "EXTRACTION_PADDLE_INIT_FAILED",
+    "EXTRACTION_PADDLE_UNAVAILABLE",
+    "EXTRACTION_PYMUPDF_FAILED",
+    "EXTRACTION_PYMUPDF_UNAVAILABLE",
+    "EXTRACTION_PYPDF_EMPTY",
+    "EXTRACTION_PYPDF_FAILED",
+    "EXTRACTION_PYPDF_UNAVAILABLE",
+    "OPTIONAL_DETECTOR_FAILED",
+    "PAGE_EVIDENCE_ADAPTER_FAILED",
+    "PAGE_EVIDENCE_ADAPTER_UNAVAILABLE",
+    "SOURCE_SNAPSHOT_CLEANUP_FAILED",
+    "TEXT_ENCODING_UNSUPPORTED",
+    "TEXT_SOURCE_UNAVAILABLE",
+})
+
+
 def run_cli_mode(argv: list[str]) -> bool:
     if len(argv) <= 1:
         return False
@@ -1647,25 +4844,45 @@ def run_cli_mode(argv: list[str]) -> bool:
         return False
 
     opts = normalize_opts(None)
+    session_hash_key = os.urandom(32)
 
     opts["log_callback"] = print
 
     print("[CLI 모드] 파일 처리 시작")
     for fp in files:
         try:
-            extracted_path, masked_path, report_path, report = process_file(fp, outdir=None, opts=opts)
-            print("[완료] 문서 1건")
-            print(f"  - engine_used: {report['extract']['engine_used']} ({report['extract']['duration_sec']}s)")
-            print(f"  - output_artifacts: {','.join(report['rules'].get('output_artifacts', []))}")
-            print(f"  - masked_txt_created: {bool(masked_path)}")
-            print(f"  - report_created: {bool(report_path)}")
-            print(f"  - counts   : {json.dumps(report['counts'], ensure_ascii=False)}")
-            print(f"  - chunk_queue: {json.dumps(report.get('chunk_queue', {}), ensure_ascii=False)}")
-            print(f"  - local_llm_refine: {json.dumps(sanitize_for_logging(report.get('local_llm_refine', {})), ensure_ascii=False)}")
-            print(f"  - pdf_redaction: {json.dumps(sanitize_for_logging(report['pdf_redaction']), ensure_ascii=False)}")
-            print(f"  - product_checks: {json.dumps(sanitize_for_logging(report.get('product_checks', {})), ensure_ascii=False)}")
-        except Exception:
+            extracted_path, masked_path, report_path, report = process_file(
+                fp,
+                outdir=None,
+                opts=opts,
+                session_hash_key=session_hash_key,
+            )
+        except ValueError as error:
+            print(f"[실패] 문서 1건: {error}")
+            continue
+        except RuntimeError as error:
+            code = str(error)
+            print(f"[실패] 문서 1건: {code if code in _CLI_RUNTIME_FAILURE_CODES else 'PROCESS_FAILED'}")
+            continue
+        except OSError:
             print("[실패] 문서 1건: PROCESS_FAILED")
+            continue
+        if report.get("schema_version") == "public-analysis-only-v1":
+            analysis = report["profile_analysis"]
+            print("[분석 완료] public analysis only; finalization is blocked pending review")
+            print(f"  - hard_block_review_count: {analysis['hard_block_review_count']}")
+            print(f"  - hard_block_reason_codes: {','.join(analysis['hard_block_reason_codes'])}")
+            continue
+        print("[완료] 문서 1건")
+        print(f"  - engine_used: {report['extract']['engine_used']} ({report['extract']['duration_sec']}s)")
+        print(f"  - output_artifacts: {','.join(report['rules'].get('output_artifacts', []))}")
+        print(f"  - masked_txt_created: {bool(masked_path)}")
+        print(f"  - report_created: {bool(report_path)}")
+        print(f"  - counts   : {json.dumps(report['counts'], ensure_ascii=False)}")
+        print(f"  - chunk_queue: {json.dumps(report.get('chunk_queue', {}), ensure_ascii=False)}")
+        print(f"  - local_llm_refine: {json.dumps(sanitize_for_logging(report.get('local_llm_refine', {})), ensure_ascii=False)}")
+        print(f"  - pdf_redaction: {json.dumps(sanitize_for_logging(report['pdf_redaction']), ensure_ascii=False)}")
+        print(f"  - product_checks: {json.dumps(sanitize_for_logging(report.get('product_checks', {})), ensure_ascii=False)}")
 
     return True
 

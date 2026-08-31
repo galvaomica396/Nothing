@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
 from typing import Final
+import warnings
 
-import fitz
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    import fitz
 
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
@@ -37,6 +42,11 @@ def sha256_file(path: Path) -> str:
 
 
 def write_phase6_fixture(path: Path) -> None:
+    with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        warnings.simplefilter("ignore", DeprecationWarning)
+        _write_phase6_fixture(path)
+
+def _write_phase6_fixture(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = fitz.open()
     try:
@@ -84,7 +94,9 @@ def main() -> int:
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
-    result = ensure_phase6_fixture(Path(args.output).resolve(), args.force)
+    with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        warnings.simplefilter("ignore", DeprecationWarning)
+        result = ensure_phase6_fixture(Path(args.output).resolve(), args.force)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

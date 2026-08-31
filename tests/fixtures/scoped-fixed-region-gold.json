@@ -1,0 +1,57 @@
+{
+  "segments": [
+    {
+      "id": "segment-1",
+      "state": "confirmed",
+      "confirmation_source": "automatic"
+    }
+  ],
+  "regions": [
+    {
+      "id": "confirmed",
+      "type": "approval",
+      "state": "confirmed",
+      "confirmation_source": "automatic"
+    },
+    {
+      "id": "unconfirmed",
+      "type": "approval",
+      "state": "unconfirmed",
+      "confirmation_source": null
+    }
+  ],
+  "occurrences": [
+    {
+      "id": "confirmed-gold",
+      "page_index": 0,
+      "category": "person_name",
+      "segment_id": "segment-1",
+      "region_id": "confirmed",
+      "text_hash": "text-shared",
+      "rects": [
+        {
+          "x0": 0,
+          "y0": 0,
+          "x1": 10,
+          "y1": 10
+        }
+      ]
+    },
+    {
+      "id": "unconfirmed-gold",
+      "page_index": 0,
+      "category": "person_name",
+      "segment_id": "segment-1",
+      "region_id": "unconfirmed",
+      "text_hash": "text-shared",
+      "rects": [
+        {
+          "x0": 20,
+          "y0": 0,
+          "x1": 30,
+          "y1": 10
+        }
+      ]
+    }
+  ]
+}

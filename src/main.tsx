@@ -7,6 +7,7 @@ import "./styles/variables.css";
 import "./styles/base.css";
 import "./styles/components.css";
 import "./styles/shell.css";
+import "./styles/screen-desk.css";
 import "./styles/screen-canvas.css";
 import "./styles/screen-settings.css";
 import "./styles/themes.css";

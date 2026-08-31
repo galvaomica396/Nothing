@@ -17,52 +17,65 @@
  * dark — 스펙 §2 다크 값 명시
  * ------------------------------------------------------------------------ */
 :root[data-theme="dark"] {
-  --dm-bg: #0e1116;
-  --dm-surface: #161b22;
-  --dm-surface-raised: #1c2330;
-  --dm-surface-sunken: #0b0e13;
-  --dm-border: #262d38;
-  --dm-border-strong: #3a4351;
-  --dm-text: #e8edf4;
-  --dm-text-secondary: #9aa6b5;
-  --dm-text-muted: #5c6875;
-  --dm-accent: #2f81f7;
-  --dm-accent-hover: #4c95f9;
-  --dm-accent-soft: #16233c;
+  --dm-bg: #11151c;
+  --dm-surface: #171c25;
+  --dm-surface-raised: #202736;
+  --dm-surface-sunken: #0f1319;
+  --dm-border: #2b3441;
+  --dm-border-strong: #435163;
+  --dm-text: #eef3fb;
+  --dm-text-secondary: #c4d0df;
+  --dm-text-muted: #a5b9d3;
+  --dm-placeholder: #b2bfce;
+  --dm-accent: #73a6ff;
+  --dm-accent-hover: #1557d6;
+  --dm-accent-soft: #1a2f58;
+  --dm-warning: #d3a245;
+  --dm-staged: #62c5a5;
+  --dm-staged-soft: #193c35;
+  --dm-danger: #d86d65;
+  --dm-danger-hover: #b4342d;
+  --dm-danger-soft: #341917;
+  --dm-overlay: rgba(0, 0, 0, 0.68);
+  --dm-shadow-page: 0 10px 28px rgba(0, 0, 0, 0.38);
+  --dm-shadow-modal: 0 18px 48px rgba(0, 0, 0, 0.55);
 }
 
 /* --------------------------------------------------------------------------
- * light — 라이트 프리셋 (구 variables.css 라이트 토큰 이관 + Trust Desk 라이트)
- *   다크 배경 대신 옅은 블루그레이 뉴트럴 + 딥 블루 액센트.
+ * light — KRDS 라이트 프리셋 (2026-08 시안 A–E 확정 팔레트)
+ *   쿨 그레이 뉴트럴 + KRDS 블루 액센트 #256EF4.
  * ------------------------------------------------------------------------ */
 :root[data-theme="light"] {
-  --dm-bg: #f6f5f4;
+  --dm-bg: #f4f5f6;
   --dm-surface: #ffffff;
   --dm-surface-raised: #ffffff;
-  --dm-surface-sunken: #f6f5f4;
-  --dm-border: #e6e6e6;
-  --dm-border-strong: #d9d9d9;
+  --dm-surface-sunken: #eceef0;
+  --dm-border: #e6e8ea;
+  --dm-border-strong: #cdd1d5;
 
-  --dm-text: #37352f;
-  --dm-text-secondary: #615d59;
-  --dm-text-muted: #a39e98;
-  --dm-placeholder: #6b6965;
+  --dm-text: #1e2124;
+  --dm-text-secondary: #58616a;
+  --dm-text-muted: #8a949e;
+  --dm-placeholder: #8a949e;
 
-  --dm-accent: #0075de;
-  --dm-accent-hover: #005bab;
-  --dm-accent-soft: #f2f9ff;
+  --dm-accent: #256ef4;
+  --dm-accent-hover: #1459cf;
+  --dm-accent-soft: #e8f0ff;
 
-  --dm-success: #0f7b6c;  --dm-success-soft: #e8f3f1;
-  --dm-warning: #b45309;  --dm-warning-soft: #fdf3e3;
-  --dm-danger:  #eb5757;  --dm-danger-soft:  #fdecec;
-  --dm-danger-hover: #d64545;
+  --dm-success: #0f7b6c;  --dm-success-soft: #e6f4f0;
+  --dm-staged: #0f7b6c;   --dm-staged-soft: #e6f4f0;
+  --dm-warning: #8b5600;  --dm-warning-soft: #f7ecd9;
+  --dm-danger:  #be3127;  --dm-danger-soft:  #f8e1df;
+  --dm-danger-hover: #9e281f;
   --dm-mask: #000000;
   --dm-on-accent: #ffffff;
-  --dm-overlay: rgba(55, 53, 47, 0.42);
-  --dm-toast-bg: #37352f;
+  --dm-toast-bg: #1e2124;
   --dm-toast-text: #ffffff;
 
   --dm-shadow-sm: 0 0.175px 1.041px rgba(0, 0, 0, 0.01), 0 0.8px 2.925px rgba(0, 0, 0, 0.02), 0 2.025px 7.847px rgba(0, 0, 0, 0.027), 0 4px 18px rgba(0, 0, 0, 0.04);
   --dm-shadow-md: 0 1px 3px rgba(0, 0, 0, 0.01), 0 3px 7px rgba(0, 0, 0, 0.02), 0 14px 28px rgba(0, 0, 0, 0.04), 0 23px 52px rgba(0, 0, 0, 0.05);
-  --dm-focus-ring: 0 0 0 3px rgba(0, 117, 222, 0.22);
+  --dm-overlay: #0b111aa6;
+  --dm-shadow-page: 0 10px 28px #0b111a22;
+  --dm-shadow-modal: 0 18px 48px #0b111a55;
+  --dm-focus-ring: 0 0 0 3px rgba(37, 110, 244, 0.22);
 }

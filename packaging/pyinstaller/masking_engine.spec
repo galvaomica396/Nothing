@@ -8,6 +8,8 @@ datas = [
     (str(repo_root / "data" / "kr_regions.seed.json"), "data"),
 ]
 datas += collect_data_files("ko_pii")
+datas += collect_data_files("pymupdf")
+datas += collect_data_files("pymupdf4llm")
 active_regions = repo_root / "data" / "kr_regions.json"
 if active_regions.exists():
     datas.append((str(active_regions), "data"))
@@ -20,6 +22,7 @@ a = Analysis(
     datas=datas,
     hiddenimports=[
         "document_masker_ocr_gui",
+        "public_detection",
         "ko_pii_detector",
         "masking_context",
         "pdf_redaction_rendering",

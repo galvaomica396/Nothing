@@ -117,6 +117,46 @@ async function dragOnPdf(page, fromFrac, toFrac) {
   await page.waitForTimeout(120);
 }
 
+// Dispatch a real DOM mouse sequence directly to the production overlay handler.
+// Coordinates are overlay-local canvas pixels, matching the QA driver's
+// `drag-canvas <x0> <y0> <x1> <y1>` command. This is the true pointer-path
+// regression check; `draw-box` only injects state and intentionally remains a
+// separate drive fixture for handler-independent apply tests.
+async function dragCanvas(page, fromFrac, toFrac) {
+  await page.evaluate(({ from, to }) => {
+    const overlay = document.getElementById("overlay-canvas-result");
+    if (!(overlay instanceof HTMLCanvasElement)) throw new Error("#overlay-canvas-result has no canvas");
+    const bounds = overlay.getBoundingClientRect();
+    const scaleX = overlay.width > 0 && bounds.width > 0 ? bounds.width / overlay.width : 1;
+    const scaleY = overlay.height > 0 && bounds.height > 0 ? bounds.height / overlay.height : 1;
+    const clientPoint = (point) => ({
+      x: bounds.left + overlay.width * point.x * scaleX,
+      y: bounds.top + overlay.height * point.y * scaleY,
+    });
+    const dispatch = (target, type, point) => {
+      const client = clientPoint(point);
+      target.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        button: 0,
+        buttons: type === "mouseup" ? 0 : 1,
+        clientX: client.x,
+        clientY: client.y,
+      }));
+    };
+    dispatch(overlay, "mousedown", from);
+    for (const progress of [0.2, 0.4, 0.6, 0.8, 1]) {
+      dispatch(overlay, "mousemove", {
+        x: from.x + (to.x - from.x) * progress,
+        y: from.y + (to.y - from.y) * progress,
+      });
+    }
+    dispatch(window, "mouseup", to);
+  }, { from: fromFrac, to: toFrac });
+  await page.waitForTimeout(120);
+}
+
 async function selectCanvasTool(page, toolId) {
   const tool = page.locator(`#${toolId}`);
   if (!(await tool.isVisible())) await page.locator("#canvas-tool-menu-trigger").click();
@@ -144,10 +184,31 @@ async function panDragHorizontal(page) {
   await page.waitForTimeout(120);
 }
 
+async function panDragVertical(page) {
+  const rect = await page.evaluate(() => {
+    const scroll = document.getElementById("canvas-wrap-result").closest(".dm-canvas__scroll");
+    const bounds = scroll.getBoundingClientRect();
+    return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+  });
+  const x = rect.x + rect.width / 2;
+  const startY = rect.y + rect.height * 0.8;
+  const endY = rect.y + rect.height * 0.2;
+  await page.mouse.move(x, startY);
+  await page.mouse.down();
+  await page.mouse.move(x, (startY + endY) / 2, { steps: 6 });
+  await page.mouse.move(x, endY, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+}
+
 async function totalBoxCount(page) {
-  const text = (await page.locator("#box-info").textContent()) ?? "";
-  const match = text.match(/전체\s+(\d+)\s*개/);
-  return match ? Number(match[1]) : NaN;
+  const counts = await Promise.all(
+    ["#review-summary-mask-count", "#review-summary-restore-count"].map(async (selector) => {
+      const text = (await page.locator(selector).textContent()) ?? "";
+      return Number(text.match(/(\d+)\s*개/)?.[1] ?? Number.NaN);
+    }),
+  );
+  return counts.every(Number.isFinite) ? counts.reduce((sum, count) => sum + count, 0) : Number.NaN;
 }
 
 // Click a single point inside the *visible PDF* (like a real user picking a box),
@@ -215,9 +276,9 @@ async function runSurface(page, { label, standalone }) {
   // --- Masking box drag ---
   await selectCanvasTool(page, "btn-canvas-tool-mask");
   check(await page.locator("#btn-canvas-tool-mask").getAttribute("aria-pressed") === "true", "mask tool is active");
-  await dragOnPdf(page, { x: 0.12, y: 0.10 }, { x: 0.55, y: 0.28 });
-  check((await totalBoxCount(page)) === 1, "mask drag created 1 box (#box-info 전체 1개)");
-  check(/마스킹 박스 1개/.test((await page.locator("#canvas-summary-mask-count").textContent()) ?? ""), "summary shows 마스킹 박스 1개");
+  await dragCanvas(page, { x: 0.12, y: 0.10 }, { x: 0.55, y: 0.28 });
+  check((await totalBoxCount(page)) === 1, "mask drag created 1 visible box");
+  check(/1개/.test((await page.locator("#review-summary-mask-count").textContent()) ?? ""), "summary shows 마스킹 박스 1개");
   check((await page.locator("#canvas-box-list .canvas-box-empty").count()) === 0, "canvas-box-list no longer shows empty state");
   check((await page.locator("#canvas-box-list button").count()) >= 1, "canvas-box-list has a box entry");
 
@@ -230,9 +291,9 @@ async function runSurface(page, { label, standalone }) {
   // --- Restore box drag ---
   await selectCanvasTool(page, "btn-canvas-tool-restore");
   check(await page.locator("#btn-canvas-tool-restore").getAttribute("aria-pressed") === "true", "restore tool is active");
-  await dragOnPdf(page, { x: 0.15, y: 0.45 }, { x: 0.60, y: 0.66 });
-  check((await totalBoxCount(page)) === 2, "restore drag created a 2nd box (#box-info 전체 2개)");
-  check(/복원 박스 1개/.test((await page.locator("#canvas-summary-restore-count").textContent()) ?? ""), "summary shows 복원 박스 1개");
+  await dragCanvas(page, { x: 0.15, y: 0.45 }, { x: 0.60, y: 0.66 });
+  check((await totalBoxCount(page)) === 2, "restore drag created a 2nd visible box");
+  check(/1개/.test((await page.locator("#review-summary-restore-count").textContent()) ?? ""), "summary shows 복원 박스 1개");
   check((await page.locator("#canvas-box-list button").count()) >= 2, "canvas-box-list has 2 box entries");
 
   // ------------------------------------------------------------------------
@@ -279,7 +340,7 @@ async function runSurface(page, { label, standalone }) {
   const afterDelete = await totalBoxCount(page);
   check(afterDelete === beforeDelete - 1, `delete tool: clicking a box removes it (${beforeDelete} -> ${afterDelete})`);
   check((await page.locator("#canvas-box-list button").count()) === afterDelete, "box list count matches after canvas delete");
-  check(/마스킹 박스 0개/.test((await page.locator("#canvas-summary-mask-count").textContent()) ?? ""), "summary shows the mask box was removed (마스킹 박스 0개)");
+  check(/0개/.test((await page.locator("#review-summary-mask-count").textContent()) ?? ""), "summary shows the mask box was removed (마스킹 박스 0개)");
 
   // Delete tool clicking empty space is a no-op (does not throw / delete anything).
   const beforeNoop = await totalBoxCount(page);
@@ -290,19 +351,19 @@ async function runSurface(page, { label, standalone }) {
   await selectCanvasTool(page, "btn-canvas-tool-select");
   await clickOnPdf(page, { x: 0.37, y: 0.55 }); // select remaining restore box
   const beforeBtnDelete = await totalBoxCount(page);
-  check(await page.locator("#btn-canvas-delete-box").isEnabled(), "선택 삭제 button is enabled once a box is selected");
+  check(await page.locator("#btn-canvas-box-delete").isEnabled(), "선택 삭제 button is enabled once a box is selected");
   // Fire the handler at the DOM level: at this viewport the button can sit under
   // the sticky toolbar, so a coordinate click would hit the toolbar instead. The
   // canvas delete TOOL above is already exercised with a real mouse click.
-  await page.locator("#btn-canvas-delete-box").evaluate((el) => el.click());
+  await page.locator("#btn-canvas-box-delete").evaluate((el) => el.click());
   check((await totalBoxCount(page)) === beforeBtnDelete - 1, "선택 삭제 button removes the selected box");
 
   // --- Pan tool: dragging scrolls the view ---
   // The QA fixture is a small page; zoom to max so it overflows the scroll
   // container and the pan tool has room to move (each click is +0.1, clamped 2.5).
   await selectCanvasTool(page, "btn-canvas-tool-mask");
-  await dragOnPdf(page, { x: 0.20, y: 0.20 }, { x: 0.60, y: 0.40 }); // ensure a box exists to render
-  for (let zoom = 0; zoom < 14; zoom += 1) {
+  await dragCanvas(page, { x: 0.20, y: 0.20 }, { x: 0.60, y: 0.40 }); // ensure a box exists to render
+  for (let zoom = 0; zoom < 20; zoom += 1) {
     const zoomIn = page.locator("#btn-canvas-zoom-in");
     if (!(await zoomIn.isEnabled())) break; // disabled at max scale
     try {
@@ -317,18 +378,186 @@ async function runSurface(page, { label, standalone }) {
   check(await page.locator("#btn-canvas-tool-pan").getAttribute("aria-pressed") === "true", "pan tool activates");
   const scrollBefore = await page.evaluate(() => {
     const el = document.querySelector("#canvas-wrap-result").closest(".dm-canvas__scroll");
-    return { left: el.scrollLeft, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth };
+    return {
+      left: el.scrollLeft,
+      top: el.scrollTop,
+      scrollWidth: el.scrollWidth,
+      scrollHeight: el.scrollHeight,
+      clientWidth: el.clientWidth,
+      clientHeight: el.clientHeight,
+    };
   });
-  // The scroll container grows vertically with content (flex), so overflow is on
-  // the width axis — the zoomed PDF is wider than the viewport. Pan along X.
-  check(scrollBefore.scrollWidth > scrollBefore.clientWidth, "zoomed PDF overflows the scroll container (pan has room to move)");
-  // Drag right→left across the viewport → content scrolls, scrollLeft grows from 0.
-  await panDragHorizontal(page);
+  const horizontalOverflow = scrollBefore.scrollWidth > scrollBefore.clientWidth;
+  const verticalOverflow = scrollBefore.scrollHeight > scrollBefore.clientHeight;
+  check(horizontalOverflow || verticalOverflow, "zoomed PDF overflows the scroll container (pan has room to move)");
+  if (horizontalOverflow) await panDragHorizontal(page);
+  else await panDragVertical(page);
   const scrollAfter = await page.evaluate(() => {
     const el = document.querySelector("#canvas-wrap-result").closest(".dm-canvas__scroll");
-    return { left: el.scrollLeft };
+    return { left: el.scrollLeft, top: el.scrollTop };
   });
-  check(scrollAfter.left > scrollBefore.left, `pan tool: dragging scrolled the view (scrollLeft ${scrollBefore.left} -> ${scrollAfter.left})`);
+  const panned = horizontalOverflow
+    ? scrollAfter.left > scrollBefore.left
+    : scrollAfter.top > scrollBefore.top;
+  check(
+    panned,
+    `pan tool: dragging scrolled the view (left ${scrollBefore.left} -> ${scrollAfter.left}, top ${scrollBefore.top} -> ${scrollAfter.top})`,
+  );
+}
+
+async function runPublicTextManualMaskSurface(page, { malformedSuccessor = false } = {}) {
+  console.log("\n=== public text manual mask ===");
+  await page.locator('[data-screen-target="documents"]').first().evaluate((element) => element.click());
+  await page.locator('[data-screen-panel="documents"].is-active').waitFor({ state: "visible", timeout: 8_000 });
+  // #profile lives only on the (hidden) masking-settings screen, so selectOption
+  // fails its visibility check here. Set the value + dispatch change directly,
+  // mirroring qa_save_flow. This still drives the real onChange handler.
+  await page.locator("#profile").evaluate((element, selectedProfile) => {
+    element.value = selectedProfile;
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, "internal_review");
+  await page.locator("#btn-pick-pdf").evaluate((element) => element.click());
+  await page.locator("#canvas-wrap-result.has-rendered-pdf").waitFor({ state: "attached", timeout: 8_000 });
+  await selectCanvasTool(page, "btn-canvas-tool-mask");
+  await page.locator("#btn-run-masking").click();
+  await page.waitForFunction(() => window.__QA_INVOKES__.filter((entry) => entry.cmd === "analyze_masking_run").length === 1, null, { timeout: 15_000 });
+  await page.waitForFunction(() => document.querySelector("#btn-run-masking")?.getAttribute("data-running") === "true", null, { timeout: 3_000 });
+  check(await page.locator("#btn-canvas-tool-mask").isDisabled(), "public text page: mask tool is disabled during masking");
+  check(await page.locator("#btn-canvas-tool-restore").isDisabled(), "public text page: restore tool is disabled during masking");
+  check(await page.locator("#btn-canvas-apply").isDisabled(), "public text page: manual apply is disabled during masking");
+  await dragCanvas(page, { x: 0.16, y: 0.14 }, { x: 0.44, y: 0.28 });
+  check((await page.locator("#canvas-box-list button").count()) === 0, "public text page: drag during masking creates no box");
+  if (!malformedSuccessor) {
+    // T44R4: 이 단언은 analyzeDelayMs가 걸린 첫 표면에서만 결정론적이다.
+    // malformed-successor 대조 표면은 분석 지연 없이 실행되므로 드래그 거부 문구가
+    // #status에 찍힌 직후 완료 문구로 덮일 수 있다 — 거부 동작 자체는 위의
+    // "creates no box" 단언이 두 표면 모두에서 검증한다.
+    check((await page.locator("#status").textContent()) === "마스킹 실행 중에는 박스를 그릴 수 없습니다. 완료 후 그려 주세요.", "public text page: masking drag rejection explains when to draw");
+  }
+  await page.waitForFunction(() => document.querySelector("#btn-run-masking")?.getAttribute("data-running") !== "true", null, { timeout: 8_000 });
+  if (!malformedSuccessor) {
+    await selectCanvasTool(page, "btn-canvas-tool-mask");
+    await dragCanvas(page, { x: 0.16, y: 0.14 }, { x: 0.44, y: 0.28 });
+    check((await page.locator("#canvas-box-list button").count()) === 1, "public text page: mask drag after masking creates a box");
+    await page.locator("#btn-canvas-apply").click();
+    await page.waitForFunction(() => document.querySelectorAll("#canvas-box-list button").length === 0, null, { timeout: 8_000 });
+    check((await page.locator("#canvas-box-list button").count()) === 0, "public text page: mask apply clears the draft box");
+    const stagedOverlay = await page.evaluate(() => {
+      const overlay = document.querySelector("#overlay-canvas-result");
+      if (!(overlay instanceof HTMLCanvasElement)) {
+        return {
+          style: null,
+          stagedMaskCount: null,
+          blockedRestoreCount: null,
+          stagedPixel: null,
+          confirmedPixel: null,
+          hasOverlay: overlay instanceof HTMLCanvasElement,
+        };
+      }
+      const context = overlay.getContext("2d");
+      if (!context) return { style: null, stagedMaskCount: null, blockedRestoreCount: null, stagedPixel: null, confirmedPixel: null };
+      const sample = (x, y) => [...context.getImageData(
+        Math.max(0, Math.min(overlay.width - 1, Math.round(x))),
+        Math.max(0, Math.min(overlay.height - 1, Math.round(y))),
+        1,
+        1,
+      ).data];
+      return {
+        style: overlay.dataset.stagedOverlayStyle ?? null,
+        stagedMaskCount: overlay.dataset.stagedMaskCount ?? null,
+        blockedRestoreCount: overlay.dataset.blockedRestoreCount ?? null,
+        restoreState: overlay.dataset.stagedRestoreState ?? null,
+        // The deterministic fixture is 420x260 and this drag is
+        // 0.16..0.44 x 0.14..0.28, so the midpoint is (126,55).
+        stagedPixel: sample(126, 55),
+        confirmedPixel: sample(344, 71),
+      };
+    });
+    check(stagedOverlay.style === "translucent-dashed-labeled", "public text page: applied mask is rendered as a labeled translucent dashed staged overlay");
+    check(stagedOverlay.stagedMaskCount === "1" && stagedOverlay.blockedRestoreCount === "0", "public text page: staged mask overlay counters identify one non-blocked mask");
+    check(
+      Array.isArray(stagedOverlay.stagedPixel)
+        && stagedOverlay.stagedPixel[3] > 0
+        && !(
+          stagedOverlay.stagedPixel[0] === 0
+          && stagedOverlay.stagedPixel[1] === 0
+          && stagedOverlay.stagedPixel[2] === 0
+          && stagedOverlay.stagedPixel[3] === 255
+        )
+        && Array.isArray(stagedOverlay.confirmedPixel)
+        && stagedOverlay.confirmedPixel[0] === 0
+        && stagedOverlay.confirmedPixel[1] === 0
+        && stagedOverlay.confirmedPixel[2] === 0
+        && stagedOverlay.confirmedPixel[3] === 255,
+      "public text page: staged pixels differ from the solid black confirmed detection pixels",
+    );
+    check(
+      (await page.locator("#review-summary-banner").textContent())?.includes("자동 1건 · 수동 1건(저장 시 적용)") === true,
+      "public text page: review summary separates automatic and staged manual counts",
+    );
+    check((await page.locator("#review-total-count").textContent())?.trim() === "1건", "public text page: manual action does not enter the review queue counter");
+  } else {
+    await selectCanvasTool(page, "btn-canvas-tool-mask");
+    await dragCanvas(page, { x: 0.16, y: 0.14 }, { x: 0.44, y: 0.28 });
+    check((await page.locator("#canvas-box-list button").count()) === 1, "public text page: mask drag creates an observable box");
+  }
+  // T62: 복원 도구는 표시되지만 synthetic browser input cannot authorize it.
+  check(!(await page.locator("#btn-canvas-tool-restore").isDisabled()), "public text page: restore tool is usable");
+  if (malformedSuccessor) {
+    // Synthetic browser events are never a restore authorization signal,
+    // regardless of what the test double would return.
+    await page.locator("#btn-canvas-undo").click();
+    await selectCanvasTool(page, "btn-canvas-tool-restore");
+    await dragCanvas(page, { x: 0.67, y: 0.22 }, { x: 0.93, y: 0.37 });
+    await page.locator("#btn-canvas-apply").click();
+    await page.waitForFunction(
+      () => document.querySelector("#status")?.textContent?.includes("실제 캔버스 드래그"),
+      null,
+      { timeout: 8_000 },
+    );
+    check((await page.locator("#canvas-box-list button").count()) === 1, "public text page: synthetic restore keeps the draft box visible");
+    check((await page.locator("#status").textContent()).includes("실제 캔버스 드래그"), "public text page: synthetic restore reports the trust-boundary rejection");
+    return;
+  }
+  // T62: real OS input is required before a confirmed automatic mask can be restored.
+  // 두 번째 fixture occurrence(페이지 420x260 포인트 기준 x 280~408, y 60~82)를
+  // 덮도록 드래그해 다른 확정 마스크가 계속 남는 경로를 검증한다.
+  await selectCanvasTool(page, "btn-canvas-tool-restore");
+  const boxesBeforeRestore = await page.locator("#canvas-box-list button").count();
+  await dragCanvas(page, { x: 0.67, y: 0.22 }, { x: 0.93, y: 0.37 });
+  // T44R4: 직전 mask apply가 드래프트를 비웠으므로 이 드래그는 2번째가 아니라
+  // (기존 수 + 1)번째 박스를 만든다. 하드코딩 대신 드래그 전 카운트에서 파생한다.
+  check((await page.locator("#canvas-box-list button").count()) === boxesBeforeRestore + 1, "public text page: occurrence-bound restore drag adds a new draft box");
+  check(/1개/.test((await page.locator("#review-summary-restore-count").textContent()) ?? ""), "public text page: summary shows 복원 박스 1개");
+  const appliedRestoreCount = await page.locator("#canvas-box-list button").count();
+  await page.locator("#btn-canvas-apply").click();
+  await page.waitForTimeout(300);
+  const syntheticRestore = await page.evaluate(() => ({
+    applyCount: window.__QA_INVOKES__.filter((entry) => entry.cmd === "apply_manual_action_v1").length,
+    status: document.querySelector("#status")?.textContent ?? "",
+    boxCount: document.querySelectorAll("#canvas-box-list button").length,
+  }));
+  check(syntheticRestore.applyCount === 1, "public text page: synthetic restore does not reach the native action endpoint");
+  check(syntheticRestore.boxCount === appliedRestoreCount, "public text page: synthetic restore keeps the draft box visible");
+  check(syntheticRestore.status.includes("실제 캔버스 드래그"), "public text page: synthetic restore reports the trust-boundary rejection");
+  await page.locator("#btn-canvas-undo").click();
+  await page.waitForFunction(() => document.querySelectorAll("#canvas-box-list button").length === 0, null, { timeout: 8_000 });
+  const disjointRestoreOverlay = await page.locator("#overlay-canvas-result").evaluate((element) => ({
+    stagedRestoreCount: element.dataset.stagedRestoreCount ?? null,
+    blockedRestoreCount: element.dataset.blockedRestoreCount ?? null,
+    style: element.dataset.stagedOverlayStyle ?? null,
+    restoreState: element.dataset.stagedRestoreState ?? null,
+  }));
+  check(
+    disjointRestoreOverlay.stagedRestoreCount === "0"
+      && disjointRestoreOverlay.blockedRestoreCount === "0",
+    "public text page: rejected synthetic restore draft boxes cleared without changing detections",
+  );
+  const cleanState = await page.evaluate(() => ({
+    state: document.querySelector("#final-state-card")?.getAttribute("data-state"),
+    detail: document.querySelector("#final-state-detail")?.textContent ?? "",
+  }));
+  check(cleanState.state !== "fail" && !cleanState.detail.includes("복원 영역 때문에"), "public text page: rejected synthetic restore keeps the final save gate open");
 }
 
 await mkdir(evidenceDir, { recursive: true });
@@ -356,6 +585,27 @@ try {
   await standalonePage.goto(standaloneUrl, { waitUntil: "networkidle" });
   await standalonePage.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
   await runSurface(standalonePage, { label: "standalone canvas window (?mode=canvas)", standalone: true });
+
+  const publicPage = await browser.newPage({ viewport });
+  publicPage.on("console", (m) => { if (m.type() === "error") errors.push({ surface: "public", text: m.text() }); });
+  publicPage.on("pageerror", (e) => errors.push({ surface: "public", text: e.message }));
+  await installTauriQaMocks(publicPage, { fixturePath, outputDir: path.join(evidenceDir, "output"), pdfBytes, analyzeDelayMs: 1_500 });
+  await publicPage.goto(url, { waitUntil: "networkidle" });
+  await publicPage.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
+  await runPublicTextManualMaskSurface(publicPage);
+
+  const malformedPublicPage = await browser.newPage({ viewport });
+  malformedPublicPage.on("console", (m) => { if (m.type() === "error") errors.push({ surface: "public-malformed-successor", text: m.text() }); });
+  malformedPublicPage.on("pageerror", (e) => errors.push({ surface: "public-malformed-successor", text: e.message }));
+  await installTauriQaMocks(malformedPublicPage, {
+    fixturePath,
+    outputDir: path.join(evidenceDir, "output"),
+    pdfBytes,
+    malformedPublicManualMaskSuccessor: true,
+  });
+  await malformedPublicPage.goto(url, { waitUntil: "networkidle" });
+  await malformedPublicPage.locator("#workspace-shell").waitFor({ state: "attached", timeout: 15_000 });
+  await runPublicTextManualMaskSurface(malformedPublicPage, { malformedSuccessor: true });
 } finally {
   await browser.close();
   if (devServer) {

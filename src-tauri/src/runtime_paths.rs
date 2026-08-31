@@ -7,6 +7,7 @@ pub(crate) struct RuntimePaths {
     pub(crate) pipeline_script: PathBuf,
     pub(crate) manual_boxes_script: PathBuf,
     pub(crate) masking_engine: Option<PathBuf>,
+    pub(crate) development_discovery: bool,
 }
 
 fn masking_engine_for_root(root: &Path) -> Option<PathBuf> {
@@ -38,7 +39,7 @@ fn script_dir_for_root(root: &Path) -> Option<PathBuf> {
     })
 }
 
-fn runtime_paths_for_root(root: PathBuf) -> RuntimePaths {
+fn runtime_paths_for_root(root: PathBuf, development_discovery: bool) -> RuntimePaths {
     let script_dir =
         script_dir_for_root(&root).unwrap_or_else(|| root.join("tauri_frontend/scripts"));
     RuntimePaths {
@@ -46,6 +47,7 @@ fn runtime_paths_for_root(root: PathBuf) -> RuntimePaths {
         manual_boxes_script: script_dir.join("apply_manual_boxes.py"),
         masking_engine: masking_engine_for_root(&root),
         repo_root: root,
+        development_discovery,
     }
 }
 
@@ -80,23 +82,31 @@ fn has_runtime_files(root: &Path) -> bool {
         || masking_engine_for_root(root).is_some()
 }
 
+fn has_lifecycle_runtime_files(root: &Path) -> bool {
+    root.join("document_masker_ocr_gui.py").exists() && script_dir_for_root(root).is_some()
+}
+
 fn resolve_runtime_paths_from(
     resource_dir: Option<PathBuf>,
     cwd: Option<PathBuf>,
 ) -> Result<RuntimePaths, String> {
     if let Some(resource_dir) = resource_dir {
-        return Ok(runtime_paths_for_root(resource_dir.join("masking_runtime")));
+        return Ok(runtime_paths_for_root(
+            resource_dir.join("masking_runtime"),
+            false,
+        ));
     }
-
     let mut tried = Vec::new();
-    for candidate in runtime_root_candidates(cwd)? {
-        let normalized = candidate.canonicalize().unwrap_or(candidate);
-        if tried.iter().any(|p: &PathBuf| p == &normalized) {
-            continue;
-        }
-        tried.push(normalized.clone());
-        if has_runtime_files(&normalized) {
-            return Ok(runtime_paths_for_root(normalized));
+    if cfg!(debug_assertions) {
+        for candidate in runtime_root_candidates(cwd)? {
+            let normalized = candidate.canonicalize().unwrap_or(candidate);
+            if tried.iter().any(|p: &PathBuf| p == &normalized) {
+                continue;
+            }
+            tried.push(normalized.clone());
+            if has_runtime_files(&normalized) {
+                return Ok(runtime_paths_for_root(normalized, true));
+            }
         }
     }
 
@@ -119,6 +129,90 @@ pub(crate) fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<RuntimePat
     resolve_runtime_paths_from(resource_dir, None)
 }
 
+fn path_is_safe_within(root: &Path, path: &Path) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(relative) = path.strip_prefix(&root) else {
+        return false;
+    };
+    let mut current = root.clone();
+    if std::fs::symlink_metadata(&current)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
+    {
+        return false;
+    }
+    for component in relative.components() {
+        current.push(component);
+        if std::fs::symlink_metadata(&current)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            return false;
+        }
+    }
+    path.canonicalize()
+        .map(|canonical| canonical.starts_with(&root))
+        .unwrap_or(false)
+}
+
+fn lifecycle_runtime_is_safe(root: &Path) -> bool {
+    if root.is_symlink() || !has_lifecycle_runtime_files(root) {
+        return false;
+    }
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let Some(script_dir) = script_dir_for_root(&root) else {
+        return false;
+    };
+    [
+        root.join("document_masker_ocr_gui.py"),
+        script_dir.join("run_masking_pipeline.py"),
+        script_dir.join("apply_manual_boxes.py"),
+    ]
+    .iter()
+    .all(|path| path.is_file() && path_is_safe_within(&root, path))
+}
+
+fn resolve_lifecycle_runtime_paths_from(
+    resource_dir: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+) -> Result<RuntimePaths, String> {
+    if let Some(resource_dir) = resource_dir.filter(|dir| lifecycle_runtime_is_safe(dir)) {
+        let root = resource_dir
+            .canonicalize()
+            .map_err(|_| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
+        return Ok(runtime_paths_for_root(root, false));
+    }
+
+    // Repository/ancestor discovery is development-only. Production execution
+    // never falls back to cwd-controlled code.
+    if cfg!(debug_assertions) {
+        for candidate in runtime_root_candidates(cwd)? {
+            if lifecycle_runtime_is_safe(&candidate) {
+                let root = candidate
+                    .canonicalize()
+                    .map_err(|_| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
+                return Ok(runtime_paths_for_root(root, true));
+            }
+        }
+    }
+    Err("MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())
+}
+
+pub(crate) fn resolve_lifecycle_runtime_paths(
+    app: &tauri::AppHandle,
+) -> Result<RuntimePaths, String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("masking_runtime"));
+    resolve_lifecycle_runtime_paths_from(resource_dir, None)
+}
+
 fn python_candidates(root: &Path) -> Vec<(PathBuf, Vec<String>)> {
     vec![
         (root.join(".venv/bin/python"), vec![]),
@@ -129,6 +223,43 @@ fn python_candidates(root: &Path) -> Vec<(PathBuf, Vec<String>)> {
         (PathBuf::from("python.exe"), vec![]),
         (PathBuf::from("py"), vec!["-3".to_string()]),
     ]
+}
+pub(crate) fn lifecycle_command(
+    runtime: &RuntimePaths,
+    mode: &str,
+) -> Result<std::process::Command, String> {
+    if !matches!(mode, "analyze" | "trusted-finalize")
+        || !path_is_safe_within(&runtime.repo_root, &runtime.pipeline_script)
+    {
+        return Err("MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string());
+    }
+    if !runtime.development_discovery {
+        let engine = runtime
+            .masking_engine
+            .as_ref()
+            .ok_or_else(|| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
+        if !engine.is_file() || !path_is_safe_within(&runtime.repo_root, engine) {
+            return Err("MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string());
+        }
+        let mut command = std::process::Command::new(engine);
+        command
+            .arg("--repo-root")
+            .arg(&runtime.repo_root)
+            .arg("--mode")
+            .arg(mode);
+        return Ok(command);
+    }
+    let (python, args) = resolve_python(&runtime.repo_root)
+        .map_err(|_| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
+    let mut command = std::process::Command::new(python);
+    command
+        .args(args)
+        .arg(&runtime.pipeline_script)
+        .arg("--repo-root")
+        .arg(&runtime.repo_root)
+        .arg("--mode")
+        .arg(mode);
+    Ok(command)
 }
 
 pub(crate) fn resolve_python(root: &Path) -> Result<(PathBuf, Vec<String>), String> {
@@ -194,6 +325,7 @@ mod tests {
         let _ = fs::remove_dir_all(runtime.repo_root.parent().unwrap_or(&runtime.repo_root));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn resolves_development_scripts_runtime() {
         let root = temp_runtime_root("dev", "scripts");
@@ -206,6 +338,15 @@ mod tests {
             .pipeline_script
             .ends_with("scripts/run_masking_pipeline.py"));
         let _ = fs::remove_dir_all(runtime.repo_root);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_runtime_resolution_does_not_discover_cwd() {
+        let root = temp_runtime_root("release", "scripts");
+        let result = resolve_runtime_paths_from(None, Some(root.clone()));
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -233,12 +374,105 @@ mod tests {
         fs::create_dir_all(&root).expect("root");
         fs::write(root.join("masking_engine.exe"), "").expect("engine");
         assert!(has_runtime_files(&root));
-        let runtime = runtime_paths_for_root(root.clone());
+        let runtime = runtime_paths_for_root(root.clone(), true);
         assert_eq!(
             runtime.masking_engine,
             Some(root.join("masking_engine.exe"))
         );
         let _ = fs::remove_dir_all(root);
     }
+    #[test]
+    fn engine_only_runtime_rejects_authoritative_lifecycle_modes() {
+        let root = std::env::temp_dir().join(format!(
+            "masking_engine_lifecycle_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+        fs::write(root.join("masking_engine.exe"), "").expect("engine");
+        let runtime = runtime_paths_for_root(root.clone(), true);
+        assert!(lifecycle_command(&runtime, "analyze").is_err());
+        assert!(lifecycle_command(&runtime, "trusted-finalize").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn packaged_engine_owns_authoritative_lifecycle_modes_when_scripts_are_present() {
+        let root = temp_runtime_root("packaged_lifecycle", "tauri_frontend/scripts");
+        fs::create_dir_all(root.join("bin")).expect("engine dir");
+        let engine = root.join("bin").join(if cfg!(windows) {
+            "masking_engine.exe"
+        } else {
+            "masking_engine"
+        });
+        fs::write(&engine, "").expect("packaged engine");
+        let runtime =
+            runtime_paths_for_root(root.canonicalize().expect("canonical runtime root"), false);
 
+        let command = lifecycle_command(&runtime, "analyze").expect("packaged lifecycle command");
+        assert_eq!(
+            command.get_program(),
+            runtime.masking_engine.as_ref().expect("engine").as_os_str()
+        );
+        assert!(!command
+            .get_args()
+            .any(|arg| arg == runtime.pipeline_script.as_os_str()));
+        assert!(command.get_args().any(|arg| arg == "--mode"));
+        assert!(command.get_args().any(|arg| arg == "analyze"));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn development_lifecycle_prefers_live_script_over_stale_engine() {
+        let root = temp_runtime_root("live_lifecycle", "scripts");
+        fs::create_dir_all(root.join("bin")).expect("engine dir");
+        fs::create_dir_all(root.join(".venv/bin")).expect("python dir");
+        fs::write(
+            root.join("bin").join(if cfg!(windows) {
+                "masking_engine.exe"
+            } else {
+                "masking_engine"
+            }),
+            "",
+        )
+        .expect("stale engine");
+        fs::write(root.join(".venv/bin/python"), "").expect("python");
+        let runtime =
+            runtime_paths_for_root(root.canonicalize().expect("canonical runtime root"), true);
+
+        let command = lifecycle_command(&runtime, "analyze").expect("development command");
+        assert_eq!(
+            command.get_program(),
+            runtime.repo_root.join(".venv/bin/python").as_os_str()
+        );
+        assert!(command
+            .get_args()
+            .any(|arg| arg == runtime.pipeline_script.as_os_str()));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[cfg(debug_assertions)]
+    #[test]
+    fn lifecycle_resolution_skips_engine_only_root_for_packaged_scripts() {
+        let root = temp_runtime_root("lifecycle", "scripts");
+        let engine_only = root.join("engine-only");
+        fs::create_dir_all(&engine_only).expect("engine root");
+        fs::write(engine_only.join("masking_engine.exe"), "").expect("engine");
+        fs::create_dir_all(root.join(".venv/bin")).expect("python dir");
+        let python = root.join(".venv/bin/python");
+        fs::write(&python, "").expect("python");
+        let runtime = resolve_lifecycle_runtime_paths_from(None, Some(engine_only))
+            .expect("lifecycle runtime");
+
+        assert_eq!(
+            runtime.repo_root,
+            root.canonicalize().expect("canonical root")
+        );
+        let command = lifecycle_command(&runtime, "trusted-finalize").expect("lifecycle command");
+        assert_eq!(
+            command.get_program(),
+            python.canonicalize().expect("canonical python").as_os_str()
+        );
+        assert!(command
+            .get_args()
+            .any(|arg| arg == runtime.pipeline_script.as_os_str()));
+        let _ = fs::remove_dir_all(root);
+    }
 }

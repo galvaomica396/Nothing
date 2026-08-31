@@ -24,9 +24,9 @@ class MergeActionPriorityTests(unittest.TestCase):
         merged_mask_first = merge_detection_spans([mask_span, review_span])
         merged_review_first = merge_detection_spans([review_span, mask_span])
 
-        self.assertEqual(1, len(merged_mask_first))
-        self.assertEqual("mask", merged_mask_first[0]["action"])
-        self.assertEqual("mask", merged_review_first[0]["action"])
+        self.assertEqual(2, len(merged_mask_first))
+        self.assertEqual(["mask", "review"], [item["action"] for item in merged_mask_first])
+        self.assertEqual(["mask", "review"], [item["action"] for item in merged_review_first])
 
     def test_review_only_overlap_stays_review(self) -> None:
         text = "주소 서울특별시 강남구"

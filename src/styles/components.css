@@ -101,7 +101,7 @@
   min-height: 36px;
   padding: 0 16px;
   border-color: var(--dm-accent);
-  border-radius: var(--dm-radius-pill);
+  border-radius: var(--dm-radius);
   background: var(--dm-accent);
   color: var(--dm-on-accent);
 }

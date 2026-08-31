@@ -4,9 +4,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from masking_evaluation import (
-    ProtocolValidationError, _public_gold_sources, _public_oof_report_projection, canonical_json_sha256,
+    ProtocolValidationError, _fsync_directory, _public_gold_sources, _public_oof_report_projection, canonical_json_sha256,
     create_split_lock, create_synthetic_split_lock, lock_final_threshold, lock_manifest, make_protocol_receipt,
     public_oof_once, report_from_oof, synthetic_holdout_once, verify_oof, verify_pilot_report,
     verify_protocol_receipt, write_core_gate_receipt, write_threshold_e2e_receipt,
@@ -178,6 +179,13 @@ class EvaluationProtocolTests(unittest.TestCase):
         return hashlib.sha256(json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
         ).encode("utf-8")).hexdigest()
+
+    def test_fsync_directory_is_noop_on_windows(self):
+        with mock.patch("masking_evaluation.os.name", "nt"), mock.patch(
+            "masking_evaluation.os.open", side_effect=PermissionError(13, "directory open denied")
+        ) as open_mock:
+            _fsync_directory(self.root)
+        open_mock.assert_not_called()
 
 
 

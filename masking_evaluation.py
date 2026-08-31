@@ -1046,6 +1046,9 @@ def _read_protocol_json(path: Path) -> dict[str, Any]:
 
 
 def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        # Windows does not support opening directories for fsync; file fsync is sufficient.
+        return
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)

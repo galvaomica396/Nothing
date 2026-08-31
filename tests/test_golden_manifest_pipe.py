@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,12 @@ from test_frontend_state_helpers import run_node_helper
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "golden-manifests"
 RUST_ROUND_TRIP = ["cargo", "run", "--quiet", "--bin", "golden_manifest_roundtrip", "--"]
+
+if not (REPO_ROOT / "dist" / "index.html").is_file() or shutil.which("cargo") is None:
+    pytest.skip(
+        "frontend dist not built — cargo-backed pipe tests require a built frontend",
+        allow_module_level=True,
+    )
 
 
 def fixture_paths() -> list[Path]:

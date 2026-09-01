@@ -33,7 +33,11 @@ import { checkRuntimeResourceCompleteness } from "./runtime_resource_completenes
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-console.error(acceptanceBanner(repoRoot));
+function writeStderr(message) {
+  process.stderr.write(`${message}\n`);
+}
+
+writeStderr(acceptanceBanner(repoRoot));
 
 // ---------------------------------------------------------------------------
 // Allowlist: selectors queried by the runtime that are only present in
@@ -498,24 +502,24 @@ if (allowlisted.size > 0) {
 }
 
 if (missing.size > 0) {
-  console.error(`CONTRACT BROKEN — ${missing.size} selector(s) queried but not defined:`);
+  writeStderr(`CONTRACT BROKEN — ${missing.size} selector(s) queried but not defined:`);
   for (const [key, sites] of [...missing.entries()].sort()) {
-    console.error(`  - ${key}`);
-    for (const site of sites) console.error(`      queried by ${site}`);
+    writeStderr(`  - ${key}`);
+    for (const site of sites) writeStderr(`      queried by ${site}`);
   }
   process.exit(1);
 }
 
 const missingRuntimeResources = checkRuntimeResourceCompleteness(repoRoot);
 if (missingRuntimeResources.length > 0) {
-  console.error(`CONTRACT BROKEN — ${missingRuntimeResources.length} masking runtime resource(s) missing from tauri.conf.json:`);
-  for (const source of missingRuntimeResources) console.error(`  - ${source}`);
+  writeStderr(`CONTRACT BROKEN — ${missingRuntimeResources.length} masking runtime resource(s) missing from tauri.conf.json:`);
+  for (const source of missingRuntimeResources) writeStderr(`  - ${source}`);
   process.exit(1);
 }
 
 if (corpusFailures.length > 0) {
-  console.error(`CONTRACT BROKEN — ${corpusFailures.length} real-corpus contract violation(s):`);
-  for (const failure of corpusFailures) console.error(`  - ${failure}`);
+  writeStderr(`CONTRACT BROKEN — ${corpusFailures.length} real-corpus contract violation(s):`);
+  for (const failure of corpusFailures) writeStderr(`  - ${failure}`);
   process.exit(1);
 }
 
@@ -525,8 +529,8 @@ const transitionFailures = transitionDisciplineFailures({
   compositionReferenceFiles,
 });
 if (transitionFailures.length > 0) {
-  console.error(`CONTRACT BROKEN — ${transitionFailures.length} transition discipline violation(s):`);
-  for (const failure of transitionFailures) console.error(`  - ${failure}`);
+  writeStderr(`CONTRACT BROKEN — ${transitionFailures.length} transition discipline violation(s):`);
+  for (const failure of transitionFailures) writeStderr(`  - ${failure}`);
   process.exit(1);
 }
 

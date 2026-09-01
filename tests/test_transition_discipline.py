@@ -21,6 +21,10 @@ def run_runtime_contract() -> subprocess.CompletedProcess[str]:
     )
 
 
+def runtime_contract_output(result: subprocess.CompletedProcess[str]) -> str:
+    return "\n".join(stream for stream in (result.stderr, result.stdout) if stream)
+
+
 class TransitionDisciplineTests(unittest.TestCase):
     def test_converted_screens_config_registers_all_react_owned_screens(self) -> None:
         # Given: the completed React ownership conversions.
@@ -190,8 +194,9 @@ class TransitionDisciplineTests(unittest.TestCase):
         finally:
             CONFIG_PATH.write_text(original_config, encoding="utf-8")
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn('Application composition code references React-owned id "btn-pick-pdf"', result.stderr)
+        output = runtime_contract_output(result)
+        self.assertNotEqual(0, result.returncode, output)
+        self.assertIn('Application composition code references React-owned id "btn-pick-pdf"', output)
         self.assertEqual(original_config, CONFIG_PATH.read_text(encoding="utf-8"))
 
     def test_checker_rejects_an_unregistered_screen_root_after_transition_completion(self) -> None:
@@ -209,8 +214,9 @@ class TransitionDisciplineTests(unittest.TestCase):
         finally:
             CONFIG_PATH.write_text(original_config, encoding="utf-8")
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn("#canvas-workspace-screen must be declared", result.stderr)
+        output = runtime_contract_output(result)
+        self.assertNotEqual(0, result.returncode, output)
+        self.assertIn("#canvas-workspace-screen must be declared", output)
         self.assertEqual(original_config, CONFIG_PATH.read_text(encoding="utf-8"))
 
 

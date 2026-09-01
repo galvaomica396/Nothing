@@ -52,6 +52,15 @@ jobs:
           $files += Get-ChildItem -Path "scripts" -Filter "*.py" | ForEach-Object { $_.FullName }
           python -m py_compile @files
 
+      - name: Runtime contract diagnostic
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          node scripts/check_runtime_contract.mjs
+          $exitCode = $LASTEXITCODE
+          Write-Host "runtime contract exit code: $exitCode"
+          exit $exitCode
+
       - name: Python tests
         run: python -m pytest
 

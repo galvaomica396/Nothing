@@ -58,6 +58,20 @@ use path_security::{
 };
 use platform_macos::{activate_macos_app, set_macos_activation_policy, show_macos_application};
 
+#[cfg(windows)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    // Windows cannot open a directory with std::fs::File::open, so there is
+    // no portable directory fsync operation available through the standard
+    // library. File contents are still fsynced at each callsite.
+    let _ = path;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path).and_then(|directory| directory.sync_all())
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct ManualBoxPayload {
     page: u32,
@@ -1820,8 +1834,7 @@ pub(crate) fn finalize_masking_run_core(
         std::fs::File::open(&report_path)
             .and_then(|file| file.sync_all())
             .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_FAILED".to_string())?;
-        std::fs::File::open(&audit_dir)
-            .and_then(|directory| directory.sync_all())
+        sync_directory(&audit_dir)
             .map_err(|_| "MASKING_SESSION_AUDIT_REPORT_FAILED".to_string())?;
         publication = Some(FinalizePublication {
             final_path: destination.display().to_string(),
@@ -1840,10 +1853,7 @@ pub(crate) fn finalize_masking_run_core(
                 "MASKING_SESSION_PROMOTION_FAILED".to_string()
             }
         })?;
-        if std::fs::File::open(&parent)
-            .and_then(|directory| directory.sync_all())
-            .is_err()
-        {
+        if sync_directory(&parent).is_err() {
             let rollback = transaction.rollback();
             if rollback.is_err() {
                 committed = true;
@@ -1860,9 +1870,7 @@ pub(crate) fn finalize_masking_run_core(
             }
         })?;
         committed = true;
-        std::fs::File::open(&parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|_| "MASKING_SESSION_PUBLISHED_POSTCOMMIT".to_string())?;
+        sync_directory(&parent).map_err(|_| "MASKING_SESSION_PUBLISHED_POSTCOMMIT".to_string())?;
         let final_hash = std::fs::read(&destination)
             .map_err(|_| "MASKING_SESSION_PUBLISHED_POSTCOMMIT".to_string())
             .and_then(|published| {
@@ -3450,6 +3458,13 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("security root");
         root
+    }
+
+    #[test]
+    fn sync_directory_succeeds_for_an_existing_directory() {
+        let root = temp_security_root("sync_directory");
+        sync_directory(&root).expect("existing directory should be synchronized");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

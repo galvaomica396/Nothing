@@ -88,10 +88,10 @@ jobs:
           $outDir = "release-windows"
           $portableDir = Join-Path $outDir "portable"
           $releaseRoot = "src-tauri/target/release"
-          $portableExeName = "Nothing-4.6.3-windows-x64.exe"
-          $installerName = "Nothing-4.6.3-windows-x64-setup.exe"
-          $portableZipName = "Nothing-4.6.3-windows-x64-portable.zip"
-          $manifestName = "Nothing-4.6.3-windows-x64-manifest.json"
+          $portableExeName = "Nothing-4.7.2-windows-x64.exe"
+          $installerName = "Nothing-4.7.2-windows-x64-setup.exe"
+          $portableZipName = "Nothing-4.7.2-windows-x64-portable.zip"
+          $manifestName = "Nothing-4.7.2-windows-x64-manifest.json"
           $licenseFiles = @(
             "LICENSE",
             "THIRD_PARTY_NOTICES.md",
@@ -192,8 +192,8 @@ jobs:
           $installerFile = Get-Item $installerPath
           $portableZipFile = Get-Item $portableZipPath
           $manifest = [ordered]@{
-            artifact_name = "Nothing-4.6.3-windows-x64"
-            app_version = "4.6.3"
+            artifact_name = "Nothing-4.7.2-windows-x64"
+            app_version = "4.7.2"
             os = "windows-x64"
             github_run_id = $env:GITHUB_RUN_ID
             github_run_attempt = $env:GITHUB_RUN_ATTEMPT
@@ -238,7 +238,7 @@ jobs:
 
       - name: Windows packaged desktop launch smoke
         shell: pwsh
-        run: ./scripts/e2e_windows_desktop_smoke.ps1 -ReleaseDir release-windows/portable -InstallerPath release-windows/Nothing-4.6.3-windows-x64-setup.exe
+        run: ./scripts/e2e_windows_desktop_smoke.ps1 -ReleaseDir release-windows/portable -InstallerPath release-windows/Nothing-4.7.2-windows-x64-setup.exe
 
       - name: Upload Windows release assets to GitHub Release
         if: ${{ inputs.publish_release }}
@@ -249,9 +249,9 @@ jobs:
           $tag = "${{ inputs.release_tag }}"
           if ([string]::IsNullOrWhiteSpace($tag)) { throw "release_tag is required when publish_release is true" }
 
-          $installerPath = "release-windows/Nothing-4.6.3-windows-x64-setup.exe"
-          $portableZipPath = "release-windows/Nothing-4.6.3-windows-x64-portable.zip"
-          $manifestPath = "release-windows/Nothing-4.6.3-windows-x64-manifest.json"
+          $installerPath = "release-windows/Nothing-4.7.2-windows-x64-setup.exe"
+          $portableZipPath = "release-windows/Nothing-4.7.2-windows-x64-portable.zip"
+          $manifestPath = "release-windows/Nothing-4.7.2-windows-x64-manifest.json"
           if (!(Test-Path $installerPath)) { throw "missing Windows installer: $installerPath" }
           if (!(Test-Path $portableZipPath)) { throw "missing Windows portable zip: $portableZipPath" }
           if (!(Test-Path $manifestPath)) { throw "missing release manifest: $manifestPath" }
@@ -285,13 +285,13 @@ jobs:
           Remove-Item $roundTripRoot -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $roundTripRoot | Out-Null
 
-          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.6.3-windows-x64-portable.zip" --dir $roundTripRoot --clobber
-          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.6.3-windows-x64-setup.exe" --dir $roundTripRoot --clobber
-          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.6.3-windows-x64-manifest.json" --dir $roundTripRoot --clobber
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.7.2-windows-x64-portable.zip" --dir $roundTripRoot --clobber
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.7.2-windows-x64-setup.exe" --dir $roundTripRoot --clobber
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern "Nothing-4.7.2-windows-x64-manifest.json" --dir $roundTripRoot --clobber
 
-          $zipPath = Join-Path $roundTripRoot "Nothing-4.6.3-windows-x64-portable.zip"
-          $installerPath = Join-Path $roundTripRoot "Nothing-4.6.3-windows-x64-setup.exe"
-          $manifestPath = Join-Path $roundTripRoot "Nothing-4.6.3-windows-x64-manifest.json"
+          $zipPath = Join-Path $roundTripRoot "Nothing-4.7.2-windows-x64-portable.zip"
+          $installerPath = Join-Path $roundTripRoot "Nothing-4.7.2-windows-x64-setup.exe"
+          $manifestPath = Join-Path $roundTripRoot "Nothing-4.7.2-windows-x64-manifest.json"
           if (!(Test-Path $zipPath)) { throw "missing downloaded Windows portable zip: $zipPath" }
           if (!(Test-Path $installerPath)) { throw "missing downloaded Windows installer: $installerPath" }
           if (!(Test-Path $manifestPath)) { throw "missing downloaded Windows manifest: $manifestPath" }
@@ -331,6 +331,6 @@ jobs:
         continue-on-error: ${{ inputs.publish_release }}
         uses: actions/upload-artifact@v7
         with:
-          name: Nothing-4.6.3-windows-x64-release-assets
+          name: Nothing-4.7.2-windows-x64-release-assets
           path: release-windows
           retention-days: 7

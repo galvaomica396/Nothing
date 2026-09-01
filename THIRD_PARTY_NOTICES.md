@@ -7,7 +7,7 @@ the Apache-licensed dependencies below is distributed as
 
 The dependency versions and attributions below were checked against the
 installed npm packages, Cargo crates, and Python distributions used to build
-Nothing 4.6.3. No installed Apache-licensed direct dependency supplied an
+Nothing 4.7.2. No installed Apache-licensed direct dependency supplied an
 additional `NOTICE` file.
 
 ## Python PDF libraries

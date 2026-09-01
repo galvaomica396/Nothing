@@ -1,7 +1,7 @@
 [package]
 name = "tauri_frontend"
 default-run = "tauri_frontend"
-version = "4.6.3"
+version = "4.7.2"
 description = "A Tauri App"
 authors = ["Nothing contributors"]
 edition = "2021"

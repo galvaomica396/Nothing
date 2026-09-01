@@ -1,6 +1,6 @@
 param(
   [string]$ReleaseDir = "release-windows\portable",
-  [string]$InstallerPath = "release-windows\Nothing-4.6.3-windows-x64-setup.exe",
+  [string]$InstallerPath = "release-windows\Nothing-4.7.2-windows-x64-setup.exe",
   [string]$WorkDir = "",
   [int]$StartupSeconds = 8
 )
@@ -21,7 +21,7 @@ function Resolve-RequiredPath {
 }
 
 $releasePath = Resolve-RequiredPath -Path $ReleaseDir -Description "release directory"
-$appExe = Resolve-RequiredPath -Path (Join-Path $releasePath "Nothing-4.6.3-windows-x64.exe") -Description "packaged Tauri executable"
+$appExe = Resolve-RequiredPath -Path (Join-Path $releasePath "Nothing-4.7.2-windows-x64.exe") -Description "packaged Tauri executable"
 $installerExe = Resolve-RequiredPath -Path $InstallerPath -Description "packaged Tauri NSIS installer"
 
 $requiredRuntimeFiles = @(

@@ -252,36 +252,57 @@ def atomic_write_evidence(output_path: str, text: str) -> None:
         raise ValueError("EVIDENCE_DESTINATION_REJECTED") from None
     try:
         parent = supplied.parent.resolve(strict=True)
-        parent_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     except OSError:
         raise ValueError("EVIDENCE_DESTINATION_REJECTED") from None
     temporary_name = f".smoke-evidence-{os.getpid()}-{time.time_ns()}"
+    destination = parent / supplied.name
+    dir_fd_supported = (
+        os.open in getattr(os, "supports_dir_fd", set())
+        and os.rename in getattr(os, "supports_dir_fd", set())
+    )
+    parent_fd: int | None = None
+    temporary_path = parent / temporary_name
     try:
-        descriptor = os.open(
-            temporary_name,
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=parent_fd,
-        )
+        if dir_fd_supported:
+            parent_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            descriptor = os.open(
+                temporary_name,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=parent_fd,
+            )
+        else:
+            descriptor = os.open(
+                temporary_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as evidence:
                 evidence.write(f"{text}\n")
                 evidence.flush()
                 os.fsync(evidence.fileno())
-            os.replace(
-                temporary_name, supplied.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd
-            )
-            os.fsync(parent_fd)
+            if dir_fd_supported:
+                os.replace(
+                    temporary_name, supplied.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd
+                )
+                os.fsync(parent_fd)
+            else:
+                os.replace(temporary_path, destination)
         except Exception:
             try:
-                os.unlink(temporary_name, dir_fd=parent_fd)
+                if dir_fd_supported and parent_fd is not None:
+                    os.unlink(temporary_name, dir_fd=parent_fd)
+                else:
+                    temporary_path.unlink(missing_ok=True)
             except OSError:
                 pass
             raise
-    except OSError:
+    except (OSError, TypeError, ValueError):
         raise ValueError("EVIDENCE_DESTINATION_REJECTED") from None
     finally:
-        os.close(parent_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
 def validate_threshold_artifact(
     artifact_path: str, pinned_digest: str, receipt: dict[str, object]
 ) -> bool:

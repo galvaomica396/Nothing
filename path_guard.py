@@ -31,7 +31,7 @@ def resolve_allowed_roots(
     """
     raw = os.environ.get(env_var, "").strip()
     if raw:
-        parts = [part for part in raw.split(os.pathsep) if part.strip()]
+        parts = [part.strip() for part in raw.split(os.pathsep) if part.strip()]
     elif default_roots:
         parts = [str(part) for part in default_roots]
     else:
@@ -39,10 +39,20 @@ def resolve_allowed_roots(
     roots: list[Path] = []
     for part in parts:
         try:
-            roots.append(Path(part).expanduser().resolve())
-        except OSError:
+            roots.append(_canonical_path(part))
+        except (OSError, RuntimeError):
             continue
     return roots
+
+
+def _canonical_path(path: str | os.PathLike[str]) -> Path:
+    """Resolve a path using the host filesystem's comparison semantics."""
+    resolved = Path(path).expanduser().resolve()
+    # normcase is a no-op on POSIX and performs both separator and case
+    # normalization on Windows.  The latter matters because Windows paths
+    # are case-insensitive even when the spelling supplied by two callers
+    # differs.
+    return Path(os.path.normcase(os.fspath(resolved)))
 
 
 def is_path_allowed(
@@ -53,8 +63,8 @@ def is_path_allowed(
     """Return ``True`` only for a path inside an allowed root."""
     roots = resolve_allowed_roots(default_roots, env_var)
     try:
-        target = Path(path).expanduser().resolve()
-    except OSError:
+        target = _canonical_path(path)
+    except (OSError, RuntimeError):
         return False
     for root in roots:
         if target == root or root in target.parents:

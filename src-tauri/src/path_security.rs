@@ -190,7 +190,7 @@ impl AllowedFileAccess {
             .map_err(|_| "저장 대상 확인에 실패했습니다.".to_string())?
             .clone()
             .ok_or_else(native_save_target_rejected)?;
-        if pending.output_path != target
+        if !paths_equal(&pending.output_path, &target)
             || pending.save_token != save_token.trim()
             || pending.binding != *binding
         {
@@ -223,7 +223,7 @@ impl AllowedFileAccess {
         let pending = target_slot
             .as_ref()
             .ok_or_else(native_save_target_rejected)?;
-        if pending.output_path != target
+        if !paths_equal(&pending.output_path, &target)
             || pending.save_token != save_token.trim()
             || pending.binding != *binding
         {
@@ -312,14 +312,22 @@ impl AllowedFileAccess {
         let selected = self
             .selected_files
             .lock()
-            .map(|files| files.contains(&canonical))
+            .map(|files| {
+                files
+                    .iter()
+                    .any(|candidate| paths_equal(candidate, &canonical))
+            })
             .unwrap_or(true);
         if selected {
             return false;
         }
         self.disposable_artifacts
             .lock()
-            .map(|files| files.contains(&canonical))
+            .map(|files| {
+                files
+                    .iter()
+                    .any(|candidate| paths_equal(candidate, &canonical))
+            })
             .unwrap_or(false)
     }
 
@@ -337,9 +345,14 @@ impl AllowedFileAccess {
         self.masked_text_artifacts
             .lock()
             .ok()
-            .and_then(|artifacts| artifacts.get(&canonical).cloned())
+            .and_then(|artifacts| {
+                artifacts
+                    .iter()
+                    .find(|(candidate, _)| paths_equal(candidate, &canonical))
+                    .map(|(_, provenance)| provenance.clone())
+            })
             .map(|provenance| {
-                provenance.preview_pdf == preview
+                paths_equal(&provenance.preview_pdf, &preview)
                     && matches!(
                         provenance.policy.as_str(),
                         "token" | "partial" | "pseudonym"
@@ -354,7 +367,11 @@ impl AllowedFileAccess {
         };
         self.masked_text_artifacts
             .lock()
-            .map(|artifacts| artifacts.contains_key(&canonical))
+            .map(|artifacts| {
+                artifacts
+                    .keys()
+                    .any(|candidate| paths_equal(candidate, &canonical))
+            })
             .unwrap_or(false)
     }
 
@@ -364,7 +381,11 @@ impl AllowedFileAccess {
         };
         self.report_artifacts
             .lock()
-            .map(|reports| reports.contains(&canonical))
+            .map(|reports| {
+                reports
+                    .iter()
+                    .any(|candidate| paths_equal(candidate, &canonical))
+            })
             .unwrap_or(false)
     }
 
@@ -378,7 +399,7 @@ impl AllowedFileAccess {
         .any(|files| {
             files
                 .lock()
-                .map(|files| files.contains(path))
+                .map(|files| files.iter().any(|candidate| paths_equal(candidate, path)))
                 .unwrap_or(false)
         })
     }
@@ -386,7 +407,7 @@ impl AllowedFileAccess {
     fn path_is_in_allowed_artifact_dir(&self, path: &Path) -> bool {
         self.artifact_dirs
             .lock()
-            .map(|dirs| dirs.iter().any(|dir| path.starts_with(dir)))
+            .map(|dirs| dirs.iter().any(|dir| path_is_within(path, dir)))
             .unwrap_or(false)
     }
 }
@@ -430,6 +451,59 @@ pub(crate) fn has_extension(path: &Path, allowed: &[&str]) -> bool {
                 .any(|allowed_ext| ext.eq_ignore_ascii_case(allowed_ext))
         })
         .unwrap_or(false)
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        return path_components_equal(left, right);
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let root_components: Vec<_> = root.components().collect();
+        let path_components: Vec<_> = path.components().collect();
+        root_components.len() <= path_components.len()
+            && root_components
+                .iter()
+                .zip(path_components.iter())
+                .all(|(left, right)| path_component_equal(left, right))
+    }
+    #[cfg(not(windows))]
+    {
+        path == root || path.starts_with(root)
+    }
+}
+
+#[cfg(windows)]
+fn path_components_equal(left: &Path, right: &Path) -> bool {
+    let left_components: Vec<_> = left.components().collect();
+    let right_components: Vec<_> = right.components().collect();
+    left_components.len() == right_components.len()
+        && left_components
+            .iter()
+            .zip(right_components.iter())
+            .all(|(left, right)| path_component_equal(left, right))
+}
+
+#[cfg(windows)]
+fn path_component_equal(left: &Component<'_>, right: &Component<'_>) -> bool {
+    match (left, right) {
+        (Component::Prefix(left), Component::Prefix(right)) => {
+            left.as_os_str().to_string_lossy().to_lowercase()
+                == right.as_os_str().to_string_lossy().to_lowercase()
+        }
+        (Component::Normal(left), Component::Normal(right)) => {
+            left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
+        }
+        _ => left == right,
+    }
 }
 pub(crate) fn normalize_pdf_save_path(path: &Path) -> PathBuf {
     if has_extension(path, &["pdf"]) {
@@ -614,7 +688,7 @@ pub(crate) fn remove_intermediate_file_if_outside_dir(
     path: &Path,
     keep_dir: &Path,
 ) {
-    if !path.starts_with(keep_dir) && access.disposable_artifact_is_allowed(path) {
+    if !path_is_within(path, keep_dir) && access.disposable_artifact_is_allowed(path) {
         let _ = std::fs::remove_file(path);
     }
 }
@@ -752,7 +826,7 @@ where
                         return Err(SaveError::Io);
                     }
                 };
-                if !final_abs.starts_with(&output_dir) {
+                if !path_is_within(&final_abs, &output_dir) {
                     let _ = std::fs::remove_file(&final_path);
                     return Err(SaveError::EscapesOutputDir);
                 }

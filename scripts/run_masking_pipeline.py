@@ -102,10 +102,18 @@ def _reject_symlink_components(path: Path) -> None:
     candidate = path.expanduser()
     for component in (candidate.parent, *candidate.parent.parents):
         try:
-            if component.is_symlink():
+            if component.is_symlink() or (
+                os.name == "nt"
+                and getattr(component, "is_junction", lambda: False)()
+            ):
                 raise ValueError("PATH_SYMLINK_REJECTED")
         except OSError as error:
             raise ValueError("PATH_SYMLINK_REJECTED") from error
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    """Compare already-resolved paths with the host filesystem semantics."""
+    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
 
 
 def resolve_guarded_path(value: str, *, code: str, require_file: bool = False, require_directory: bool = False) -> Path:
@@ -120,7 +128,14 @@ def resolve_guarded_path(value: str, *, code: str, require_file: bool = False, r
     if require_directory and not supplied.is_dir():
         raise ValueError(code)
     resolved = supplied.resolve(strict=True)
-    require_allowed_path(resolved, label=code)
+    try:
+        require_allowed_path(resolved, label=code)
+    except PermissionError as error:
+        # This entry point has historically exposed one stable path-security
+        # failure code. Keep that contract independent of whether the host's
+        # temporary directory happens to contain a symlink (macOS commonly
+        # does; Windows commonly does not).
+        raise ValueError("PATH_SYMLINK_REJECTED") from error
     return resolved
 
 
@@ -145,15 +160,15 @@ def safe_staging_destination(
         parent_stat = parent.stat()
     except OSError:
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED") from None
-    if (
-        parent != manifest_path.parent
-        or not parent.is_dir()
-        or parent_stat.st_uid != getattr(os, "getuid", lambda: parent_stat.st_uid)()
+    if not _same_path(parent, manifest_path.parent) or not parent.is_dir():
+        raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
+    if os.name != "nt" and (
+        parent_stat.st_uid != os.getuid()
         or stat.S_IMODE(parent_stat.st_mode) & 0o077
     ):
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
     destination = supplied.resolve(strict=False)
-    if any(source is not None and source == destination for source in source_paths):
+    if any(source is not None and _same_path(source, destination) for source in source_paths):
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
 
     lock_path = parent / f".{supplied.name}.reservation"

@@ -133,7 +133,7 @@ function realCorpusFailures() {
 
 function walk(dir, predicate, found = []) {
   for (const entry of fs.readdirSync(path.join(repoRoot, dir), { withFileTypes: true })) {
-    const rel = path.join(dir, entry.name);
+    const rel = `${dir}/${entry.name}`;
     if (entry.isDirectory()) walk(rel, predicate, found);
     else if (predicate(rel)) found.push(rel);
   }

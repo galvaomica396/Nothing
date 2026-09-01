@@ -24,7 +24,7 @@ const pythonTestEnvironment = {
 };
 
 function normalizedRelativePath(relativePath) {
-  return relativePath.split(path.sep).join("/");
+  return relativePath.replace(/[\\/]+/g, "/");
 }
 
 function isSourceFile(entryPath, entry) {
@@ -56,9 +56,9 @@ export function sourceFiles(root = repoRoot) {
   const files = [];
   for (const sourceRoot of sourceRoots) collectFiles(root, sourceRoot, files);
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (!entry.name.endsWith(".py")) continue;
+    if (!entry.name.toLowerCase().endsWith(".py")) continue;
     const entryPath = path.join(root, entry.name);
-    if (isSourceFile(entryPath, entry)) files.push(entry.name);
+    if (isSourceFile(entryPath, entry)) files.push(normalizedRelativePath(entry.name));
   }
   return [...new Set(files)].sort();
 }

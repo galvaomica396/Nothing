@@ -37,6 +37,7 @@ from scripts.generate_t35_mixed_text_scan_fixture import write_fixture as write_
 
 SESSION_HASH_KEY = bytes(range(32))
 CUSTOM_KEYWORD_TEXT_HASH = hashlib.sha256("공사기간\n연장".encode("utf-8")).hexdigest()
+SUCCESSOR_KEYWORD_TEXT_HASH = hashlib.sha256("관악구".encode("utf-8")).hexdigest()
 
 
 def _analysis_options(**overrides):
@@ -490,6 +491,38 @@ class AnalysisManifestContractTests(unittest.TestCase):
             [("legal", "user_confirmed", False)],
             [(item["kind"], item["state"], item["common_only"]) for item in manifest["segments"]],
         )
+
+    def test_public_keyword_reanalysis_uses_successor_revision_from_options(self):
+        extracted = _custom_keyword_extracted("본문 관악구")
+        detector = type("Detector", (), {"detect": lambda _self, _text: []})()
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "public-keyword-reanalysis.pdf"
+            source.write_bytes(b"%PDF-1.7\npublic-keyword-reanalysis")
+            with (
+                patch("document_masker_ocr_gui.build_ko_pii_detector", return_value=detector),
+                patch(
+                    "document_masker_ocr_gui.occurrence_rect_text_hash",
+                    return_value=SUCCESSOR_KEYWORD_TEXT_HASH,
+                ),
+            ):
+                manifest = trusted_analysis_manifest(
+                    str(source),
+                    _analysis_options(
+                        analysis_revision=2,
+                        custom_keywords="관악구",
+                    ),
+                    session_hash_key=SESSION_HASH_KEY,
+                    extracted=extracted,
+                )
+
+        keywords = [
+            item for item in manifest["occurrences"]
+            if item["category"] == "custom_keyword"
+        ]
+        self.assertEqual(2, manifest["analysis_revision"])
+        self.assertEqual(1, len(keywords))
+        self.assertEqual(2, keywords[0]["analysis_revision"])
+        self.assertEqual("confirmed", keywords[0]["state"])
 
     def test_public_profile_partial_boundary_reanalysis_keeps_confirmed_fragments(self):
         extracted = _custom_keyword_extracted("본문 1", "본문 2", "본문 3")

@@ -131,6 +131,10 @@ function navigateToFirstMaskingLocation(page: number | null): void {
   void workspaceController()?.goToReviewPage(page);
 }
 
+function navigateToReviewLocation(item: DashboardReviewItem): void {
+  void workspaceController()?.navigateToReviewLocation(item);
+}
+
 // v4 P2 (REDESIGN_V4_DARK §1): 문서 관제 화면과 수동 보정(캔버스) 화면을 하나의
 // "문서" 화면으로 통합했다. 이 화면이 data-screen-panel="documents"를 가져가고
 // 상단 탭 "문서"가 이걸 가리킨다. 빈 상태(히어로) → PDF 열면 마스킹 미리보기가
@@ -554,9 +558,10 @@ export function CanvasWorkspace() {
                     {workspace.reviewState.status === "valid" && primaryReviewItems.map((item) => (
                       <div className="dm-detect__item" data-review-id={item.reviewId} data-state={item.status} key={item.reviewId} onMouseEnter={() => focusReviewDetection(item.reviewId)} onMouseLeave={() => focusReviewDetection(null)} onFocus={() => focusReviewDetection(item.reviewId)} onBlur={clearReviewDetectionOnBlur}>
                         <i className={item.status === "resolved" ? "dot-primary" : "dot-warning"}></i>
-                        <strong>{item.kindLabel}</strong>
+                        <strong>{item.locationOrdinal !== null && <span className="dm-detect__ordinal" aria-label={`${item.locationOrdinal}번 위치`}>{item.locationOrdinal}</span>}{item.kindLabel}</strong>
                         <em>{item.pageLabel}쪽 · {item.status === "pending" ? "검토 대기" : "해결됨"}</em>
                         <span className="dm-detect__detail" id={`review-detail-${item.reviewId}`}>{item.detail}</span>
+                        <button className="dm-btn dm-btn--compact dm-detect__action dm-detect__location-action" type="button" data-review-location={item.reviewId} aria-describedby={`review-detail-${item.reviewId}`} aria-label={`${item.locationOrdinal === null ? "" : `${item.locationOrdinal}번 `}검토 위치 보기`} onClick={() => navigateToReviewLocation(item)}>위치 보기</button>
                         {item.scannedGeometryUnavailable && <button className="dm-btn dm-btn--compact dm-detect__action dm-detect__scan-page-action" type="button" aria-describedby={`review-detail-${item.reviewId}`} aria-label={`스캔 ${item.pageLabel}쪽으로 이동해 수동 마스킹`} onClick={() => navigateToScanManualPage(item)}>스캔 페이지로 이동</button>}
                         {item.status === "pending" && item.kind === "region_geometry" && workspace.geometryDraftReviewId === item.reviewId && <p id={`review-guidance-${item.reviewId}`} className="dm-detect__geometry-guidance">제안 영역이 맞으면 바로 확정하거나, 표시된 영역을 모두 덮도록 드래그한 뒤 [영역 확정]을 누르세요.</p>}
                         {workspace.reviewFailureById.get(item.reviewId) && <span className="dm-detect__feedback" data-state="failure" role="alert">처리 실패 ({workspace.reviewFailureById.get(item.reviewId)})</span>}

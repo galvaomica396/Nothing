@@ -753,6 +753,7 @@ fn analyze_path(
             input_file: path.display().to_string(),
             profile: profile.to_string(),
             options: options(profile, binding),
+            reanalysis: None,
         },
     )
 }
@@ -1030,6 +1031,7 @@ fn plumbing(
             input_file: fixture.display().to_string(),
             profile: "official_dispatch".to_string(),
             options: options("official_dispatch", binding),
+            reanalysis: None,
         },
     )?;
     verify_threshold_binding(&manifest, binding)?;
@@ -1110,6 +1112,7 @@ fn plumbing(
             input_file: fixture.display().to_string(),
             profile: "official_dispatch".to_string(),
             options: options("official_dispatch", binding),
+            reanalysis: None,
         },
     )?;
     let confirmed_destination = root.join("confirmed-unresolved.pdf");
@@ -1507,6 +1510,7 @@ fn full(
             input_file: scan_fixture.display().to_string(),
             profile: "official_dispatch".to_string(),
             options: options("official_dispatch", binding),
+            reanalysis: None,
         },
     )?;
     let scan_segment_count = scan_manifest

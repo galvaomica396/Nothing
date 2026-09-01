@@ -307,7 +307,7 @@ def main() -> int:
                     {"kind", "page_start", "page_end", "segment_kind", "analysis_revision"},
                     {"kind", "page_start", "page_end", "analysis_revision"},
                 )
-                or reanalysis.get("kind") not in {"boundary", "ocr"}
+                or reanalysis.get("kind") not in {"boundary", "ocr", "manual_preserving"}
                 or type(reanalysis.get("analysis_revision")) is not int
                 or reanalysis["analysis_revision"] < 2
                 or type(reanalysis.get("page_start")) is not int
@@ -315,6 +315,8 @@ def main() -> int:
                 or reanalysis["page_start"] < 0 or reanalysis["page_end"] < reanalysis["page_start"]
                 or (reanalysis["kind"] == "boundary"
                     and reanalysis.get("segment_kind") not in {"internal_review", "official_dispatch", "attachment", "legal"})
+                or (reanalysis["kind"] == "manual_preserving"
+                    and (reanalysis["page_start"] != 0 or reanalysis["page_end"] != 0))
             ):
                 raise ValueError("ANALYSIS_REVISION_INVALID")
             infile_path = resolve_guarded_path(request["input"], code="INPUT_PATH_REJECTED", require_file=True)

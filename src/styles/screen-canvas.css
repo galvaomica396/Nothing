@@ -1790,6 +1790,20 @@ body.standalone-canvas-window .dm-canvas__body {
   white-space: nowrap;
 }
 
+#canvas-workspace-screen .dm-detect__ordinal {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  margin-right: 5px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--dm-accent);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  vertical-align: -2px;
+}
+
 #canvas-workspace-screen .dm-detect__list em {
   color: var(--dm-text-secondary);
   font: 700 var(--dm-fs-sm) / 1.3 var(--dm-font);
@@ -1800,6 +1814,11 @@ body.standalone-canvas-window .dm-canvas__body {
 #canvas-workspace-screen .dm-detect__list > div > span,
 #canvas-workspace-screen .dm-detect__actions {
   grid-column: 2 / -1;
+}
+
+#canvas-workspace-screen .dm-detect__location-action {
+  grid-column: 2 / -1;
+  justify-self: start;
 }
 
 #canvas-workspace-screen .dm-detect__actions {

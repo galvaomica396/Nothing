@@ -86,6 +86,11 @@ export type AnalyzeMaskingRunRequest = {
     readonly inputFile: string;
     readonly profile: Profile;
     readonly options: MaskingOptions & { readonly profile: Profile };
+    readonly reanalysis?: {
+      readonly runId: string;
+      readonly analysisRevision: number;
+      readonly manifestHash: string;
+    };
   };
 }[PublicReviewProfile];
 export type GetMaskingRunStateRequest = { readonly runId: string };
@@ -195,10 +200,20 @@ const MASKING_BOOLEAN_FIELDS = [
 ] as const;
 
 function validAnalyzeMaskingRunRequest(value: unknown): value is AnalyzeMaskingRunRequest {
-  if (!isRecord(value) || !exactKeys(value, ["inputFile", "profile", "options"])
+  if (!isRecord(value) || !(exactKeys(value, ["inputFile", "profile", "options"])
+    || exactKeys(value, ["inputFile", "profile", "options", "reanalysis"]))
     || !path(value.inputFile) || !RUNTIME_MASKING_PROFILES.includes(value.profile as PublicReviewProfile)
     || !isRecord(value.options)) {
     return false;
+  }
+  if ("reanalysis" in value) {
+    const reanalysis = value.reanalysis;
+    if (!isRecord(reanalysis)
+      || !exactKeys(reanalysis, ["runId", "analysisRevision", "manifestHash"])
+      || !isMaskingId(reanalysis.runId)
+      || !isNonNegativeInteger(reanalysis.analysisRevision)
+      || reanalysis.analysisRevision < 1
+      || !isMaskingHash(reanalysis.manifestHash)) return false;
   }
   const options = value.options;
   if (!exactKeys(options, MASKING_OPTION_FIELDS)

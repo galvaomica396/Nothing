@@ -764,9 +764,7 @@ fn safe_pipeline_diagnostic_hash(value: Option<&serde_json::Value>) -> Option<&s
     }
 }
 
-fn safe_pipeline_diagnostic_occurrence_id(
-    value: Option<&serde_json::Value>,
-) -> Option<&str> {
+fn safe_pipeline_diagnostic_occurrence_id(value: Option<&serde_json::Value>) -> Option<&str> {
     let value = value?.as_str()?;
     if value.len() == 28
         && value.starts_with("occ_")
@@ -853,7 +851,11 @@ fn stable_pipeline_failure_detail(stderr: &[u8], code: &str) -> String {
                     serde_json::json!(safe_pipeline_diagnostic_page(object.get("page"))?),
                 );
             }
-            for field in ["rect_fingerprint", "expected_text_hash", "observed_text_hash"] {
+            for field in [
+                "rect_fingerprint",
+                "expected_text_hash",
+                "observed_text_hash",
+            ] {
                 if object.get(field).is_some() {
                     safe.insert(
                         field.to_string(),
@@ -1089,6 +1091,31 @@ fn create_private_staging_dir(path: &Path) -> std::io::Result<()> {
     }
 }
 
+fn build_analyzer_payload(
+    input_path: &Path,
+    options: serde_json::Value,
+    analysis_revision: u64,
+) -> Result<serde_json::Value, String> {
+    if analysis_revision == 0 {
+        return Err("MASKING_SESSION_REANALYSIS_FAILED".to_string());
+    }
+    let mut options = options
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
+    // `analysis_revision` is an internal analyzer input. It is deliberately
+    // added after canonical public-option validation so the engine cannot fall
+    // back to revision 1 when a public session is being reanalyzed.
+    options.insert(
+        "analysis_revision".to_string(),
+        serde_json::json!(analysis_revision),
+    );
+    Ok(serde_json::json!({
+        "input": input_path,
+        "options": serde_json::Value::Object(options),
+    }))
+}
+
 pub(crate) fn analyze_masking_run_core(
     app: &tauri::AppHandle,
     access: &AllowedFileAccess,
@@ -1112,17 +1139,40 @@ pub(crate) fn analyze_masking_run_core(
         .map_err(|_| "MASKING_SESSION_ANALYZER_UNAVAILABLE".to_string())?;
     let options = masking_run_session::canonical_public_options(request.options, &request.profile)
         .map_err(|_| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
+    let reanalysis_context = request
+        .reanalysis
+        .as_ref()
+        .map(|reanalysis| {
+            sessions
+                .analysis_reanalysis_context(reanalysis, &input_path, &original, &request.profile)
+                .map_err(|_| "MASKING_SESSION_REANALYSIS_UNAVAILABLE".to_string())
+        })
+        .transpose()?;
+    let analysis_revision = reanalysis_context
+        .as_ref()
+        .map(|context| {
+            context
+                .analysis_revision
+                .checked_add(1)
+                .ok_or_else(|| "MASKING_SESSION_REANALYSIS_FAILED".to_string())
+        })
+        .transpose()?
+        .unwrap_or(1);
     let analyzer_options = masking_run_session::with_server_profile_authority(
         options.clone(),
         &masking_run_session::document_hash(&original),
-        1,
+        analysis_revision,
     )
     .map_err(|_| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
-    let analyzer_request = serde_json::to_vec(&serde_json::json!({
-        "input": input_path.clone(),
-        "options": analyzer_options,
-    }))
-    .map_err(|_| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
+    if let Some(reanalysis) = request.reanalysis.as_ref() {
+        if reanalysis.analysis_revision.checked_add(1) != Some(analysis_revision) {
+            return Err("MASKING_SESSION_REANALYSIS_UNAVAILABLE".to_string());
+        }
+    }
+    let analyzer_payload =
+        build_analyzer_payload(&input_path, analyzer_options, analysis_revision)?;
+    let analyzer_request = serde_json::to_vec(&analyzer_payload)
+        .map_err(|_| "MASKING_SESSION_OPTIONS_INVALID".to_string())?;
     let mut command = runtime_paths::lifecycle_command(&runtime, "analyze")?;
     command.arg("--request-stdin");
     let mut session_hash_key = [0_u8; 32];
@@ -1163,9 +1213,25 @@ pub(crate) fn analyze_masking_run_core(
         remember_lifecycle_failure(failure, Some(&captured));
         "MASKING_SESSION_ANALYZER_INVALID".to_string()
     })?;
-    let manifest =
-        sessions.create_from_trusted(&original, &request.profile, options.clone(), trusted)?;
-    sessions.bind_private_context(&manifest.run_id, input_path, options)?;
+    let manifest = match request.reanalysis {
+        Some(reanalysis) => sessions.replace_from_trusted_analysis(
+            reanalysis,
+            &original,
+            &request.profile,
+            options,
+            trusted,
+        )?,
+        None => {
+            let manifest = sessions.create_from_trusted(
+                &original,
+                &request.profile,
+                options.clone(),
+                trusted,
+            )?;
+            sessions.bind_private_context(&manifest.run_id, input_path, options)?;
+            manifest
+        }
+    };
     Ok(manifest)
 }
 #[tauri::command]
@@ -2771,6 +2837,23 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
+    fn analyzer_payload_binds_successor_revision_without_reanalysis_shape_drift() {
+        let payload = build_analyzer_payload(
+            Path::new("/tmp/original.pdf"),
+            serde_json::json!({"profile": "mixed"}),
+            2,
+        )
+        .expect("analyzer payload");
+
+        assert_eq!(
+            Some(&serde_json::json!(2)),
+            payload
+                .get("options")
+                .and_then(|options| options.get("analysis_revision"))
+        );
+        assert!(payload.get("reanalysis").is_none());
+    }
+    #[test]
     fn boundary_profile_authority_uses_prior_revision_while_ocr_uses_successor() {
         let boundary = masking_run_session::ReviewResolution::Boundary {
             page_start: 1,
@@ -3093,8 +3176,12 @@ mod tests {
         let failure = lifecycle_capture_failure("MASKING_SESSION_FINALIZE_FAILED", &captured)
             .expect("contextual intrinsic diagnostics are classified");
 
-        assert!(failure.detail.contains("\"occurrence_id\":\"occ_0123456789abcdef01234567\""));
-        assert!(failure.detail.contains("\"category\":\"dispatch_metadata\""));
+        assert!(failure
+            .detail
+            .contains("\"occurrence_id\":\"occ_0123456789abcdef01234567\""));
+        assert!(failure
+            .detail
+            .contains("\"category\":\"dispatch_metadata\""));
         assert!(failure.detail.contains("\"page\":1"));
         assert!(failure.detail.contains("\"rect_fingerprint\":\"aaaaaaaa"));
         assert!(failure.detail.contains("\"expected_text_hash\":\"bbbb"));

@@ -2599,6 +2599,31 @@ def _selected_word_text_hash(
     ).hexdigest()
 
 
+def _analysis_revision_for_manifest(
+    opts: dict[str, Any],
+    reanalysis: dict[str, Any] | None,
+) -> int:
+    option_revision = opts.get("analysis_revision", 1)
+    if type(option_revision) is not int or option_revision < 1:
+        raise ValueError("ANALYSIS_REVISION_INVALID")
+    if reanalysis is None:
+        return option_revision
+
+    reanalysis_revision = reanalysis["analysis_revision"]
+    if type(reanalysis_revision) is not int or reanalysis_revision < 2:
+        raise ValueError("ANALYSIS_REVISION_INVALID")
+    expected_revision = (
+        reanalysis_revision - 1
+        if reanalysis["kind"] == "boundary"
+        else reanalysis_revision
+    )
+    if type(expected_revision) is not int or expected_revision < 1:
+        raise ValueError("ANALYSIS_REVISION_INVALID")
+    if "analysis_revision" in opts and option_revision != expected_revision:
+        raise ValueError("ANALYSIS_REVISION_INVALID")
+    return expected_revision
+
+
 def trusted_analysis_manifest(
     infile: str,
     opts: dict[str, Any] | None = None,
@@ -2624,12 +2649,10 @@ def trusted_analysis_manifest(
     elif source_bytes != source_on_disk:
         raise ValueError("ORIGINAL_CHANGED")
     document_hash = hashlib.sha256(source_bytes).hexdigest()
-    revision = opts.get("analysis_revision", 1)
-    if reanalysis is not None:
-        # Boundary routing validates the prior revision; applying its correction mints the successor revision.
-        revision = reanalysis["analysis_revision"] - 1 if reanalysis["kind"] == "boundary" else reanalysis["analysis_revision"]
-    if type(revision) is not int or revision < 1:
-        raise ValueError("ANALYSIS_REVISION_INVALID")
+    # Native reanalysis supplies the successor through options. The legacy
+    # correction payload remains supported, but both inputs must describe the
+    # same revision when they are present.
+    revision = _analysis_revision_for_manifest(opts, reanalysis)
     extracted = extracted if extracted is not None else extract_document_for_public_analysis(
         infile,
         str(opts.get("extract_engine", "auto")),

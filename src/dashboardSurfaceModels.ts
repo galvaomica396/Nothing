@@ -34,6 +34,10 @@ export type DashboardReviewItem = {
   readonly status: ReviewItemV1["status"];
   readonly detail: string;
   readonly scannedGeometryUnavailable: boolean;
+  readonly targetRects: readonly PdfPointsTopLeftRect[];
+  readonly targetOccurrenceIds: readonly string[];
+  readonly targetRegionId: string | null;
+  readonly locationOrdinal: number | null;
 };
 
 export type DashboardReviewState =
@@ -232,7 +236,46 @@ export function geometryReviewCluster(manifest: AnalysisManifestV1, seed: Review
   return [...cluster.values()];
 }
 
-function presentReviewItem(item: ReviewItemV1, manifest: AnalysisManifestV1, groupedReviews: readonly ReviewItemV1[] = [item]): DashboardReviewItem {
+function reviewTargetGeometry(
+  item: ReviewItemV1,
+  manifest: AnalysisManifestV1,
+): { readonly page: number; readonly rects: readonly PdfPointsTopLeftRect[]; readonly occurrenceIds: readonly string[]; readonly regionId: string | null } {
+  if (item.kind === "name" || item.kind === "institution") {
+    const occurrence = manifest.occurrences.find((candidate) => candidate.occurrenceId === item.targetId);
+    return {
+      page: occurrence?.page ?? item.pageStart,
+      rects: occurrence?.rects ?? [],
+      occurrenceIds: occurrence ? [occurrence.occurrenceId] : [],
+      regionId: null,
+    };
+  }
+  if (item.kind === "region_geometry") {
+    const region = manifest.regions.find((candidate) => candidate.regionId === item.targetId);
+    return {
+      page: region?.page ?? item.pageStart,
+      rects: region?.rects ?? [],
+      occurrenceIds: manifest.occurrences
+        .filter((candidate) => candidate.regionId === region?.regionId && candidate.page === region?.page)
+        .map((candidate) => candidate.occurrenceId),
+      regionId: region?.regionId ?? null,
+    };
+  }
+  const occurrences = manifest.occurrences.filter((candidate) =>
+    candidate.segmentId === item.targetId && candidate.page === item.pageStart);
+  return {
+    page: item.pageStart,
+    rects: occurrences.flatMap((candidate) => candidate.rects),
+    occurrenceIds: occurrences.map((candidate) => candidate.occurrenceId),
+    regionId: null,
+  };
+}
+
+function presentReviewItem(
+  item: ReviewItemV1,
+  manifest: AnalysisManifestV1,
+  groupedReviews: readonly ReviewItemV1[] = [item],
+  locationOrdinal: number | null = null,
+): DashboardReviewItem {
   const pageStart = item.pageStart + 1;
   const pageEnd = item.pageEnd + 1;
   const region = item.kind === "region_geometry" ? manifest.regions.find((candidate) => candidate.regionId === item.targetId) : undefined;
@@ -248,6 +291,7 @@ function presentReviewItem(item: ReviewItemV1, manifest: AnalysisManifestV1, gro
     item.requiresAcknowledgment ? "사용자 확인 필요" : "",
   ].filter(Boolean);
   const scannedGeometryUnavailable = reasonCodes.includes("scanned_geometry_unavailable");
+  const target = reviewTargetGeometry(item, manifest);
   return {
     reviewId: item.reviewId,
     reviewIds: groupedReviews.map((review) => review.reviewId),
@@ -264,6 +308,10 @@ function presentReviewItem(item: ReviewItemV1, manifest: AnalysisManifestV1, gro
       ? `스캔 페이지 ${pageStart === pageEnd ? `${pageStart}` : `${pageStart}–${pageEnd}`}쪽: 자동 탐지 불가 — 수동 마스킹으로 가린 뒤 확인하세요.`
       : [...reasonLabels, ...warnings].join(" · ") || "검토 사유 확인 필요",
     scannedGeometryUnavailable,
+    targetRects: target.rects,
+    targetOccurrenceIds: target.occurrenceIds,
+    targetRegionId: target.regionId,
+    locationOrdinal,
   };
 }
 
@@ -281,15 +329,24 @@ export function dashboardReviewState(report: BoundSafeReport | null): DashboardR
   if (!manifest) return { status: "invalid", reason: "missing_manifest" };
   const groupedReviewIds = new Set<string>();
   const items: DashboardReviewItem[] = [];
+  const pageOrdinals = new Map<number, number>();
+  const nextOrdinal = (page: number, hasTarget: boolean): number | null => {
+    if (!hasTarget) return null;
+    const ordinal = (pageOrdinals.get(page) ?? 0) + 1;
+    pageOrdinals.set(page, ordinal);
+    return ordinal;
+  };
   for (const item of queue.value) {
     if (item.kind !== "region_geometry" || item.status !== "pending") {
-      items.push(presentReviewItem(item, manifest));
+      const target = reviewTargetGeometry(item, manifest);
+      items.push(presentReviewItem(item, manifest, [item], nextOrdinal(target.page, target.rects.length > 0)));
       continue;
     }
     if (groupedReviewIds.has(item.reviewId)) continue;
     const cluster = geometryReviewCluster(manifest, item);
     for (const grouped of cluster) groupedReviewIds.add(grouped.reviewId);
-    items.push(presentReviewItem(item, manifest, cluster));
+    const target = reviewTargetGeometry(item, manifest);
+    items.push(presentReviewItem(item, manifest, cluster, nextOrdinal(target.page, target.rects.length > 0)));
   }
   return { status: "valid", items };
 }

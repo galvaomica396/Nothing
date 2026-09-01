@@ -82,7 +82,12 @@ export type MaskingRunDeps = {
   readonly isPdfInput: () => boolean;
   readonly isCustomRegionScope: () => boolean;
   readonly getResultSourcePath: () => string;
-  readonly analyzeMaskingRun: (request: { readonly inputFile: string; readonly profile: "internal_review" | "official_dispatch" | "mixed"; readonly options: MaskingOptions }) => Promise<unknown>;
+  readonly analyzeMaskingRun: (request: {
+    readonly inputFile: string;
+    readonly profile: "internal_review" | "official_dispatch" | "mixed";
+    readonly options: MaskingOptions;
+    readonly reanalysis?: { readonly runId: string; readonly analysisRevision: number; readonly manifestHash: string };
+  }) => Promise<unknown>;
   readonly resolveMaskingReview: (request: ResolveMaskingReviewRequest, report: BoundSafeReport) => Promise<unknown>;
   readonly applyManualActionV1: (request: ApplyManualActionV1Request, report: BoundSafeReport) => Promise<unknown>;
   readonly issueRestoreCapability: (request: RestoreCapabilityRequest, report: BoundSafeReport) => Promise<unknown>;
@@ -219,9 +224,26 @@ export function createMaskingRunController(deps: MaskingRunDeps): MaskingRunCont
       deps.setStatus("사용자 지정 지역을 선택했으면 지역명을 입력하세요.");
       return null;
     }
-    const originalPdfForRestore = state.documentProvenance.original.path;
-    const inputPdfForRun = deps.isPdfInput() ? deps.getResultSourcePath() || originalPdfForRestore : originalPdfForRestore;
     const opts = deps.collectMaskingOptions();
+    const priorPublicManifest = state.activeRunKind === "public" ? state.latestReport?.analysisManifest : undefined;
+    const publicReanalysis = priorPublicManifest && state.publicRunIdentity
+      && state.publicRunIdentity.runId === priorPublicManifest.runId
+      && state.publicRunIdentity.analysisRevision === priorPublicManifest.analysisRevision
+      && state.publicRunIdentity.manifestHash === priorPublicManifest.manifestHash
+      ? {
+        runId: priorPublicManifest.runId,
+        analysisRevision: priorPublicManifest.analysisRevision,
+        manifestHash: priorPublicManifest.manifestHash,
+      }
+      : undefined;
+    if (publicReanalysis && (state.boxes.length > 0 || state.geometryDraft !== null)) {
+      deps.setStatus("반영하지 않은 수동 보정이 있습니다. 키워드·룰을 다시 분석하기 전에 수동 보정을 먼저 반영하세요.");
+      return null;
+    }
+    const originalPdfForRestore = state.documentProvenance.original.path;
+    const inputPdfForRun = publicReanalysis
+      ? originalPdfForRestore
+      : deps.isPdfInput() ? deps.getResultSourcePath() || originalPdfForRestore : originalPdfForRestore;
     const generation = ++maskingRunGeneration;
     const runSnapshot = { ...state };
     const restoreRunSnapshot = (): void => {
@@ -245,6 +267,7 @@ export function createMaskingRunController(deps: MaskingRunDeps): MaskingRunCont
           inputFile: inputPdfForRun,
           profile: opts.profile,
           options: opts,
+          reanalysis: publicReanalysis,
         });
         deps.setBaseMaskingProgress(progressFor("running", 45));
         let analysisValue: unknown = analyzed;
@@ -321,7 +344,12 @@ export function createMaskingRunController(deps: MaskingRunDeps): MaskingRunCont
         }));
         deps.renderFinalState(state.latestReport);
         deps.renderDocumentReviewSurfaces();
-        deps.setStatus(`${statusPrefix} 분석 완료: 검토 항목 ${manifest.value.reviewItems.length}건`);
+        const staleRestoreCount = publicReanalysis
+          ? priorPublicManifest?.manualActions.filter((action) => action.mode === "restore").length ?? 0
+          : 0;
+        deps.setStatus(staleRestoreCount > 0
+          ? `${statusPrefix} 분석 완료: 검토 항목 ${manifest.value.reviewItems.length}건 · 기존 복원 ${staleRestoreCount}건은 새 분석에서 무효화되었습니다. 복원하려면 확정 마스크를 다시 선택하세요.`
+          : `${statusPrefix} 분석 완료: 검토 항목 ${manifest.value.reviewItems.length}건`);
         deps.updateWorkflowReadiness();
         return { outcome: "analysis", manifest: manifest.value };
       }

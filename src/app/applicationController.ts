@@ -3,8 +3,9 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { BatchItem } from "../batchQueue";
 import { reportSessionCounts } from "../dashboardSurfaces";
-import { geometryReviewCluster } from "../dashboardSurfaceModels";
+import { dashboardReviewState, geometryReviewCluster } from "../dashboardSurfaceModels";
 import { createCanvasRenderController } from "../features/canvas-workbench/canvasRenderController";
+import type { FocusedDetectionTarget } from "../features/canvas-workbench/canvasRenderController";
 import { createDocumentBatchController } from "../features/document-batch/batchQueueController";
 import { createDocumentSessionController } from "../features/document-session/documentSessionController";
 import type { BoxMode } from "../features/document-session/documentSessionController";
@@ -595,9 +596,10 @@ const {
   moveOrigPage,
   moveResultPage,
   goToReviewPage,
+  goToReviewLocation: goToReviewCanvasLocation,
   loadPageThumbnails,
   cancelActiveInteraction,
-  setFocusedDetectionOccurrence,
+  setFocusedDetectionTarget,
 } = canvasRenderController;
 
 const reviewFailureById = new Map<string, string>();
@@ -988,14 +990,29 @@ const maskingRunController = createMaskingRunController({
   isPdfInput,
   isCustomRegionScope,
   getResultSourcePath,
-  analyzeMaskingRun: ({ inputFile, profile, options }) => {
+  analyzeMaskingRun: ({ inputFile, profile, options, reanalysis }) => {
     if (profile === "internal_review") {
-      return analyzeMaskingRun(invoke, { inputFile, profile, options: { ...options, profile: "internal_review" } });
+      return analyzeMaskingRun(invoke, {
+        inputFile,
+        profile,
+        options: { ...options, profile: "internal_review" },
+        ...(reanalysis ? { reanalysis } : {}),
+      });
     }
     if (profile === "official_dispatch") {
-      return analyzeMaskingRun(invoke, { inputFile, profile, options: { ...options, profile: "official_dispatch" } });
+      return analyzeMaskingRun(invoke, {
+        inputFile,
+        profile,
+        options: { ...options, profile: "official_dispatch" },
+        ...(reanalysis ? { reanalysis } : {}),
+      });
     }
-    return analyzeMaskingRun(invoke, { inputFile, profile: "mixed", options: { ...options, profile: "mixed" } });
+    return analyzeMaskingRun(invoke, {
+      inputFile,
+      profile: "mixed",
+      options: { ...options, profile: "mixed" },
+      ...(reanalysis ? { reanalysis } : {}),
+    });
   },
   resolveMaskingReview: (request, report) => resolveMaskingReview(invoke, request, report),
   applyManualActionV1: (request, report) => applyManualActionV1(invoke, request, report),
@@ -1089,10 +1106,42 @@ function setFocusedDetectionForReview(reviewId: string | null): void {
   const report = boundPublicReport(state.latestReport);
   const manifest = report?.analysisManifest;
   const review = reviewId === null ? null : report?.reviewQueue?.find((item) => item.reviewId === reviewId);
-  const occurrenceId = review?.status === "pending" && manifest?.occurrences.some((item) => item.occurrenceId === review.targetId)
-    ? review.targetId
+  if (!review || !manifest) {
+    setFocusedDetectionTarget(null);
+    return;
+  }
+  const reviewSurface = dashboardReviewState(report);
+  const surfaceItem = reviewSurface.status === "valid"
+    ? reviewSurface.items.find((item) => item.reviewId === review.reviewId)
+    : undefined;
+  const occurrence = review.kind === "name" || review.kind === "institution"
+    ? manifest.occurrences.find((item) => item.occurrenceId === review.targetId)
     : null;
-  setFocusedDetectionOccurrence(occurrenceId);
+  const region = review.kind === "region_geometry"
+    ? manifest.regions.find((item) => item.regionId === review.targetId)
+    : null;
+  const segmentOccurrences = review.kind !== "name" && review.kind !== "institution" && review.kind !== "region_geometry"
+    ? manifest.occurrences.filter((item) => item.segmentId === review.targetId && item.page === review.pageStart)
+    : [];
+  const target: FocusedDetectionTarget = {
+    page: occurrence?.page ?? region?.page ?? review.pageStart,
+    rects: surfaceItem?.targetRects ?? occurrence?.rects ?? region?.rects ?? segmentOccurrences.flatMap((item) => item.rects),
+    occurrenceIds: occurrence ? [occurrence.occurrenceId]
+      : region ? manifest.occurrences.filter((item) => item.regionId === region.regionId && item.page === region.page).map((item) => item.occurrenceId)
+        : segmentOccurrences.map((item) => item.occurrenceId),
+    regionId: region?.regionId ?? null,
+    ordinal: surfaceItem?.locationOrdinal ?? null,
+  };
+  setFocusedDetectionTarget(target);
+}
+
+function navigateToReviewLocation(item: {
+  readonly reviewId: string;
+  readonly pageStart: number;
+  readonly targetRects: readonly PdfPointsTopLeftRect[];
+}): Promise<void> {
+  setFocusedDetectionForReview(item.reviewId);
+  return goToReviewCanvasLocation(item.pageStart, item.targetRects);
 }
 
 
@@ -1466,6 +1515,7 @@ return {
   invalidateLifecycle,
   resolveDiscardConfirmation,
   resolveReviewFromRail,
+  navigateToReviewLocation,
   resolveBoundaryReviewFromStrip,
   loadPageThumbnails,
   setFocusedDetectionForReview,

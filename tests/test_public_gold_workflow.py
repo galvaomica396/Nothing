@@ -152,6 +152,10 @@ class PublicGoldWorkflowTests(unittest.TestCase):
             for path in external_inputs
         })
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "public-gold publication fixtures require POSIX directory-fsync and symlink semantics",
+    )
     def test_exact_composition_and_input_sensitive_deterministic_identity(self):
         one_drafts, _, first = self._initialize("one")
         _, _, second = self._initialize("two")
@@ -214,6 +218,10 @@ class PublicGoldWorkflowTests(unittest.TestCase):
                 )
             self.assertFalse(out.exists())
             self.assertFalse(locators.exists())
+    @unittest.skipIf(
+        os.name == "nt",
+        "public-gold publication fixtures require POSIX directory-fsync and symlink semantics",
+    )
     def test_initialization_rejects_external_symlink_and_hostile_zip_members_without_mutation(self):
         external = Path(self.temp.name).parent / f"{self.root.name}-external"
         external.mkdir()
@@ -265,6 +273,10 @@ class PublicGoldWorkflowTests(unittest.TestCase):
         self._assert_initialize_rejected_without_mutation(
             issued=self.issued, review=self.review, name="missing-output",
         )
+    @unittest.skipIf(
+        os.name == "nt",
+        "public-gold publication fixtures require POSIX directory-fsync and symlink semantics",
+    )
     def test_source_index_sidecar_locator_and_hash_tampering_reject_lock_atomically(self):
         drafts, locators, _ = self._initialize()
         self._complete_sidecars(drafts)
@@ -351,6 +363,10 @@ class PublicGoldWorkflowTests(unittest.TestCase):
         source.write_bytes(b"tampered-source")
         self._assert_lock_rejected_atomically(drafts, locators, "source-hash-tampered")
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "public-gold publication fixtures require POSIX directory-fsync and symlink semantics",
+    )
     def test_lock_receipt_and_manifest_are_published_together_after_independent_review(self):
         drafts, locators, _ = self._initialize()
         self._complete_sidecars(drafts)

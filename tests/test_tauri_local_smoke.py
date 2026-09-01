@@ -68,6 +68,10 @@ class TauriLocalSmokeTests(unittest.TestCase):
             "Labels should be config-aware and de-duplicated for System Events lookup.",
         )
 
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "macOS zero-window semantics require Darwin",
+    )
     def test_macos_zero_window_failure_reports_labels_and_window_details(self) -> None:
         smoke = load_smoke_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,6 +206,10 @@ class TauriLocalSmokeTests(unittest.TestCase):
         self.assertFalse(report["ambiguous"])
         self.assertEqual("single-active-app", report["status"])
 
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "macOS Accessibility attach semantics require Darwin",
+    )
     def test_computer_use_diagnosis_reports_attach_blockers(self) -> None:
         smoke = load_smoke_module()
 
@@ -275,6 +283,10 @@ class TauriLocalSmokeTests(unittest.TestCase):
         self.assertEqual(1, payload["bundle_report"]["active_app_count"])
         self.assertEqual(1, payload["bundle_report"]["disabled_backup_count"])
 
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "macOS Accessibility attach semantics require Darwin",
+    )
     def test_main_writes_attach_diagnosis_for_visible_cgwindow_without_ax_window(self) -> None:
         smoke = load_smoke_module()
         bundle_id = "io.github.galvaomica.nothing"
@@ -325,6 +337,10 @@ class TauriLocalSmokeTests(unittest.TestCase):
         )
         self.assertNotIn("computer_use_summary", payload["attach_diagnosis"])
 
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "macOS Accessibility attach semantics require Darwin",
+    )
     def test_main_writes_attach_diagnosis_for_full_path_attach_failure_even_with_single_active_app(self) -> None:
         smoke = load_smoke_module()
         bundle_id = "io.github.galvaomica.nothing"

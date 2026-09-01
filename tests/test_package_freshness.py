@@ -7,10 +7,20 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROOF_SCRIPT = REPO_ROOT / "scripts" / "qa_package_freshness.mjs"
+MASKING_ENGINE_ARTIFACTS = (
+    REPO_ROOT / "masking_runtime" / "bin" / "masking_engine",
+    REPO_ROOT / "masking_runtime" / "bin" / "masking_engine.exe",
+)
 
 
 class PackageFreshnessTests(unittest.TestCase):
     def test_package_freshness_proof_covers_fresh_and_failure_cases(self) -> None:
+        if not any(path.is_file() for path in MASKING_ENGINE_ARTIFACTS):
+            self.skipTest(
+                "packaged masking engine artifact is unavailable; "
+                "package freshness proof requires the built bundle resource"
+            )
+
         # Given: the repository resource map and a synthetic macOS bundle fixture.
         # When: the package-freshness proof exercises the verification CLI.
         completed = subprocess.run(

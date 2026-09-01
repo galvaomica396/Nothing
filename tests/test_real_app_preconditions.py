@@ -278,6 +278,9 @@ try {
 
 
 def test_display_probe_failure_and_empty_display_list_have_distinct_reasons() -> None:
+    if sys.platform != "darwin":
+        pytest.skip("the display probe requires macOS CoreGraphics")
+
     script = """
 import { readActiveDisplayInfo } from "./scripts/real_app_preconditions.mjs";
 

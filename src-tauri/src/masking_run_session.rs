@@ -214,11 +214,21 @@ pub struct RestoreCapabilityResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
+pub struct AnalyzeMaskingRunReanalysis {
+    pub run_id: String,
+    pub analysis_revision: u64,
+    pub manifest_hash: String,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct AnalyzeMaskingRunRequest {
     pub input_file: String,
     pub profile: String,
     #[serde(default)]
     pub options: serde_json::Value,
+    #[serde(default)]
+    pub reanalysis: Option<AnalyzeMaskingRunReanalysis>,
 }
 #[derive(Debug, Clone, Serialize)]
 struct ProfileAuthority {
@@ -479,6 +489,11 @@ pub struct ReanalysisContext {
     pub options: serde_json::Value,
     pub profile: String,
     pub original_document_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnalysisReanalysisContext {
+    pub analysis_revision: u64,
 }
 
 pub struct MaskingRunSessions {
@@ -1230,6 +1245,165 @@ impl MaskingRunSessions {
             profile: record.manifest.profile.clone(),
             original_document_hash: record.manifest.original_document_hash.clone(),
         })
+    }
+
+    pub fn analysis_reanalysis_context(
+        &self,
+        request: &AnalyzeMaskingRunReanalysis,
+        input_path: &std::path::Path,
+        original_bytes: &[u8],
+        profile: &str,
+    ) -> Result<AnalysisReanalysisContext, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| safe_error("SESSION_LOCK_FAILED"))?;
+        let record = state
+            .sessions
+            .get(&request.run_id)
+            .ok_or_else(|| replay_or_unknown(&state, &request.run_id))?;
+        if record.lifecycle != SessionLifecycle::Ready
+            || record.manifest.analysis_revision != request.analysis_revision
+            || record.manifest.manifest_hash != request.manifest_hash
+            || record.manifest.profile != canonical_profile(profile)?
+            || record.original.as_deref() != Some(input_path)
+            || record.manifest.original_document_hash != sha256_hex(original_bytes)
+        {
+            return Err(safe_error("STALE_ANALYSIS"));
+        }
+        Ok(AnalysisReanalysisContext {
+            analysis_revision: record.manifest.analysis_revision,
+        })
+    }
+
+    pub fn replace_from_trusted_analysis(
+        &self,
+        request: AnalyzeMaskingRunReanalysis,
+        original_bytes: &[u8],
+        profile: &str,
+        options: serde_json::Value,
+        trusted: &serde_json::Value,
+    ) -> Result<AnalysisManifestV1, String> {
+        let options = canonical_public_options(options, profile)?;
+        let temporary = MaskingRunSessions::default();
+        let mut candidate =
+            temporary.create_from_trusted(original_bytes, profile, options.clone(), trusted)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| safe_error("SESSION_LOCK_FAILED"))?;
+        if !state.sessions.contains_key(&request.run_id) {
+            return Err(replay_or_unknown(&state, &request.run_id));
+        }
+        let record = state
+            .sessions
+            .get_mut(&request.run_id)
+            .expect("checked above");
+        if record.lifecycle != SessionLifecycle::Ready
+            || record.manifest.analysis_revision != request.analysis_revision
+            || record.manifest.manifest_hash != request.manifest_hash
+        {
+            return Err(safe_error("STALE_ANALYSIS"));
+        }
+        let prior = record.manifest.clone();
+        let successor_revision = prior
+            .analysis_revision
+            .checked_add(1)
+            .ok_or_else(|| safe_error("REVISION_OVERFLOW"))?;
+        if candidate.analysis_revision != successor_revision
+            || candidate.original_document_hash != prior.original_document_hash
+            || candidate.profile != prior.profile
+            || candidate.options_hash != canonical_json_hash(&options)?
+            || candidate.policy_version != prior.policy_version
+            || candidate.options_version != prior.options_version
+            || candidate.coordinate_space != prior.coordinate_space
+            || !candidate.manual_actions.is_empty()
+        {
+            return Err(safe_error("REANALYSIS_MANIFEST_INVALID"));
+        }
+        if !revision_entities_are_disjoint(&prior, &candidate) {
+            return Err(safe_error("REANALYSIS_MANIFEST_INVALID"));
+        }
+        candidate.run_id = prior.run_id.clone();
+        candidate.manual_actions = prior
+            .manual_actions
+            .iter()
+            .filter(|action| action.mode == "mask")
+            .map(|action| {
+                let mut carried = action.clone();
+                carried.analysis_revision = successor_revision;
+                if carried.source_kind == "text_pdf" {
+                    let protected = normalize_rects(&carried.protected_neighbor_refs);
+                    let protected_matches = candidate
+                        .occurrences
+                        .iter()
+                        .filter(|occurrence| {
+                            occurrence.page == carried.page
+                                && normalize_rects(&occurrence.rects) == protected
+                        })
+                        .collect::<Vec<_>>();
+                    if protected_matches.len() != 1 {
+                        return Err(safe_error("REANALYSIS_CARRY_INVALID"));
+                    }
+                    if let Some(old_id) = action.linked_occurrence_id.as_deref() {
+                        let old_occurrence = prior
+                            .occurrences
+                            .iter()
+                            .find(|occurrence| occurrence.occurrence_id == old_id)
+                            .ok_or_else(|| safe_error("REANALYSIS_CARRY_INVALID"))?;
+                        let linked_matches = candidate
+                            .occurrences
+                            .iter()
+                            .filter(|occurrence| {
+                                occurrence.page == old_occurrence.page
+                                    && normalize_rects(&occurrence.rects)
+                                        == normalize_rects(&old_occurrence.rects)
+                                    && occurrence.tag == old_occurrence.tag
+                                    && occurrence.category == old_occurrence.category
+                                    && occurrence.source == old_occurrence.source
+                                    && occurrence.policy == old_occurrence.policy
+                                    && occurrence.proposed_action == old_occurrence.proposed_action
+                                    && occurrence.provenance == old_occurrence.provenance
+                            })
+                            .collect::<Vec<_>>();
+                        if linked_matches.len() != 1 {
+                            return Err(safe_error("REANALYSIS_CARRY_INVALID"));
+                        }
+                        let successor_occurrence = linked_matches[0];
+                        carried.linked_occurrence_id =
+                            Some(successor_occurrence.occurrence_id.clone());
+                        carried.expected_text_hash =
+                            Some(successor_occurrence.expected_text_hash.clone());
+                    }
+                } else if carried.source_kind != "scan"
+                    || carried.linked_occurrence_id.is_some()
+                    || carried.expected_text_hash.is_some()
+                    || !carried.protected_neighbor_refs.is_empty()
+                {
+                    return Err(safe_error("REANALYSIS_CARRY_INVALID"));
+                }
+                carried.action_id = manual_action_fingerprint(
+                    &candidate.run_id,
+                    &candidate.original_document_hash,
+                    &carried,
+                );
+                Ok(carried)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if !unique_ids(
+            candidate
+                .manual_actions
+                .iter()
+                .map(|item| item.action_id.as_str()),
+        ) || !all_manifest_revisions_match(&candidate)
+            || !manifest_referential_integrity(&candidate)
+        {
+            return Err(safe_error("REFERENTIAL_INTEGRITY_INVALID"));
+        }
+        refresh_manifest_hash_with_key(&mut candidate, &self.manifest_hmac_key)?;
+        record.manifest = candidate.clone();
+        record.options = Some(options);
+        Ok(candidate)
     }
 
     pub fn replace_from_trusted_reanalysis(
@@ -2615,6 +2789,61 @@ fn all_manifest_revisions_match(manifest: &AnalysisManifestV1) -> bool {
         .map(|artifact| artifact == manifest.threshold_artifact)
         .unwrap_or(false)
 }
+
+fn revision_entities_are_disjoint(
+    prior: &AnalysisManifestV1,
+    successor: &AnalysisManifestV1,
+) -> bool {
+    let prior_ids = prior
+        .segments
+        .iter()
+        .map(|item| item.segment_id.as_str())
+        .chain(prior.regions.iter().map(|item| item.region_id.as_str()))
+        .chain(
+            prior
+                .occurrences
+                .iter()
+                .map(|item| item.occurrence_id.as_str()),
+        )
+        .chain(
+            prior
+                .review_items
+                .iter()
+                .map(|item| item.review_id.as_str()),
+        )
+        .chain(
+            prior
+                .manual_actions
+                .iter()
+                .map(|item| item.action_id.as_str()),
+        )
+        .collect::<HashSet<_>>();
+    successor
+        .segments
+        .iter()
+        .map(|item| item.segment_id.as_str())
+        .chain(successor.regions.iter().map(|item| item.region_id.as_str()))
+        .chain(
+            successor
+                .occurrences
+                .iter()
+                .map(|item| item.occurrence_id.as_str()),
+        )
+        .chain(
+            successor
+                .review_items
+                .iter()
+                .map(|item| item.review_id.as_str()),
+        )
+        .chain(
+            successor
+                .manual_actions
+                .iter()
+                .map(|item| item.action_id.as_str()),
+        )
+        .all(|id| !prior_ids.contains(id))
+}
+
 fn manifest_referential_integrity(manifest: &AnalysisManifestV1) -> bool {
     manifest.regions.iter().all(|region| {
         manifest.segments.iter().any(|segment| {
@@ -3962,6 +4191,105 @@ mod tests {
         assert_eq!(1, updated.manual_actions.len());
         assert_eq!("scan", updated.manual_actions[0].source_kind);
         assert!(updated.manual_actions[0].protected_neighbor_refs.is_empty());
+    }
+
+    #[test]
+    fn keyword_reanalysis_carries_confirmed_scan_mask_actions() {
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let trusted = trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        let initial = sessions
+            .create_from_trusted(&original, "mixed", options.clone(), &trusted)
+            .expect("initial trusted manifest");
+        let input_path =
+            std::env::temp_dir().join(format!("keyword_reanalysis_{}.pdf", std::process::id()));
+        sessions
+            .bind_private_context(&initial.run_id, input_path, options.clone())
+            .expect("private context");
+
+        let after_manual = sessions
+            .apply_manual_action(ManualActionV1Request {
+                run_id: initial.run_id.clone(),
+                analysis_revision: initial.analysis_revision,
+                manifest_hash: initial.manifest_hash.clone(),
+                page: 0,
+                rects: vec![rect(10.0, 10.0, 20.0, 20.0)],
+                mode: "mask".to_string(),
+                source_kind: "scan".to_string(),
+                linked_occurrence_id: None,
+                target_region_id: None,
+                expected_text_hash: None,
+                protected_neighbor_refs: vec![],
+                restore_capability: None,
+            })
+            .expect("manual mask");
+        assert_eq!(2, after_manual.analysis_revision);
+
+        let mut keyword_options = public_options();
+        keyword_options["custom_keywords"] = serde_json::Value::String("관악구".to_string());
+        let mut candidate =
+            trusted_reanalysis_manifest(&original, &keyword_options, 3, "confirmed", None);
+        let segment_id = candidate["segments"][0]["segment_id"]
+            .as_str()
+            .expect("candidate segment")
+            .to_string();
+        let rects = vec![rect(30.0, 30.0, 40.0, 40.0)];
+        let value_hash = "c".repeat(64);
+        let expected_text_hash = "d".repeat(64);
+        let occurrence_id = occurrence_fingerprint_bound(
+            &sha256_hex(&original),
+            3,
+            &segment_id,
+            None,
+            0,
+            &rects,
+            "KEYWORD",
+            "custom_keyword",
+            &value_hash,
+            "custom_keyword",
+            POLICY_VERSION,
+            "mask",
+        );
+        candidate["occurrences"] = serde_json::json!([{
+            "occurrence_id": occurrence_id,
+            "segment_id": segment_id,
+            "region_id": null,
+            "analysis_revision": 3,
+            "page": 0,
+            "rects": [{"x0": 30.0, "y0": 30.0, "x1": 40.0, "y1": 40.0}],
+            "tag": "KEYWORD",
+            "category": "custom_keyword",
+            "value_hash": value_hash,
+            "expected_text_hash": expected_text_hash,
+            "source": "custom_keyword",
+            "policy": POLICY_VERSION,
+            "proposed_action": "mask",
+            "state": "confirmed",
+            "provenance": "custom_keyword"
+        }]);
+
+        let replaced = sessions
+            .replace_from_trusted_analysis(
+                AnalyzeMaskingRunReanalysis {
+                    run_id: after_manual.run_id.clone(),
+                    analysis_revision: after_manual.analysis_revision,
+                    manifest_hash: after_manual.manifest_hash.clone(),
+                },
+                &original,
+                "mixed",
+                keyword_options,
+                &candidate,
+            )
+            .expect("keyword reanalysis");
+
+        assert_eq!(3, replaced.analysis_revision);
+        assert_eq!(1, replaced.manual_actions.len());
+        assert_eq!("mask", replaced.manual_actions[0].mode);
+        assert_eq!(1, replaced.occurrences.len());
+        assert_eq!("custom_keyword", replaced.occurrences[0].category);
+        assert_eq!(3, replaced.manual_actions[0].analysis_revision);
+        assert_eq!(3, replaced.occurrences[0].analysis_revision);
     }
 
     #[test]

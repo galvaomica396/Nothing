@@ -7,7 +7,7 @@ import {
   withQaDriveCancellation,
   QA_DRIVE_RENDER_CANCEL_TIMEOUT_MS,
 } from "../../app/qaDriveProtocol.ts";
-import type { AnalysisOccurrenceV1, AnalysisRegionV1, ManualActionV1 } from "../../state/maskingSession";
+import type { AnalysisOccurrenceV1, AnalysisRegionV1, ManualActionV1, PdfPointsTopLeftRect } from "../../state/maskingSession";
 import { createPdfThumbnailRenderer } from "./pdfThumbnailRenderer.ts";
 import type { PdfPageThumbnail } from "./pdfThumbnailRenderer.ts";
 
@@ -94,9 +94,19 @@ export type CanvasRenderController = {
   readonly moveOrigPage: (delta: number) => Promise<void>;
   readonly moveResultPage: (delta: number) => Promise<void>;
   readonly goToReviewPage: (pageIndex: number) => Promise<void>;
+  readonly goToReviewLocation: (pageIndex: number, rects: readonly PdfPointsTopLeftRect[]) => Promise<void>;
   readonly loadPageThumbnails: (pageIndexes: readonly number[]) => Promise<void>;
   readonly cancelActiveInteraction: () => void;
   readonly setFocusedDetectionOccurrence: (occurrenceId: string | null) => void;
+  readonly setFocusedDetectionTarget: (target: FocusedDetectionTarget | null) => void;
+};
+
+export type FocusedDetectionTarget = {
+  readonly page: number;
+  readonly rects: readonly PdfPointsTopLeftRect[];
+  readonly occurrenceIds: readonly string[];
+  readonly regionId: string | null;
+  readonly ordinal: number | null;
 };
 
 type CanvasRenderSlot = {
@@ -169,7 +179,7 @@ export function createCanvasRenderController(deps: CanvasRenderDeps): CanvasRend
   const resultRenderSlot: CanvasRenderSlot = { task: null, generation: 0 };
   let compareGeneration = 0;
   let resultOverlayEnabled = false;
-  let focusedDetectionOccurrenceId: string | null = null;
+  let focusedDetectionTarget: FocusedDetectionTarget | null = null;
   const thumbnailRenderer = createPdfThumbnailRenderer({
     getDocument: () => state.resultDoc ?? state.origDoc,
     publish: deps.publishPageThumbnails,
@@ -404,7 +414,7 @@ export function createCanvasRenderController(deps: CanvasRenderDeps): CanvasRend
             octx.strokeRect(x, y, w, h);
             octx.restore();
           }
-          if (occurrence.occurrenceId === focusedDetectionOccurrenceId) {
+          if (focusedDetectionTarget?.occurrenceIds.includes(occurrence.occurrenceId)) {
             octx.strokeStyle = cssVar("--dm-accent") || "#256ef4";
             octx.lineWidth = 3;
             octx.setLineDash([]);
@@ -456,6 +466,39 @@ export function createCanvasRenderController(deps: CanvasRenderDeps): CanvasRend
           }
         }
       }
+      if (focusedDetectionTarget && focusedDetectionTarget.page === page - 1) {
+        const focusColor = cssVar("--dm-accent") || "#256ef4";
+        octx.save();
+        octx.strokeStyle = focusColor;
+        octx.lineWidth = 3;
+        octx.setLineDash([8, 4]);
+        for (const rect of focusedDetectionTarget.rects) {
+          const x = Math.min(rect.x0, rect.x1) * state.scale;
+          const y = Math.min(rect.y0, rect.y1) * state.scale;
+          const w = Math.abs(rect.x1 - rect.x0) * state.scale;
+          const h = Math.abs(rect.y1 - rect.y0) * state.scale;
+          octx.strokeRect(x, y, w, h);
+          if (focusedDetectionTarget.ordinal !== null) {
+            const label = String(focusedDetectionTarget.ordinal);
+            const labelWidth = 18;
+            const labelHeight = 18;
+            const labelX = Math.max(0, Math.min(x, overlay.width - labelWidth));
+            const labelY = Math.max(0, y - labelHeight - 3);
+            octx.setLineDash([]);
+            octx.fillStyle = focusColor;
+            octx.fillRect(labelX, labelY, labelWidth, labelHeight);
+            octx.fillStyle = "#ffffff";
+            octx.font = `700 12px ${cssVar("--font-sans") || "sans-serif"}`;
+            octx.textAlign = "center";
+            octx.textBaseline = "middle";
+            octx.fillText(label, labelX + labelWidth / 2, labelY + labelHeight / 2);
+            octx.textAlign = "start";
+            octx.textBaseline = "alphabetic";
+            octx.setLineDash([8, 4]);
+          }
+        }
+        octx.restore();
+      }
       const manualActions = publicDetectionOverlay.manualActions ?? [];
       const currentPageManualActions = manualActions.filter((action) => action.page === page - 1);
       const stagedMaskCount = currentPageManualActions.filter((action) => action.mode === "mask").length;
@@ -485,7 +528,7 @@ export function createCanvasRenderController(deps: CanvasRenderDeps): CanvasRend
       // their status remains visible. Reapply the focused detection edge last
       // so hover/focus feedback cannot be mistaken for the staged style.
       const focusedOccurrence = publicDetectionOverlay.occurrences.find((occurrence) =>
-        occurrence.occurrenceId === focusedDetectionOccurrenceId
+        focusedDetectionTarget?.occurrenceIds.includes(occurrence.occurrenceId)
           && occurrence.page === page - 1
           && occurrence.proposedAction !== "exclude",
       );
@@ -808,9 +851,41 @@ export function createCanvasRenderController(deps: CanvasRenderDeps): CanvasRend
     await moveOrigPage(targetPage - state.currentOrigPage);
   }
 
+  async function goToReviewLocation(pageIndex: number, rects: readonly PdfPointsTopLeftRect[]) {
+    await goToReviewPage(pageIndex);
+    if (rects.length === 0) return;
+    const container = getScrollContainer();
+    if (!container) return;
+    const first = rects[0]!;
+    const centerX = ((first.x0 + first.x1) / 2) * state.scale;
+    const centerY = ((first.y0 + first.y1) / 2) * state.scale;
+    container.scrollLeft = Math.max(0, Math.min(
+      centerX - container.clientWidth / 2,
+      Math.max(0, container.scrollWidth - container.clientWidth),
+    ));
+    container.scrollTop = Math.max(0, Math.min(
+      centerY - container.clientHeight / 2,
+      Math.max(0, container.scrollHeight - container.clientHeight),
+    ));
+  }
+
   function setFocusedDetectionOccurrence(occurrenceId: string | null): void {
-    if (focusedDetectionOccurrenceId === occurrenceId) return;
-    focusedDetectionOccurrenceId = occurrenceId;
+    const next = occurrenceId === null ? null : {
+      page: 0,
+      rects: [],
+      occurrenceIds: [occurrenceId],
+      regionId: null,
+      ordinal: null,
+    };
+    if (focusedDetectionTarget?.occurrenceIds.join() === next?.occurrenceIds.join()
+      && focusedDetectionTarget?.regionId === next?.regionId
+      && focusedDetectionTarget?.page === next?.page) return;
+    focusedDetectionTarget = next;
+    redrawOverlay();
+  }
+
+  function setFocusedDetectionTarget(target: FocusedDetectionTarget | null): void {
+    focusedDetectionTarget = target;
     redrawOverlay();
   }
 
@@ -976,8 +1051,10 @@ export function createCanvasRenderController(deps: CanvasRenderDeps): CanvasRend
     moveOrigPage,
     moveResultPage,
     goToReviewPage,
+    goToReviewLocation,
     loadPageThumbnails: thumbnailRenderer.load,
     cancelActiveInteraction,
     setFocusedDetectionOccurrence,
+    setFocusedDetectionTarget,
   };
 }

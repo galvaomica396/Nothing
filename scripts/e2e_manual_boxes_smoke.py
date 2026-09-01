@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -45,10 +46,20 @@ def main() -> int:
             "--boxes",
             json.dumps(boxes),
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
+        env={**os.environ, "MASK_TOOL_ALLOWED_DIRS": str(workdir)},
     )
+    if completed.returncode != 0:
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        raise subprocess.CalledProcessError(
+            completed.returncode,
+            completed.args,
+            output=completed.stdout,
+            stderr=completed.stderr,
+        )
     payload = json.loads(completed.stdout)
     output_file = Path(str(payload.get("output_file", "")))
     if payload.get("status") != "applied":

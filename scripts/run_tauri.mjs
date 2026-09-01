@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
+const require = createRequire(import.meta.url);
 const args = process.argv.slice(2);
 
 if (args[0] === "build") {
@@ -13,11 +15,11 @@ if (args[0] === "build") {
   if (preparation.status !== 0) process.exit(preparation.status ?? 1);
 }
 
-const tauriExecutable = path.join(repoRoot, "node_modules", ".bin", process.platform === "win32" ? "tauri.cmd" : "tauri");
+const tauriJs = require.resolve("@tauri-apps/cli/tauri.js", { paths: [repoRoot] });
 const environment = {
   ...process.env,
   ...(process.env.CI === "1" ? { CI: "true" } : {}),
 };
-const result = spawnSync(tauriExecutable, args, { cwd: repoRoot, stdio: "inherit", env: environment });
+const result = spawnSync(process.execPath, [tauriJs, ...args], { cwd: repoRoot, stdio: "inherit", env: environment });
 if (result.error !== undefined) throw result.error;
 process.exitCode = result.status ?? 1;

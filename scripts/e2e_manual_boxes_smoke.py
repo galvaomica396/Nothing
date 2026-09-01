@@ -20,72 +20,80 @@ def write_fixture(path: Path) -> None:
     doc.close()
 
 
+def write_result(path: Path | None, payload: dict[str, object]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Packaged manual-box masking smoke")
     parser.add_argument("--engine-path", required=True)
     parser.add_argument("--workdir", required=True)
+    parser.add_argument("--result-path", type=Path)
     args = parser.parse_args()
+    result_path = args.result_path.resolve() if args.result_path else None
 
-    engine_path = Path(args.engine_path).resolve()
-    workdir = Path(args.workdir).resolve()
-    workdir.mkdir(parents=True, exist_ok=True)
-    fixture = workdir / "manual_boxes_fixture.pdf"
-    write_fixture(fixture)
+    try:
+        engine_path = Path(args.engine_path).resolve()
+        workdir = Path(args.workdir).resolve()
+        workdir.mkdir(parents=True, exist_ok=True)
+        fixture = workdir / "manual_boxes_fixture.pdf"
+        write_fixture(fixture)
 
-    boxes = [{"page": 0, "x0": 28, "y0": 38, "x1": 190, "y1": 62, "mode": "mask"}]
-    completed = subprocess.run(
-        [
-            str(engine_path),
-            "--manual-boxes",
-            "--input",
-            str(fixture),
-            "--original",
-            str(fixture),
-            "--outdir",
-            str(workdir),
-            "--boxes",
-            json.dumps(boxes),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "MASK_TOOL_ALLOWED_DIRS": str(workdir)},
-    )
-    if completed.returncode != 0:
-        sys.stdout.write(completed.stdout)
-        sys.stderr.write(completed.stderr)
-        raise subprocess.CalledProcessError(
-            completed.returncode,
-            completed.args,
-            output=completed.stdout,
-            stderr=completed.stderr,
+        boxes = [{"page": 0, "x0": 28, "y0": 38, "x1": 190, "y1": 62, "mode": "mask"}]
+        completed = subprocess.run(
+            [
+                str(engine_path),
+                "--manual-boxes",
+                "--input",
+                str(fixture),
+                "--original",
+                str(fixture),
+                "--outdir",
+                str(workdir),
+                "--boxes",
+                json.dumps(boxes),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "MASK_TOOL_ALLOWED_DIRS": str(workdir)},
         )
-    payload = json.loads(completed.stdout)
-    output_file = Path(str(payload.get("output_file", "")))
-    if payload.get("status") != "applied":
-        raise RuntimeError(f"manual boxes were not applied: {payload}")
-    if int(payload.get("mask_boxes_applied", 0)) < 1:
-        raise RuntimeError(f"manual mask count missing: {payload}")
-    if not output_file.exists():
-        raise RuntimeError(f"manual output missing: {output_file}")
+        if completed.returncode != 0:
+            sys.stdout.write(completed.stdout)
+            sys.stderr.write(completed.stderr)
+            raise subprocess.CalledProcessError(
+                completed.returncode,
+                completed.args,
+                output=completed.stdout,
+                stderr=completed.stderr,
+            )
 
-    print(
-        json.dumps(
-            {
-                "status": "pass",
-                "input_pdf": str(fixture),
-                "output_pdf": str(output_file),
-                "mask_boxes_applied": payload.get("mask_boxes_applied"),
-            },
-            ensure_ascii=False,
-        )
-    )
-    return 0
+        payload = json.loads(completed.stdout)
+        output_file = Path(str(payload.get("output_file", "")))
+        if payload.get("status") != "applied":
+            raise RuntimeError(f"manual boxes were not applied: {payload}")
+        if int(payload.get("mask_boxes_applied", 0)) < 1:
+            raise RuntimeError(f"manual mask count missing: {payload}")
+        if not output_file.exists():
+            raise RuntimeError(f"manual output missing: {output_file}")
+
+        result = {
+            "status": "pass",
+            "input_pdf": str(fixture),
+            "output_pdf": str(output_file),
+            "mask_boxes_applied": payload.get("mask_boxes_applied"),
+        }
+        write_result(result_path, result)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except Exception as exc:
+        write_result(result_path, {"status": "fail", "error": str(exc)})
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(1)
+    raise SystemExit(main())

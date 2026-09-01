@@ -55,12 +55,16 @@ if ($WorkDir -eq "") {
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 $manualSmokeScript = Resolve-RequiredPath -Path (Join-Path $PSScriptRoot "e2e_manual_boxes_smoke.py") -Description "source manual boxes smoke script"
 $enginePath = Resolve-RequiredPath -Path (Join-Path $releasePath "masking_runtime\bin\masking_engine.exe") -Description "packaged masking engine"
+$manualResultPath = Join-Path $WorkDir "manual-boxes-result.json"
 
-$manualStdout = & python $manualSmokeScript --workdir $WorkDir --engine-path $enginePath
-if ($LASTEXITCODE -ne 0) {
+$manualStdout = & python $manualSmokeScript --workdir $WorkDir --engine-path $enginePath --result-path $manualResultPath
+$manualExitCode = $LASTEXITCODE
+Write-Host "[desktop-smoke] manual boxes raw stdout: $manualStdout"
+Write-Host "[desktop-smoke] manual boxes exit code: $manualExitCode"
+if ($manualExitCode -ne 0) {
   throw "[desktop-smoke] packaged manual boxes smoke failed"
 }
-$manualResult = $manualStdout | ConvertFrom-Json
+$manualResult = Get-Content -Raw -Path $manualResultPath | ConvertFrom-Json
 if ($manualResult.status -ne "pass") {
   throw "[desktop-smoke] packaged manual boxes smoke did not pass"
 }

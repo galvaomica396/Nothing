@@ -6,7 +6,6 @@ import io
 import json
 import ntpath
 import os
-import re
 import stat
 import sys
 import warnings
@@ -96,8 +95,6 @@ def safe_debug_trace(error: Exception) -> dict[str, str]:
         if basename is not None:
             details.append(f"basename={basename}")
         safe_message = " ".join(details)
-    elif re.fullmatch(r"[A-Z0-9_]{3,64}", summary):
-        safe_message = summary
     else:
         safe_message = "exception_message_suppressed"
     last_frame = ""

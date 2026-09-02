@@ -90,8 +90,8 @@ jobs:
         run: |
           set -euo pipefail
           out_dir="release-macos"
-          app_zip_name="Nothing-4.7.2-macos-arm64-app.zip"
-          manifest_name="Nothing-4.7.2-macos-arm64-manifest.json"
+          app_zip_name="Nothing-4.7.3-macos-arm64-app.zip"
+          manifest_name="Nothing-4.7.3-macos-arm64-manifest.json"
           bundle_root="src-tauri/target/release/bundle"
           app_bundle="$(find "$bundle_root/macos" -maxdepth 1 -name "*.app" -type d | sort | head -n 1)"
           if [[ -z "$app_bundle" || ! -d "$app_bundle" ]]; then
@@ -192,8 +192,8 @@ jobs:
                       "sha256": digest(path),
                   })
           manifest = {
-              "artifact_name": "Nothing-4.7.2-macos-arm64",
-              "app_version": "4.7.2",
+              "artifact_name": "Nothing-4.7.3-macos-arm64",
+              "app_version": "4.7.3",
               "os": "macos-arm64",
               "github_run_id": os.environ.get("GITHUB_RUN_ID", ""),
               "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
@@ -236,8 +236,8 @@ jobs:
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$title" --notes "$notes" --prerelease
           fi
           assets=(
-            "release-macos/Nothing-4.7.2-macos-arm64-app.zip"
-            "release-macos/Nothing-4.7.2-macos-arm64-manifest.json"
+            "release-macos/Nothing-4.7.3-macos-arm64-app.zip"
+            "release-macos/Nothing-4.7.3-macos-arm64-manifest.json"
           )
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
@@ -252,9 +252,9 @@ jobs:
           extract_dir="$roundtrip_root/extracted"
           rm -rf "$roundtrip_root"
           mkdir -p "$extract_dir"
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Nothing-4.7.2-macos-arm64-app.zip" --dir "$roundtrip_root" --clobber
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Nothing-4.7.2-macos-arm64-manifest.json" --dir "$roundtrip_root" --clobber
-          unzip -q "$roundtrip_root/Nothing-4.7.2-macos-arm64-app.zip" -d "$extract_dir"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Nothing-4.7.3-macos-arm64-app.zip" --dir "$roundtrip_root" --clobber
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Nothing-4.7.3-macos-arm64-manifest.json" --dir "$roundtrip_root" --clobber
+          unzip -q "$roundtrip_root/Nothing-4.7.3-macos-arm64-app.zip" -d "$extract_dir"
           required_license_files=(
             "Contents/Resources/licenses/LICENSE"
             "Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
@@ -272,5 +272,5 @@ jobs:
         continue-on-error: ${{ inputs.publish_release }}
         uses: actions/upload-artifact@v7
         with:
-          name: Nothing-4.7.2-macos-arm64-release-assets
+          name: Nothing-4.7.3-macos-arm64-release-assets
           path: release-macos

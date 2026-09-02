@@ -306,7 +306,7 @@ from masking_rules import (
     tracked_masking_offsets,
 )
 
-APP_VERSION = "v4.7.2"
+APP_VERSION = "v4.7.3"
 
 PROFILE_DISPLAY_TO_VALUE = {
     "내부 검토": "internal_review",

@@ -105,18 +105,30 @@ def _remove_staging_output(path: str) -> None:
         Path(path).unlink(missing_ok=True)
     except OSError as error:
         raise RuntimeError("STAGING_CLEANUP_FAILED") from error
-def _assert_fresh_staging_output(source_pdf_path: str, output_pdf_path: str, *protected_paths: str) -> None:
+def _assert_fresh_staging_output(
+    source_pdf_path: str,
+    output_pdf_path: str,
+    *protected_paths: str,
+) -> tuple[str, str]:
     source = Path(source_pdf_path)
     output = Path(output_pdf_path)
-    if source.is_symlink() or not source.is_file() or output.exists() or output.is_symlink() or not output.parent.is_dir() or output.parent.is_symlink():
+    if source.is_symlink() or not source.is_file() or output.exists() or output.is_symlink():
         raise ValueError("STAGING_DESTINATION_REJECTED")
-    destination = output.resolve(strict=False)
+    try:
+        source = source.resolve(strict=True)
+        parent = output.parent.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise ValueError("STAGING_DESTINATION_REJECTED") from None
+    if not parent.is_dir():
+        raise ValueError("STAGING_DESTINATION_REJECTED")
+    destination = parent / output.name
     for candidate in (source, *(Path(path) for path in protected_paths if path)):
         try:
             if candidate.resolve(strict=True) == destination:
                 raise ValueError("STAGING_DESTINATION_REJECTED")
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError, RuntimeError):
             continue
+    return str(source), str(destination)
 
 
 
@@ -463,7 +475,7 @@ def _redact_pdf_occurrences_native(
         import fitz  # type: ignore
     except Exception as e:
         raise RuntimeError(f"PyMuPDF 미설치로 PDF 레닥션을 수행할 수 없습니다: {e}")
-    _assert_fresh_staging_output(pdf_path, output_pdf_path)
+    pdf_path, output_pdf_path = _assert_fresh_staging_output(pdf_path, output_pdf_path)
 
     display_mode = normalize_display_mode(display_mode)
     doc = fitz.open(pdf_path)
@@ -1035,7 +1047,7 @@ def redact_pdf_native(
     if profile != "legal" or not legal_compatibility:
         raise ValueError("PUBLIC_OCCURRENCE_INPUTS_REQUIRED")
     matches = matches or []
-    _assert_fresh_staging_output(pdf_path, output_pdf_path)
+    pdf_path, output_pdf_path = _assert_fresh_staging_output(pdf_path, output_pdf_path)
     try:
         import fitz  # type: ignore
     except Exception as e:
@@ -1235,11 +1247,18 @@ def _fresh_pdf_output_path(output_pdf_path: str) -> str:
 
 
 def _normalized_pdf_save_target(_source_pdf_path: str, output_pdf_path: str) -> tuple[str, str]:
-    final_path = _fresh_pdf_output_path(output_pdf_path)
+    requested = Path(output_pdf_path).expanduser()
+    try:
+        requested = requested.parent.resolve(strict=True) / requested.name
+    except (OSError, RuntimeError):
+        raise ValueError("STAGING_DESTINATION_REJECTED") from None
+    final_path = _fresh_pdf_output_path(str(requested))
+    final_parent = Path(final_path).parent.resolve(strict=True)
+    final_path = str(final_parent / Path(final_path).name)
     fd, staging_path = tempfile.mkstemp(
         prefix=f"{Path(final_path).stem}_staging_",
         suffix=Path(final_path).suffix or ".pdf",
-        dir=str(Path(final_path).parent or Path(".")),
+        dir=str(final_parent),
     )
     os.close(fd)
     os.unlink(staging_path)
@@ -1270,7 +1289,9 @@ def apply_manual_actions_v1(
     mask ``verify``/``no_residual`` checks, and ``verify_restore`` for restore
     actions.  All adapter uncertainty is a hard block.
     """
-    _assert_fresh_staging_output(source_pdf_path, output_pdf_path)
+    source_pdf_path, output_pdf_path = _assert_fresh_staging_output(
+        source_pdf_path, output_pdf_path
+    )
     try:
         import fitz  # type: ignore
     except Exception as exc:
@@ -1693,7 +1714,17 @@ def apply_manual_pdf_corrections(
     requested_output = str(output_pdf_path)
 
     save_pdf, final_pdf = _normalized_pdf_save_target(source_pdf_path, requested_output)
-    _assert_fresh_staging_output(source_pdf_path, final_pdf, original_pdf_path)
+    source_pdf_path, final_pdf = _assert_fresh_staging_output(
+        source_pdf_path, final_pdf, original_pdf_path
+    )
+    if original_pdf_path:
+        original_candidate = Path(original_pdf_path)
+        if original_candidate.is_symlink():
+            raise ValueError("STAGING_DESTINATION_REJECTED")
+        try:
+            original_pdf_path = str(original_candidate.resolve(strict=True))
+        except (OSError, RuntimeError):
+            raise ValueError("STAGING_DESTINATION_REJECTED") from None
     source_hash = _source_pdf_sha256(source_pdf_path)
     original_hash = _source_pdf_sha256(original_pdf_path) if original_pdf_path else None
 

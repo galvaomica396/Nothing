@@ -496,6 +496,33 @@ pub struct AnalysisReanalysisContext {
     pub analysis_revision: u64,
 }
 
+const REANALYSIS_RECT_MATCH_ABSOLUTE_MAX_PT: f64 = 0.5;
+const REANALYSIS_RECT_MATCH_DIMENSION_FRACTION: f64 = 0.10;
+const REANALYSIS_RECT_MATCH_FLOAT_EPSILON: f64 = 1e-9;
+const REANALYSIS_CARRIED_DECISION_REASON: &str = "reanalysis_decision_carried";
+const REANALYSIS_CUSTOM_KEYWORD_CONFLICT_REASON: &str =
+    "reanalysis_exclude_superseded_by_custom_keyword";
+const REANALYSIS_MANUAL_MASK_CONFLICT_REASON: &str = "reanalysis_exclude_superseded_by_manual_mask";
+const REANALYSIS_MANUAL_CARRY_REVIEW_REASON: &str = "manual_action_carry_requires_review";
+const REANALYSIS_DECISION_NOT_CARRIED_REASON: &str = "reanalysis_decision_not_carried";
+const REANALYSIS_MATCH_AMBIGUOUS_REASON: &str = "reanalysis_occurrence_match_ambiguous";
+const REANALYSIS_MATCH_MISSING_REASON: &str = "reanalysis_occurrence_match_missing";
+const REANALYSIS_CARRY_PROVENANCE: &str = "server_reanalysis_carry_v1";
+
+#[derive(Debug, Clone)]
+struct CarriedReviewDecision {
+    successor_index: usize,
+    action: String,
+    authorization_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct UserReviewDecision {
+    kind: ReviewKind,
+    action: String,
+    occurrence: AnalysisOccurrence,
+}
+
 pub struct MaskingRunSessions {
     state: Mutex<SessionState>,
     manifest_hmac_key: [u8; 32],
@@ -516,6 +543,7 @@ impl Default for MaskingRunSessions {
 #[derive(Default)]
 struct SessionState {
     sessions: HashMap<String, SessionRecord>,
+    user_review_decisions: HashMap<String, Vec<UserReviewDecision>>,
     restore_capabilities: HashMap<String, RestoreCapabilityRecord>,
     completed_tombstones: VecDeque<(String, &'static str)>,
     next_run: u64,
@@ -557,6 +585,871 @@ enum SessionLifecycle {
     Finalizing,
     CleanupRequired,
     Completed,
+}
+
+fn rects_are_reanalysis_equivalent(left: &Rect, right: &Rect) -> bool {
+    let dimensions = [
+        left.x1 - left.x0,
+        left.y1 - left.y0,
+        right.x1 - right.x0,
+        right.y1 - right.y0,
+    ];
+    if dimensions
+        .iter()
+        .any(|dimension| !dimension.is_finite() || *dimension <= 0.0)
+    {
+        return false;
+    }
+    let shortest_dimension = dimensions.into_iter().fold(f64::INFINITY, f64::min);
+    let tolerance = (shortest_dimension * REANALYSIS_RECT_MATCH_DIMENSION_FRACTION)
+        .min(REANALYSIS_RECT_MATCH_ABSOLUTE_MAX_PT);
+    [
+        (left.x0, right.x0),
+        (left.y0, right.y0),
+        (left.x1, right.x1),
+        (left.y1, right.y1),
+    ]
+    .into_iter()
+    .all(|(left, right)| (left - right).abs() <= tolerance + REANALYSIS_RECT_MATCH_FLOAT_EPSILON)
+}
+
+fn rect_lists_are_reanalysis_equivalent(left: &[Rect], right: &[Rect]) -> bool {
+    if left.is_empty() || left.len() != right.len() {
+        return false;
+    }
+    let mut used_right = vec![false; right.len()];
+    for left_rect in left {
+        let matches = right
+            .iter()
+            .enumerate()
+            .filter(|(_, right_rect)| rects_are_reanalysis_equivalent(left_rect, right_rect))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return false;
+        }
+        if used_right[matches[0]] {
+            return false;
+        }
+        used_right[matches[0]] = true;
+    }
+    true
+}
+
+fn occurrences_are_reanalysis_compatible(
+    prior: &AnalysisOccurrence,
+    successor: &AnalysisOccurrence,
+) -> bool {
+    prior.page == successor.page
+        && prior.tag == successor.tag
+        && prior.category == successor.category
+        && prior.expected_text_hash == successor.expected_text_hash
+        && prior.source == successor.source
+        && prior.policy == successor.policy
+        && prior.provenance == successor.provenance
+        && rect_lists_are_reanalysis_equivalent(&prior.rects, &successor.rects)
+}
+
+#[derive(Debug, Default)]
+struct OccurrenceReconciliationMap {
+    by_prior_id: HashMap<String, usize>,
+    matches_by_prior_id: HashMap<String, Vec<usize>>,
+}
+
+fn occurrence_successor_map(
+    prior: &AnalysisManifestV1,
+    successor: &AnalysisManifestV1,
+) -> OccurrenceReconciliationMap {
+    if prior.coordinate_space != "pdf_points_top_left"
+        || successor.coordinate_space != "pdf_points_top_left"
+    {
+        return OccurrenceReconciliationMap::default();
+    }
+    let mut candidate_counts = vec![0_usize; successor.occurrences.len()];
+    let mut proposed = Vec::new();
+    let mut matches_by_prior_id = HashMap::new();
+    for prior_occurrence in &prior.occurrences {
+        let matches = successor
+            .occurrences
+            .iter()
+            .enumerate()
+            .filter(|(_, successor_occurrence)| {
+                occurrences_are_reanalysis_compatible(prior_occurrence, successor_occurrence)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        matches_by_prior_id.insert(prior_occurrence.occurrence_id.clone(), matches.clone());
+        for index in &matches {
+            candidate_counts[*index] += 1;
+        }
+        if matches.len() == 1 {
+            proposed.push((prior_occurrence.occurrence_id.clone(), matches[0]));
+        }
+    }
+    OccurrenceReconciliationMap {
+        by_prior_id: proposed
+            .into_iter()
+            .filter(|(_, index)| candidate_counts[*index] == 1)
+            .collect(),
+        matches_by_prior_id,
+    }
+}
+
+fn prior_user_review_decisions<'a>(
+    prior: &'a AnalysisManifestV1,
+    authorized: &[UserReviewDecision],
+) -> Vec<(usize, &'a ReviewItem, &'a AnalysisOccurrence)> {
+    prior
+        .review_items
+        .iter()
+        .filter(|review| {
+            review.status == "resolved"
+                && matches!(&review.kind, ReviewKind::Name | ReviewKind::Institution)
+        })
+        .filter_map(|review| {
+            let target = review.target_id.as_deref()?;
+            let occurrence = prior
+                .occurrences
+                .iter()
+                .find(|occurrence| occurrence.occurrence_id == target)?;
+            if !matches!(occurrence.state.as_str(), "confirmed" | "user_confirmed")
+                || !matches!(occurrence.proposed_action.as_str(), "mask" | "exclude")
+            {
+                return None;
+            }
+            let matches = authorized
+                .iter()
+                .enumerate()
+                .filter(|(_, decision)| {
+                    decision.kind == review.kind
+                        && decision.action == occurrence.proposed_action
+                        && occurrences_are_reanalysis_compatible(&decision.occurrence, occurrence)
+                })
+                .map(|(authorization_index, _)| authorization_index)
+                .collect::<Vec<_>>();
+            (matches.len() == 1).then(|| (matches[0], review, occurrence))
+        })
+        .collect()
+}
+
+fn append_review_reason(review: &mut ReviewItem, reason: &str) {
+    if !review.reason_codes.iter().any(|code| code == reason) {
+        review.reason_codes.push(reason.to_string());
+    }
+}
+
+fn refresh_review_id(review: &mut ReviewItem) {
+    review.review_id = review_fingerprint(review.analysis_revision, review);
+}
+
+fn refresh_occurrence_id(document_hash: &str, occurrence: &mut AnalysisOccurrence) {
+    occurrence.occurrence_id = occurrence_fingerprint_bound(
+        document_hash,
+        occurrence.analysis_revision,
+        &occurrence.segment_id,
+        occurrence.region_id.as_deref(),
+        occurrence.page,
+        &occurrence.rects,
+        &occurrence.tag,
+        &occurrence.category,
+        &occurrence.value_hash,
+        &occurrence.source,
+        &occurrence.policy,
+        &occurrence.proposed_action,
+    );
+}
+
+fn rekey_occurrence_reviews(
+    manifest: &mut AnalysisManifestV1,
+    old_occurrence_id: &str,
+    new_occurrence_id: &str,
+    status: Option<&str>,
+    reasons: &[&str],
+) -> bool {
+    let mut changed = false;
+    for review in &mut manifest.review_items {
+        if review.target_id.as_deref() != Some(old_occurrence_id) {
+            continue;
+        }
+        review.target_id = Some(new_occurrence_id.to_string());
+        if let Some(status) = status {
+            review.status = status.to_string();
+        }
+        for reason in reasons {
+            append_review_reason(review, reason);
+        }
+        refresh_review_id(review);
+        changed = true;
+    }
+    changed
+}
+
+fn occurrence_rects_overlap(left: &[Rect], right: &[Rect]) -> bool {
+    left.iter().any(|left_rect| {
+        right
+            .iter()
+            .any(|right_rect| rects_overlap(left_rect, right_rect))
+    })
+}
+
+fn protected_neighbor_occurrence_ids(
+    occurrences: &[AnalysisOccurrence],
+    page: u32,
+    protected_refs: &[Rect],
+) -> Option<Vec<String>> {
+    if protected_refs.is_empty() {
+        return None;
+    }
+
+    let whole_matches = occurrences
+        .iter()
+        .filter(|occurrence| {
+            occurrence.page == page
+                && occurrence.category != "custom_keyword"
+                && rect_lists_are_reanalysis_equivalent(&occurrence.rects, protected_refs)
+        })
+        .map(|occurrence| occurrence.occurrence_id.clone())
+        .collect::<Vec<_>>();
+    if whole_matches.len() > 1 {
+        return None;
+    }
+
+    let mut individual_matches = Vec::with_capacity(protected_refs.len());
+    let mut individual_matching_is_ambiguous = false;
+    for protected_ref in protected_refs {
+        let matches = occurrences
+            .iter()
+            .filter(|occurrence| {
+                occurrence.page == page
+                    && occurrence.category != "custom_keyword"
+                    && occurrence.rects.len() == 1
+                    && rects_are_reanalysis_equivalent(&occurrence.rects[0], protected_ref)
+            })
+            .map(|occurrence| occurrence.occurrence_id.clone())
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            individual_matching_is_ambiguous = true;
+        } else if let Some(occurrence_id) = matches.into_iter().next() {
+            individual_matches.push(occurrence_id);
+        }
+    }
+    if individual_matching_is_ambiguous
+        || individual_matches.len() != protected_refs.len()
+        || individual_matches.iter().collect::<HashSet<_>>().len() != individual_matches.len()
+    {
+        if whole_matches.len() != 1 {
+            return None;
+        }
+        if protected_refs.len() > 1 {
+            return None;
+        }
+    }
+
+    if whole_matches.len() == 1 {
+        if protected_refs.len() == 1 {
+            return Some(whole_matches);
+        }
+        if individual_matches.len() == protected_refs.len() {
+            return None;
+        }
+        return Some(whole_matches);
+    }
+    (individual_matches.len() == protected_refs.len()).then_some(individual_matches)
+}
+
+fn reanalysis_review_kind_for_occurrence(occurrence: &AnalysisOccurrence) -> ReviewKind {
+    match occurrence.category.as_str() {
+        "institution"
+        | "institution_value"
+        | "institution_address"
+        | "region_name"
+        | "recipient_reference"
+        | "sender_institution" => ReviewKind::Institution,
+        _ => ReviewKind::Name,
+    }
+}
+
+fn ensure_occurrence_review(
+    manifest: &mut AnalysisManifestV1,
+    occurrence_index: usize,
+    status: &str,
+    reasons: &[&str],
+) {
+    let occurrence = &manifest.occurrences[occurrence_index];
+    let occurrence_id = occurrence.occurrence_id.clone();
+    if let Some(review) = manifest.review_items.iter_mut().find(|review| {
+        review.target_id.as_deref() == Some(occurrence_id.as_str())
+            && matches!(&review.kind, ReviewKind::Name | ReviewKind::Institution)
+    }) {
+        review.status = status.to_string();
+        for reason in reasons {
+            append_review_reason(review, reason);
+        }
+        refresh_review_id(review);
+        return;
+    }
+    let mut review = ReviewItem {
+        review_id: String::new(),
+        analysis_revision: manifest.analysis_revision,
+        kind: reanalysis_review_kind_for_occurrence(occurrence),
+        target_id: Some(occurrence_id),
+        page_start: occurrence.page,
+        page_end: occurrence.page,
+        status: status.to_string(),
+        reason_codes: reasons.iter().map(|reason| (*reason).to_string()).collect(),
+        requires_acknowledgment: false,
+        common_only: false,
+        provenance: REANALYSIS_CARRY_PROVENANCE.to_string(),
+    };
+    refresh_review_id(&mut review);
+    manifest.review_items.push(review);
+}
+
+fn is_server_authorized_custom_keyword_mask(
+    occurrence: &AnalysisOccurrence,
+    options: &serde_json::Value,
+) -> bool {
+    options
+        .get("custom_keywords")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|keywords| !keywords.trim().is_empty())
+        && occurrence.tag == "KEYWORD"
+        && occurrence.category == "custom_keyword"
+        && occurrence.source == "custom_keyword"
+        && occurrence.policy == POLICY_VERSION
+        && occurrence.provenance == "custom_keyword"
+}
+
+fn normalize_candidate_dispositions(
+    candidate: &mut AnalysisManifestV1,
+    options: &serde_json::Value,
+) {
+    let mut replacements = HashMap::new();
+    let mut custom_keyword_ids = HashSet::new();
+    for occurrence in &mut candidate.occurrences {
+        let old_occurrence_id = occurrence.occurrence_id.clone();
+        let custom_keyword = is_server_authorized_custom_keyword_mask(occurrence, options);
+        if custom_keyword {
+            // A custom keyword is a server-authorized rule selected in the
+            // current options, not a disposition supplied by the analyzer.
+            occurrence.proposed_action = "mask".to_string();
+            occurrence.state = "confirmed".to_string();
+        } else {
+            occurrence.proposed_action = "review".to_string();
+            occurrence.state = "review_required".to_string();
+        }
+        refresh_occurrence_id(&candidate.original_document_hash, occurrence);
+        let new_occurrence_id = occurrence.occurrence_id.clone();
+        if custom_keyword {
+            custom_keyword_ids.insert(new_occurrence_id.clone());
+        }
+        replacements.insert(
+            old_occurrence_id,
+            (
+                new_occurrence_id,
+                custom_keyword,
+                reanalysis_review_kind_for_occurrence(occurrence),
+            ),
+        );
+    }
+
+    for review in &mut candidate.review_items {
+        if let Some(target) = review.target_id.as_deref() {
+            if let Some((new_target, custom_keyword, review_kind)) = replacements.get(target) {
+                review.target_id = Some(new_target.clone());
+                if *custom_keyword {
+                    continue;
+                }
+                review.kind = review_kind.clone();
+                review.status = "pending".to_string();
+                append_review_reason(review, REANALYSIS_DECISION_NOT_CARRIED_REASON);
+                refresh_review_id(review);
+                continue;
+            }
+        }
+        review.status = "pending".to_string();
+        refresh_review_id(review);
+    }
+    candidate.review_items.retain(|review| {
+        review
+            .target_id
+            .as_deref()
+            .is_none_or(|target| !custom_keyword_ids.contains(target))
+    });
+
+    for occurrence_index in 0..candidate.occurrences.len() {
+        let occurrence = &candidate.occurrences[occurrence_index];
+        if custom_keyword_ids.contains(&occurrence.occurrence_id) {
+            continue;
+        }
+        ensure_occurrence_review(
+            candidate,
+            occurrence_index,
+            "pending",
+            &[REANALYSIS_DECISION_NOT_CARRIED_REASON],
+        );
+    }
+}
+
+fn mark_occurrence_reanalysis_pending(
+    candidate: &mut AnalysisManifestV1,
+    occurrence_index: usize,
+    reasons: &[&str],
+) {
+    let old_occurrence_id = candidate.occurrences[occurrence_index]
+        .occurrence_id
+        .clone();
+    let document_hash = candidate.original_document_hash.clone();
+    {
+        let occurrence = &mut candidate.occurrences[occurrence_index];
+        occurrence.proposed_action = "review".to_string();
+        occurrence.state = "review_required".to_string();
+        refresh_occurrence_id(&document_hash, occurrence);
+    }
+    let new_occurrence_id = candidate.occurrences[occurrence_index]
+        .occurrence_id
+        .clone();
+    if !rekey_occurrence_reviews(
+        candidate,
+        &old_occurrence_id,
+        &new_occurrence_id,
+        Some("pending"),
+        reasons,
+    ) {
+        ensure_occurrence_review(candidate, occurrence_index, "pending", reasons);
+    }
+}
+
+fn mark_segment_reanalysis_pending(
+    candidate: &mut AnalysisManifestV1,
+    page: u32,
+    reasons: &[&str],
+) -> Result<(), String> {
+    let segment = candidate
+        .segments
+        .iter()
+        .find(|segment| page >= segment.page_start && page <= segment.page_end)
+        .cloned()
+        .ok_or_else(|| safe_error("REANALYSIS_MANIFEST_INVALID"))?;
+    if let Some(segment) = candidate
+        .segments
+        .iter_mut()
+        .find(|item| item.segment_id == segment.segment_id)
+    {
+        segment.state = "review_required".to_string();
+    }
+    if let Some(review) = candidate
+        .review_items
+        .iter_mut()
+        .find(|review| review.target_id.as_deref() == Some(segment.segment_id.as_str()))
+    {
+        review.status = "pending".to_string();
+        for reason in reasons {
+            append_review_reason(review, reason);
+        }
+        refresh_review_id(review);
+        return Ok(());
+    }
+    let mut review = ReviewItem {
+        review_id: String::new(),
+        analysis_revision: candidate.analysis_revision,
+        kind: ReviewKind::Ocr,
+        target_id: Some(segment.segment_id),
+        page_start: segment.page_start,
+        page_end: segment.page_end,
+        status: "pending".to_string(),
+        reason_codes: reasons.iter().map(|reason| (*reason).to_string()).collect(),
+        requires_acknowledgment: true,
+        common_only: segment.common_only,
+        provenance: REANALYSIS_CARRY_PROVENANCE.to_string(),
+    };
+    refresh_review_id(&mut review);
+    candidate.review_items.push(review);
+    Ok(())
+}
+
+fn same_occurrence_reanalysis_basis(
+    prior: &AnalysisOccurrence,
+    successor: &AnalysisOccurrence,
+) -> bool {
+    prior.page == successor.page
+        && prior.tag == successor.tag
+        && prior.category == successor.category
+        && prior.source == successor.source
+        && prior.policy == successor.policy
+        && prior.provenance == successor.provenance
+}
+
+fn record_unmatched_reanalysis_decision(
+    prior_occurrence: &AnalysisOccurrence,
+    candidate: &mut AnalysisManifestV1,
+    successor_map: &OccurrenceReconciliationMap,
+) -> Result<(), String> {
+    let exact_matches = successor_map
+        .matches_by_prior_id
+        .get(&prior_occurrence.occurrence_id)
+        .cloned()
+        .unwrap_or_default();
+    let candidate_indices = if exact_matches.is_empty() {
+        candidate
+            .occurrences
+            .iter()
+            .enumerate()
+            .filter(|(_, occurrence)| {
+                same_occurrence_reanalysis_basis(prior_occurrence, occurrence)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>()
+    } else {
+        exact_matches.clone()
+    };
+    if candidate_indices.is_empty() {
+        return mark_segment_reanalysis_pending(
+            candidate,
+            prior_occurrence.page,
+            &[
+                REANALYSIS_DECISION_NOT_CARRIED_REASON,
+                REANALYSIS_MATCH_MISSING_REASON,
+            ],
+        );
+    }
+    let uniquely_mapped = exact_matches.len() == 1
+        && successor_map
+            .by_prior_id
+            .get(&prior_occurrence.occurrence_id)
+            .copied()
+            == exact_matches.first().copied();
+    let ambiguous = if exact_matches.is_empty() {
+        candidate_indices.len() > 1
+    } else {
+        !uniquely_mapped || candidate_indices.len() != 1
+    };
+    let reasons = if ambiguous {
+        [
+            REANALYSIS_DECISION_NOT_CARRIED_REASON,
+            REANALYSIS_MATCH_AMBIGUOUS_REASON,
+        ]
+        .as_slice()
+    } else {
+        [
+            REANALYSIS_DECISION_NOT_CARRIED_REASON,
+            REANALYSIS_MATCH_MISSING_REASON,
+        ]
+        .as_slice()
+    };
+    for index in candidate_indices {
+        mark_occurrence_reanalysis_pending(candidate, index, reasons);
+    }
+    Ok(())
+}
+
+fn reconcile_user_review_decisions(
+    prior: &AnalysisManifestV1,
+    candidate: &mut AnalysisManifestV1,
+    authorized: &[UserReviewDecision],
+    successor_map: &OccurrenceReconciliationMap,
+) -> Result<Vec<CarriedReviewDecision>, String> {
+    let mut changes = Vec::new();
+    let authorized_decisions = prior_user_review_decisions(prior, authorized);
+    let mut authorization_counts = HashMap::<usize, usize>::new();
+    for (authorization_index, _, _) in &authorized_decisions {
+        *authorization_counts
+            .entry(*authorization_index)
+            .or_default() += 1;
+    }
+    for (authorization_index, prior_review, prior_occurrence) in authorized_decisions {
+        if authorization_counts.get(&authorization_index) != Some(&1) {
+            record_unmatched_reanalysis_decision(prior_occurrence, candidate, successor_map)?;
+            continue;
+        }
+        let Some(&successor_index) = successor_map
+            .by_prior_id
+            .get(&prior_occurrence.occurrence_id)
+        else {
+            record_unmatched_reanalysis_decision(prior_occurrence, candidate, successor_map)?;
+            continue;
+        };
+        let old_successor_id = candidate.occurrences[successor_index].occurrence_id.clone();
+        if candidate.review_items.iter().any(|review| {
+            review.target_id.as_deref() == Some(old_successor_id.as_str())
+                && review.kind != prior_review.kind
+        }) {
+            mark_occurrence_reanalysis_pending(
+                candidate,
+                successor_index,
+                &[REANALYSIS_DECISION_NOT_CARRIED_REASON],
+            );
+            continue;
+        }
+        let successor = &mut candidate.occurrences[successor_index];
+        successor.proposed_action = prior_occurrence.proposed_action.clone();
+        successor.state = "confirmed".to_string();
+        successor.occurrence_id = occurrence_fingerprint_bound(
+            &candidate.original_document_hash,
+            candidate.analysis_revision,
+            &successor.segment_id,
+            successor.region_id.as_deref(),
+            successor.page,
+            &successor.rects,
+            &successor.tag,
+            &successor.category,
+            &successor.value_hash,
+            &successor.source,
+            &successor.policy,
+            &successor.proposed_action,
+        );
+        changes.push((
+            successor_index,
+            old_successor_id,
+            successor.occurrence_id.clone(),
+            prior_review.clone(),
+            authorization_index,
+        ));
+    }
+
+    let mut carried = Vec::with_capacity(changes.len());
+    for (successor_index, old_successor_id, new_successor_id, prior_review, authorization_index) in
+        changes
+    {
+        // The analyzer is not an authority for user dispositions. Replace any
+        // candidate review row with a server-created successor row instead of
+        // copying its status or resolution.
+        candidate
+            .review_items
+            .retain(|review| review.target_id.as_deref() != Some(old_successor_id.as_str()));
+        let successor = &candidate.occurrences[successor_index];
+        let mut review = prior_review.clone();
+        review.analysis_revision = candidate.analysis_revision;
+        review.target_id = Some(new_successor_id);
+        review.page_start = successor.page;
+        review.page_end = successor.page;
+        review.status = "resolved".to_string();
+        review.provenance = REANALYSIS_CARRY_PROVENANCE.to_string();
+        append_review_reason(&mut review, REANALYSIS_CARRIED_DECISION_REASON);
+        refresh_review_id(&mut review);
+        candidate.review_items.push(review);
+        carried.push(CarriedReviewDecision {
+            successor_index,
+            action: authorized[authorization_index].action.clone(),
+            authorization_index,
+        });
+    }
+    Ok(carried)
+}
+
+fn mark_manual_action_carry_for_review(
+    candidate: &mut AnalysisManifestV1,
+    page: u32,
+) -> Result<(), String> {
+    let segment = candidate
+        .segments
+        .iter()
+        .find(|segment| page >= segment.page_start && page <= segment.page_end)
+        .cloned()
+        .ok_or_else(|| safe_error("REANALYSIS_MANIFEST_INVALID"))?;
+    if let Some(review) = candidate
+        .review_items
+        .iter_mut()
+        .find(|review| review.target_id.as_deref() == Some(segment.segment_id.as_str()))
+    {
+        review.status = "pending".to_string();
+        append_review_reason(review, REANALYSIS_MANUAL_CARRY_REVIEW_REASON);
+        refresh_review_id(review);
+        return Ok(());
+    }
+    let mut review = ReviewItem {
+        review_id: String::new(),
+        analysis_revision: candidate.analysis_revision,
+        kind: ReviewKind::Ocr,
+        target_id: Some(segment.segment_id),
+        page_start: segment.page_start,
+        page_end: segment.page_end,
+        status: "pending".to_string(),
+        reason_codes: vec![REANALYSIS_MANUAL_CARRY_REVIEW_REASON.to_string()],
+        requires_acknowledgment: true,
+        common_only: segment.common_only,
+        provenance: REANALYSIS_CARRY_PROVENANCE.to_string(),
+    };
+    refresh_review_id(&mut review);
+    candidate.review_items.push(review);
+    Ok(())
+}
+
+fn carry_manual_mask_actions(
+    prior: &AnalysisManifestV1,
+    candidate: &mut AnalysisManifestV1,
+    successor_map: &OccurrenceReconciliationMap,
+) -> Result<Vec<ManualAction>, String> {
+    let mut carried_actions = Vec::new();
+    let mut rejected_pages = HashSet::new();
+    for action in prior
+        .manual_actions
+        .iter()
+        .filter(|action| action.mode == "mask")
+    {
+        let mut carried = action.clone();
+        carried.analysis_revision = candidate.analysis_revision;
+        let mut valid = true;
+        match action.source_kind.as_str() {
+            "scan" => {
+                valid = action.linked_occurrence_id.is_none()
+                    && action.expected_text_hash.is_none()
+                    && action.protected_neighbor_refs.is_empty();
+            }
+            "text_pdf" => {
+                if action.linked_occurrence_id.is_none()
+                    && action.protected_neighbor_refs.is_empty()
+                {
+                    valid = false;
+                }
+                if let Some(old_id) = action.linked_occurrence_id.as_deref() {
+                    if let Some(&successor_index) = successor_map.by_prior_id.get(old_id) {
+                        let successor = &candidate.occurrences[successor_index];
+                        carried.linked_occurrence_id = Some(successor.occurrence_id.clone());
+                        carried.rects = successor.rects.clone();
+                        carried.expected_text_hash = Some(successor.expected_text_hash.clone());
+                    } else {
+                        valid = false;
+                    }
+                }
+                if !action.protected_neighbor_refs.is_empty() {
+                    match protected_neighbor_occurrence_ids(
+                        &prior.occurrences,
+                        action.page,
+                        &action.protected_neighbor_refs,
+                    ) {
+                        Some(protected_ids) => {
+                            let mut remapped_refs = Vec::new();
+                            for protected_id in protected_ids {
+                                let Some(&successor_index) =
+                                    successor_map.by_prior_id.get(&protected_id)
+                                else {
+                                    valid = false;
+                                    break;
+                                };
+                                remapped_refs.extend(
+                                    candidate.occurrences[successor_index].rects.iter().cloned(),
+                                );
+                            }
+                            if valid {
+                                carried.protected_neighbor_refs = normalize_rects(&remapped_refs);
+                            }
+                        }
+                        None => valid = false,
+                    }
+                }
+            }
+            _ => valid = false,
+        }
+        if valid {
+            carried.action_id = manual_action_fingerprint(
+                &candidate.run_id,
+                &candidate.original_document_hash,
+                &carried,
+            );
+            carried_actions.push(carried);
+        } else {
+            rejected_pages.insert(action.page);
+        }
+    }
+    for page in rejected_pages {
+        mark_manual_action_carry_for_review(candidate, page)?;
+    }
+    Ok(carried_actions)
+}
+
+fn resolve_exclude_conflict_lineage(
+    candidate: &mut AnalysisManifestV1,
+    carried_decisions: &[CarriedReviewDecision],
+    carried_manual_actions: &[ManualAction],
+) -> Vec<CarriedReviewDecision> {
+    let mut effective_decisions = Vec::with_capacity(carried_decisions.len());
+    for decision in carried_decisions.iter() {
+        if decision.action != "exclude" {
+            effective_decisions.push(decision.clone());
+            continue;
+        }
+        let (excluded_id, excluded_page, excluded_rects) = {
+            let excluded = &candidate.occurrences[decision.successor_index];
+            (
+                excluded.occurrence_id.clone(),
+                excluded.page,
+                excluded.rects.clone(),
+            )
+        };
+        let custom_keyword_conflict = candidate.occurrences.iter().any(|occurrence| {
+            occurrence.occurrence_id != excluded_id
+                && occurrence.page == excluded_page
+                && occurrence.category == "custom_keyword"
+                && occurrence.source == "custom_keyword"
+                && occurrence.proposed_action == "mask"
+                && matches!(occurrence.state.as_str(), "confirmed" | "user_confirmed")
+                && occurrence_rects_overlap(&excluded_rects, &occurrence.rects)
+        });
+        let mut reasons = Vec::new();
+        if custom_keyword_conflict {
+            reasons.push(REANALYSIS_CUSTOM_KEYWORD_CONFLICT_REASON);
+        }
+        if carried_manual_actions.iter().any(|action| {
+            action.mode == "mask"
+                && action.page == excluded_page
+                && occurrence_rects_overlap(&action.rects, &excluded_rects)
+        }) {
+            reasons.push(REANALYSIS_MANUAL_MASK_CONFLICT_REASON);
+        }
+        if reasons.is_empty() {
+            effective_decisions.push(decision.clone());
+            continue;
+        }
+        // Keep the inherited exclusion as a confirmed server decision. The
+        // separately emitted keyword/manual mask wins in the redaction
+        // projection, while the conflict remains visible in lineage.
+        if !rekey_occurrence_reviews(candidate, &excluded_id, &excluded_id, None, &reasons) {
+            let mut review_reasons = vec![REANALYSIS_CARRIED_DECISION_REASON];
+            review_reasons.extend(reasons.iter().copied());
+            ensure_occurrence_review(
+                candidate,
+                decision.successor_index,
+                "resolved",
+                &review_reasons,
+            );
+        }
+        effective_decisions.push(decision.clone());
+    }
+    effective_decisions
+}
+
+fn all_manifest_ids_are_unique(manifest: &AnalysisManifestV1) -> bool {
+    unique_ids(
+        manifest
+            .segments
+            .iter()
+            .map(|item| item.segment_id.as_str()),
+    ) && unique_ids(manifest.regions.iter().map(|item| item.region_id.as_str()))
+        && unique_ids(
+            manifest
+                .occurrences
+                .iter()
+                .map(|item| item.occurrence_id.as_str()),
+        )
+        && unique_ids(
+            manifest
+                .review_items
+                .iter()
+                .map(|item| item.review_id.as_str()),
+        )
+        && unique_ids(
+            manifest
+                .review_items
+                .iter()
+                .filter_map(|item| item.target_id.as_deref()),
+        )
+        && unique_ids(
+            manifest
+                .manual_actions
+                .iter()
+                .map(|item| item.action_id.as_str()),
+        )
 }
 
 impl MaskingRunSessions {
@@ -1144,6 +2037,7 @@ impl MaskingRunSessions {
         if state.sessions.len() >= MAX_ACTIVE_SESSIONS {
             return Err(safe_error("SESSION_LIMIT_REACHED"));
         }
+        state.user_review_decisions.remove(&manifest.run_id);
         state.sessions.insert(
             manifest.run_id.clone(),
             SessionRecord {
@@ -1199,6 +2093,9 @@ impl MaskingRunSessions {
             || record.manifest.analysis_revision != request.analysis_revision
             || record.manifest.manifest_hash != request.manifest_hash
         {
+            return Err(safe_error("STALE_ANALYSIS"));
+        }
+        if !verify_manifest_hash_with_key(&record.manifest, &self.manifest_hmac_key) {
             return Err(safe_error("STALE_ANALYSIS"));
         }
         let review = record
@@ -1271,6 +2168,9 @@ impl MaskingRunSessions {
         {
             return Err(safe_error("STALE_ANALYSIS"));
         }
+        if !verify_manifest_hash_with_key(&record.manifest, &self.manifest_hmac_key) {
+            return Err(safe_error("STALE_ANALYSIS"));
+        }
         Ok(AnalysisReanalysisContext {
             analysis_revision: record.manifest.analysis_revision,
         })
@@ -1292,6 +2192,11 @@ impl MaskingRunSessions {
             .state
             .lock()
             .map_err(|_| safe_error("SESSION_LOCK_FAILED"))?;
+        let authorized_decisions = state
+            .user_review_decisions
+            .get(&request.run_id)
+            .cloned()
+            .unwrap_or_default();
         if !state.sessions.contains_key(&request.run_id) {
             return Err(replay_or_unknown(&state, &request.run_id));
         }
@@ -1305,7 +2210,17 @@ impl MaskingRunSessions {
         {
             return Err(safe_error("STALE_ANALYSIS"));
         }
+        if !verify_manifest_hash_with_key(&record.manifest, &self.manifest_hmac_key) {
+            return Err(safe_error("REANALYSIS_MANIFEST_INVALID"));
+        }
         let prior = record.manifest.clone();
+        if !all_manifest_revisions_match(&prior)
+            || !all_manifest_ids_are_unique(&prior)
+            || !manifest_referential_integrity(&prior)
+            || !blocking_items_have_pending_reviews(&prior)
+        {
+            return Err(safe_error("REANALYSIS_MANIFEST_INVALID"));
+        }
         let successor_revision = prior
             .analysis_revision
             .checked_add(1)
@@ -1317,6 +2232,7 @@ impl MaskingRunSessions {
             || candidate.policy_version != prior.policy_version
             || candidate.options_version != prior.options_version
             || candidate.coordinate_space != prior.coordinate_space
+            || prior.coordinate_space != "pdf_points_top_left"
             || !candidate.manual_actions.is_empty()
         {
             return Err(safe_error("REANALYSIS_MANIFEST_INVALID"));
@@ -1325,77 +2241,24 @@ impl MaskingRunSessions {
             return Err(safe_error("REANALYSIS_MANIFEST_INVALID"));
         }
         candidate.run_id = prior.run_id.clone();
-        candidate.manual_actions = prior
-            .manual_actions
-            .iter()
-            .filter(|action| action.mode == "mask")
-            .map(|action| {
-                let mut carried = action.clone();
-                carried.analysis_revision = successor_revision;
-                if carried.source_kind == "text_pdf" {
-                    let protected = normalize_rects(&carried.protected_neighbor_refs);
-                    let protected_matches = candidate
-                        .occurrences
-                        .iter()
-                        .filter(|occurrence| {
-                            occurrence.page == carried.page
-                                && normalize_rects(&occurrence.rects) == protected
-                        })
-                        .collect::<Vec<_>>();
-                    if protected_matches.len() != 1 {
-                        return Err(safe_error("REANALYSIS_CARRY_INVALID"));
-                    }
-                    if let Some(old_id) = action.linked_occurrence_id.as_deref() {
-                        let old_occurrence = prior
-                            .occurrences
-                            .iter()
-                            .find(|occurrence| occurrence.occurrence_id == old_id)
-                            .ok_or_else(|| safe_error("REANALYSIS_CARRY_INVALID"))?;
-                        let linked_matches = candidate
-                            .occurrences
-                            .iter()
-                            .filter(|occurrence| {
-                                occurrence.page == old_occurrence.page
-                                    && normalize_rects(&occurrence.rects)
-                                        == normalize_rects(&old_occurrence.rects)
-                                    && occurrence.tag == old_occurrence.tag
-                                    && occurrence.category == old_occurrence.category
-                                    && occurrence.source == old_occurrence.source
-                                    && occurrence.policy == old_occurrence.policy
-                                    && occurrence.proposed_action == old_occurrence.proposed_action
-                                    && occurrence.provenance == old_occurrence.provenance
-                            })
-                            .collect::<Vec<_>>();
-                        if linked_matches.len() != 1 {
-                            return Err(safe_error("REANALYSIS_CARRY_INVALID"));
-                        }
-                        let successor_occurrence = linked_matches[0];
-                        carried.linked_occurrence_id =
-                            Some(successor_occurrence.occurrence_id.clone());
-                        carried.expected_text_hash =
-                            Some(successor_occurrence.expected_text_hash.clone());
-                    }
-                } else if carried.source_kind != "scan"
-                    || carried.linked_occurrence_id.is_some()
-                    || carried.expected_text_hash.is_some()
-                    || !carried.protected_neighbor_refs.is_empty()
-                {
-                    return Err(safe_error("REANALYSIS_CARRY_INVALID"));
-                }
-                carried.action_id = manual_action_fingerprint(
-                    &candidate.run_id,
-                    &candidate.original_document_hash,
-                    &carried,
-                );
-                Ok(carried)
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        if !unique_ids(
-            candidate
-                .manual_actions
-                .iter()
-                .map(|item| item.action_id.as_str()),
-        ) || !all_manifest_revisions_match(&candidate)
+        let successor_map = occurrence_successor_map(&prior, &candidate);
+        normalize_candidate_dispositions(&mut candidate, &options);
+        let carried_decisions = reconcile_user_review_decisions(
+            &prior,
+            &mut candidate,
+            &authorized_decisions,
+            &successor_map,
+        )?;
+        let carried_manual_actions =
+            carry_manual_mask_actions(&prior, &mut candidate, &successor_map)?;
+        let carried_decisions = resolve_exclude_conflict_lineage(
+            &mut candidate,
+            &carried_decisions,
+            &carried_manual_actions,
+        );
+        candidate.manual_actions = carried_manual_actions;
+        if !all_manifest_revisions_match(&candidate)
+            || !all_manifest_ids_are_unique(&candidate)
             || !manifest_referential_integrity(&candidate)
         {
             return Err(safe_error("REFERENTIAL_INTEGRITY_INVALID"));
@@ -1403,7 +2266,17 @@ impl MaskingRunSessions {
         refresh_manifest_hash_with_key(&mut candidate, &self.manifest_hmac_key)?;
         record.manifest = candidate.clone();
         record.options = Some(options);
-        Ok(candidate)
+        let updated_manifest = candidate;
+        drop(record);
+        if let Some(decisions) = state.user_review_decisions.get_mut(&request.run_id) {
+            for decision in &carried_decisions {
+                if let Some(authorized) = decisions.get_mut(decision.authorization_index) {
+                    authorized.occurrence =
+                        updated_manifest.occurrences[decision.successor_index].clone();
+                }
+            }
+        }
+        Ok(updated_manifest)
     }
 
     pub fn replace_from_trusted_reanalysis(
@@ -1436,6 +2309,9 @@ impl MaskingRunSessions {
             || record.manifest.manifest_hash != request.manifest_hash
         {
             return Err(safe_error("STALE_ANALYSIS"));
+        }
+        if !verify_manifest_hash_with_key(&record.manifest, &self.manifest_hmac_key) {
+            return Err(safe_error("REANALYSIS_MANIFEST_INVALID"));
         }
         let prior = &record.manifest;
         let resolved_review = prior
@@ -1520,50 +2396,20 @@ impl MaskingRunSessions {
             .retain(|item| item.review_id != resolution_marker.review_id);
         candidate.review_items.push(resolution_marker);
         candidate.run_id = prior.run_id.clone();
-        candidate.manual_actions.clear();
-        for action in prior
+        let successor_map = occurrence_successor_map(prior, &candidate);
+        let mut manual_carry_prior = prior.clone();
+        manual_carry_prior.manual_actions = prior
             .manual_actions
             .iter()
             .filter(|action| action.page < affected_start || action.page > affected_end)
-        {
-            let map_occurrence = |id: &str| {
-                let old = prior
-                    .occurrences
-                    .iter()
-                    .find(|item| item.occurrence_id == id)?;
-                let matches = candidate
-                    .occurrences
-                    .iter()
-                    .filter(|item| {
-                        item.page == old.page && item.expected_text_hash == old.expected_text_hash
-                    })
-                    .collect::<Vec<_>>();
-                (matches.len() == 1).then(|| matches[0].occurrence_id.clone())
-            };
-            let mut carried = action.clone();
-            carried.analysis_revision = candidate.analysis_revision;
-            carried.linked_occurrence_id = match action.linked_occurrence_id.as_deref() {
-                Some(id) => {
-                    Some(map_occurrence(id).ok_or_else(|| safe_error("REANALYSIS_CARRY_INVALID"))?)
-                }
-                None => None,
-            };
-            carried.action_id = manual_action_fingerprint(
-                &candidate.run_id,
-                &candidate.original_document_hash,
-                &carried,
-            );
-            candidate.manual_actions.push(carried);
-        }
+            .cloned()
+            .collect();
+        candidate.manual_actions =
+            carry_manual_mask_actions(&manual_carry_prior, &mut candidate, &successor_map)?;
         refresh_manifest_hash_with_key(&mut candidate, &self.manifest_hmac_key)?;
         if !all_manifest_revisions_match(&candidate)
+            || !all_manifest_ids_are_unique(&candidate)
             || !manifest_referential_integrity(&candidate)
-            || !unique_ids(
-                candidate
-                    .manual_actions
-                    .iter()
-                    .map(|action| action.action_id.as_str()),
-            )
         {
             return Err(safe_error("REFERENTIAL_INTEGRITY_INVALID"));
         }
@@ -1725,6 +2571,7 @@ impl MaskingRunSessions {
             }
             FinalizeDisposition::Consumed => {
                 state.sessions.remove(run_id);
+                state.user_review_decisions.remove(run_id);
                 state
                     .restore_capabilities
                     .retain(|_, capability| capability.run_id != run_id);
@@ -1732,6 +2579,7 @@ impl MaskingRunSessions {
             }
             FinalizeDisposition::PublishedIndeterminate => {
                 state.sessions.remove(run_id);
+                state.user_review_decisions.remove(run_id);
                 state
                     .restore_capabilities
                     .retain(|_, capability| capability.run_id != run_id);
@@ -2028,11 +2876,13 @@ impl MaskingRunSessions {
                 (request.page, rects, None, Some(expected), None)
             };
         if !scan_manual && request.mode != "restore" {
-            if !manifest.occurrences.iter().any(|occurrence| {
-                occurrence.page == page
-                    && normalize_rects(&occurrence.rects)
-                        == normalize_rects(&protected_neighbor_refs)
-            }) {
+            if protected_neighbor_occurrence_ids(
+                &manifest.occurrences,
+                page,
+                &protected_neighbor_refs,
+            )
+            .is_none()
+            {
                 return Err(safe_error("MANUAL_ACTION_EVIDENCE_REQUIRED"));
             }
             if rects.iter().any(|mask| {
@@ -2124,6 +2974,7 @@ impl MaskingRunSessions {
         if review.kind != request.resolution.kind() {
             return Err(safe_error("REVIEW_KIND_MISMATCH"));
         }
+        let mut user_review_decision = None;
         match &request.resolution {
             ReviewResolution::Name { action } | ReviewResolution::Institution { action } => {
                 if !matches!(action.as_str(), "mask" | "exclude") {
@@ -2157,6 +3008,11 @@ impl MaskingRunSessions {
                     &occurrence.proposed_action,
                 );
                 let new_occurrence_id = occurrence.occurrence_id.clone();
+                user_review_decision = Some(UserReviewDecision {
+                    kind: review.kind.clone(),
+                    action: action.clone(),
+                    occurrence: occurrence.clone(),
+                });
                 for item in &mut manifest.review_items {
                     if item.target_id.as_deref() == Some(old_occurrence_id.as_str()) {
                         item.target_id = Some(new_occurrence_id.clone());
@@ -2302,7 +3158,24 @@ impl MaskingRunSessions {
             return Err(safe_error("REFERENTIAL_INTEGRITY_INVALID"));
         }
         record.manifest = manifest.clone();
-        Ok(manifest.clone())
+        let updated_manifest = manifest.clone();
+        drop(manifest);
+        drop(record);
+        if let Some(decision) = user_review_decision {
+            let decisions = state
+                .user_review_decisions
+                .entry(request.run_id)
+                .or_default();
+            decisions.retain(|existing| {
+                !(existing.kind == decision.kind
+                    && occurrences_are_reanalysis_compatible(
+                        &existing.occurrence,
+                        &decision.occurrence,
+                    ))
+            });
+            decisions.push(decision);
+        }
+        Ok(updated_manifest)
     }
 }
 
@@ -2428,6 +3301,7 @@ fn reclaim_completed_sessions(state: &mut SessionState) {
         .collect::<Vec<_>>();
     for run_id in completed {
         state.sessions.remove(&run_id);
+        state.user_review_decisions.remove(&run_id);
         insert_completed_tombstone(state, run_id, "RUN_CONSUMED");
     }
 }
@@ -2928,11 +3802,12 @@ fn manual_action_has_trusted_evidence(
             .segments
             .iter()
             .any(|segment| action.page >= segment.page_start && action.page <= segment.page_end)
-        && manifest.occurrences.iter().any(|occurrence| {
-            occurrence.page == action.page
-                && normalize_rects(&occurrence.rects)
-                    == normalize_rects(&action.protected_neighbor_refs)
-        })
+        && protected_neighbor_occurrence_ids(
+            &manifest.occurrences,
+            action.page,
+            &action.protected_neighbor_refs,
+        )
+        .is_some()
         && !action.rects.iter().any(|mask| {
             action
                 .protected_neighbor_refs
@@ -3494,6 +4369,26 @@ fn refresh_manifest_hash_with_key(
     Ok(())
 }
 
+fn verify_manifest_hash_with_key(manifest: &AnalysisManifestV1, key: &[u8]) -> bool {
+    if key.is_empty() || manifest.manifest_hash.len() != 64 {
+        return false;
+    }
+    let claimed = manifest.manifest_hash.as_bytes();
+    let mut canonical = manifest.clone();
+    if refresh_manifest_hash_with_key(&mut canonical, key).is_err() {
+        return false;
+    }
+    constant_time_equal(claimed, canonical.manifest_hash.as_bytes())
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = (left.len() ^ right.len()) as u8;
+    for (left, right) in left.iter().zip(right.iter()) {
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
 pub(crate) fn canonical_json_hash(value: &impl Serialize) -> Result<String, String> {
     let value =
         serde_json::to_value(value).map_err(|_| safe_error("CANONICAL_SERIALIZATION_FAILED"))?;
@@ -3794,51 +4689,119 @@ mod tests {
             })]
         });
         serde_json::json!({
-            "schema_version": 1,
-            "original_document_hash": document_hash,
-            "profile": "mixed",
-            "coordinate_space": "pdf_points_top_left",
+        "schema_version": 1,
+        "original_document_hash": document_hash,
+        "profile": "mixed",
+        "coordinate_space": "pdf_points_top_left",
+        "analysis_revision": revision,
+        "segments": [{
+            "segment_id": segment_id,
             "analysis_revision": revision,
-            "segments": [{
-                "segment_id": segment_id,
-                "analysis_revision": revision,
-                "page_start": 0,
-                "page_end": 0,
-                "kind": "official_dispatch",
-                "state": segment_state,
-                "common_only": false,
-                "source": "trusted"
-            }],
-            "regions": [],
-            "occurrences": [],
-            "manual_actions": [],
-            "review_items": review_items,
-            "policy_version": POLICY_VERSION,
-            "options_version": OPTIONS_VERSION,
-            "options_hash": canonical_json_hash(options).expect("options hash"),
-            "threshold_version": THRESHOLD_VERSION,
-            "threshold_hash": threshold.content_hash,
-            "threshold_artifact": {
-                "version": threshold.version,
-                "content_hash": threshold.content_hash,
-                "auto_mask_threshold": threshold.auto_mask_threshold,
-                "review_threshold": threshold.review_threshold
-            },
-            "approval_coverage": {
-                "schema_version": 1,
-                "state": "absent",
-                "signer_count": 0,
-                "protected_neighbor_count": 0
-            },
-            "required_region_coverage": {
-                "schema_version": 1,
-                "profile": "mixed",
-                "kinds": required_region_kinds("mixed").iter().map(|kind| serde_json::json!({
-                    "kind": kind,
-                    "state": "absent"
-                })).collect::<Vec<_>>(),
-                "blocking": false
-            }
+            "page_start": 0,
+            "page_end": 0,
+            "kind": "official_dispatch",
+            "state": segment_state,
+            "common_only": false,
+            "source": "trusted"
+        }],
+        "regions": [],
+        "occurrences": [],
+        "manual_actions": [],
+        "review_items": review_items,
+        "policy_version": POLICY_VERSION,
+        "options_version": OPTIONS_VERSION,
+        "options_hash": canonical_json_hash(options).expect("options hash"),
+        "threshold_version": THRESHOLD_VERSION,
+        "threshold_hash": threshold.content_hash,
+        "threshold_artifact": {
+            "version": threshold.version,
+            "content_hash": threshold.content_hash,
+            "auto_mask_threshold": threshold.auto_mask_threshold,
+            "review_threshold": threshold.review_threshold
+        },
+        "approval_coverage": {
+            "schema_version": 1,
+            "state": "absent",
+            "signer_count": 0,
+            "protected_neighbor_count": 0
+        },
+        "required_region_coverage": {
+            "schema_version": 1,
+            "profile": "mixed",
+            "kinds": required_region_kinds("mixed").iter().map(|kind| serde_json::json!({
+                "kind": kind,
+                "state": "absent"
+            })).collect::<Vec<_>>(),
+            "blocking": false
+        }})
+    }
+
+    fn trusted_occurrence(
+        original: &[u8],
+        revision: u64,
+        segment_id: &str,
+        rects: &[Rect],
+        tag: &str,
+        category: &str,
+        value_hash: &str,
+        expected_text_hash: &str,
+        source: &str,
+        action: &str,
+        state: &str,
+        provenance: &str,
+    ) -> serde_json::Value {
+        let document_hash = sha256_hex(original);
+        let occurrence_id = occurrence_fingerprint_bound(
+            &document_hash,
+            revision,
+            segment_id,
+            None,
+            0,
+            rects,
+            tag,
+            category,
+            value_hash,
+            source,
+            POLICY_VERSION,
+            action,
+        );
+        serde_json::json!({
+            "occurrence_id": occurrence_id,
+            "segment_id": segment_id,
+            "region_id": null,
+            "analysis_revision": revision,
+            "page": 0,
+            "rects": rects,
+            "tag": tag,
+            "category": category,
+            "value_hash": value_hash,
+            "expected_text_hash": expected_text_hash,
+            "source": source,
+            "policy": POLICY_VERSION,
+            "proposed_action": action,
+            "state": state,
+            "provenance": provenance
+        })
+    }
+
+    fn trusted_occurrence_review(
+        review_id: &str,
+        revision: u64,
+        kind: &str,
+        target_id: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "review_id": review_id,
+            "analysis_revision": revision,
+            "kind": kind,
+            "target_id": target_id,
+            "page_start": 0,
+            "page_end": 0,
+            "status": "pending",
+            "reason_codes": ["detector_review_required"],
+            "requires_acknowledgment": false,
+            "common_only": false,
+            "provenance": "common_detector"
         })
     }
 
@@ -4293,6 +5256,991 @@ mod tests {
     }
 
     #[test]
+    fn keyword_reanalysis_carries_server_review_decisions_and_keeps_keyword_masks() {
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let mut initial_trusted =
+            trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        let initial_segment_id = initial_trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("initial segment")
+            .to_string();
+        let initial_rects = [
+            rect(1.0, 1.0, 2.0, 2.0),
+            rect(3.0, 1.0, 4.0, 2.0),
+            rect(5.0, 1.0, 6.0, 2.0),
+        ];
+        let initial_expected = ["a", "b", "c"].map(|value| value.repeat(64));
+        let initial_values = ["1", "2", "3"].map(|value| value.repeat(64));
+        let initial_occurrences = initial_rects
+            .iter()
+            .zip(initial_expected.iter())
+            .zip(initial_values.iter())
+            .map(|((rects, expected), value_hash)| {
+                trusted_occurrence(
+                    &original,
+                    1,
+                    &initial_segment_id,
+                    std::slice::from_ref(rects),
+                    "NAME",
+                    "person_name",
+                    value_hash,
+                    expected,
+                    "common_detector",
+                    "review",
+                    "review_required",
+                    "common_detector",
+                )
+            })
+            .collect::<Vec<_>>();
+        let initial_reviews = initial_occurrences
+            .iter()
+            .enumerate()
+            .map(|(index, occurrence)| {
+                trusted_occurrence_review(
+                    &format!("review_initial_occurrence_{:04}", index + 1),
+                    1,
+                    "name",
+                    occurrence["occurrence_id"]
+                        .as_str()
+                        .expect("initial occurrence id"),
+                )
+            })
+            .collect::<Vec<_>>();
+        initial_trusted["occurrences"] = serde_json::json!(initial_occurrences);
+        initial_trusted["review_items"] = serde_json::json!(initial_reviews);
+        let initial = sessions
+            .create_from_trusted(&original, "mixed", options.clone(), &initial_trusted)
+            .expect("initial review manifest");
+        sessions
+            .bind_private_context(
+                &initial.run_id,
+                std::path::PathBuf::from("/nonexistent/keyword-carry.pdf"),
+                options.clone(),
+            )
+            .expect("private context");
+
+        let decisions = ["mask", "mask", "exclude"];
+        let mut resolved = initial;
+        for (index, action) in decisions.into_iter().enumerate() {
+            let review = resolved
+                .review_items
+                .iter()
+                .find(|review| review.status == "pending" && review.kind == ReviewKind::Name)
+                .expect("pending name review")
+                .clone();
+            assert_eq!(
+                index,
+                resolved
+                    .review_items
+                    .iter()
+                    .filter(|item| item.status == "resolved")
+                    .count()
+            );
+            resolved = sessions
+                .resolve(ResolveMaskingReviewRequest {
+                    run_id: resolved.run_id.clone(),
+                    analysis_revision: resolved.analysis_revision,
+                    manifest_hash: resolved.manifest_hash.clone(),
+                    review_id: review.review_id,
+                    resolution: ReviewResolution::Name {
+                        action: action.to_string(),
+                    },
+                })
+                .expect("server review decision");
+        }
+        let after_manual = sessions
+            .apply_manual_action(ManualActionV1Request {
+                run_id: resolved.run_id.clone(),
+                analysis_revision: resolved.analysis_revision,
+                manifest_hash: resolved.manifest_hash.clone(),
+                page: 0,
+                rects: initial_rects[2..3].to_vec(),
+                mode: "mask".to_string(),
+                source_kind: "scan".to_string(),
+                linked_occurrence_id: None,
+                target_region_id: None,
+                expected_text_hash: None,
+                protected_neighbor_refs: vec![],
+                restore_capability: None,
+            })
+            .expect("committed manual mask");
+        assert_eq!(2, after_manual.analysis_revision);
+
+        let mut keyword_options = public_options();
+        keyword_options["custom_keywords"] = serde_json::Value::String("관악구".to_string());
+        let mut successor_trusted =
+            trusted_reanalysis_manifest(&original, &keyword_options, 3, "confirmed", None);
+        let successor_segment_id = successor_trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("successor segment")
+            .to_string();
+        let mut successor_occurrences = Vec::new();
+        let mut successor_reviews = Vec::new();
+        for (index, prior_occurrence) in after_manual.occurrences.iter().enumerate() {
+            let action = if index == 0 { "exclude" } else { "review" };
+            let state = if index == 0 {
+                "confirmed"
+            } else {
+                "review_required"
+            };
+            let occurrence = trusted_occurrence(
+                &original,
+                3,
+                &successor_segment_id,
+                &prior_occurrence.rects,
+                &prior_occurrence.tag,
+                &prior_occurrence.category,
+                &format!("{:x}", index + 10).repeat(64),
+                &prior_occurrence.expected_text_hash,
+                &prior_occurrence.source,
+                action,
+                state,
+                &prior_occurrence.provenance,
+            );
+            successor_reviews.push(trusted_occurrence_review(
+                &format!("review_successor_occurrence_{:04}", index + 1),
+                3,
+                "name",
+                occurrence["occurrence_id"]
+                    .as_str()
+                    .expect("successor occurrence id"),
+            ));
+            successor_occurrences.push(occurrence);
+        }
+        let overlapping_keyword = trusted_occurrence(
+            &original,
+            3,
+            &successor_segment_id,
+            &initial_rects[2..3],
+            "KEYWORD",
+            "custom_keyword",
+            &"d".repeat(64),
+            &initial_expected[2],
+            "custom_keyword",
+            "mask",
+            "confirmed",
+            "custom_keyword",
+        );
+        let new_keyword = trusted_occurrence(
+            &original,
+            3,
+            &successor_segment_id,
+            &[rect(7.0, 1.0, 8.0, 2.0)],
+            "KEYWORD",
+            "custom_keyword",
+            &"e".repeat(64),
+            &initial_expected[1],
+            "custom_keyword",
+            "mask",
+            "confirmed",
+            "custom_keyword",
+        );
+        successor_occurrences.extend([overlapping_keyword, new_keyword]);
+        successor_trusted["occurrences"] = serde_json::json!(successor_occurrences);
+        successor_trusted["review_items"] = serde_json::json!(successor_reviews);
+
+        let replaced = sessions
+            .replace_from_trusted_analysis(
+                AnalyzeMaskingRunReanalysis {
+                    run_id: after_manual.run_id.clone(),
+                    analysis_revision: after_manual.analysis_revision,
+                    manifest_hash: after_manual.manifest_hash.clone(),
+                },
+                &original,
+                "mixed",
+                keyword_options,
+                &successor_trusted,
+            )
+            .expect("keyword reanalysis carries trusted decisions");
+        assert_eq!(3, replaced.analysis_revision);
+        assert_eq!(1, replaced.manual_actions.len());
+        assert_eq!("scan", replaced.manual_actions[0].source_kind);
+        assert_eq!(initial_rects[2], replaced.manual_actions[0].rects[0]);
+        let mut dispositions = replaced
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.category == "person_name")
+            .map(|occurrence| {
+                (
+                    occurrence.expected_text_hash.clone(),
+                    occurrence.proposed_action.clone(),
+                    occurrence.state.clone(),
+                    occurrence.occurrence_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        dispositions.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            vec![
+                (
+                    initial_expected[0].clone(),
+                    "mask".to_string(),
+                    "confirmed".to_string()
+                ),
+                (
+                    initial_expected[1].clone(),
+                    "mask".to_string(),
+                    "confirmed".to_string()
+                ),
+                (
+                    initial_expected[2].clone(),
+                    "exclude".to_string(),
+                    "confirmed".to_string()
+                ),
+            ],
+            dispositions
+                .iter()
+                .map(|(expected, action, state, _)| {
+                    (expected.clone(), action.clone(), state.clone())
+                })
+                .collect::<Vec<_>>()
+        );
+        for (_, _, _, occurrence_id) in &dispositions {
+            let review = replaced
+                .review_items
+                .iter()
+                .find(|review| review.target_id.as_deref() == Some(occurrence_id.as_str()))
+                .expect("successor review item");
+            assert_eq!("resolved", review.status);
+            assert!(review
+                .reason_codes
+                .iter()
+                .any(|reason| reason == REANALYSIS_CARRIED_DECISION_REASON));
+        }
+        let excluded_review = replaced
+            .review_items
+            .iter()
+            .find(|review| {
+                review.target_id.as_deref()
+                    == Some(
+                        &dispositions
+                            .iter()
+                            .find(|(expected, _, _, _)| expected == &initial_expected[2])
+                            .expect("excluded successor")
+                            .3,
+                    )
+            })
+            .expect("excluded successor review");
+        assert!(excluded_review
+            .reason_codes
+            .iter()
+            .any(|reason| reason == REANALYSIS_CUSTOM_KEYWORD_CONFLICT_REASON));
+        assert!(excluded_review
+            .reason_codes
+            .iter()
+            .any(|reason| reason == REANALYSIS_MANUAL_MASK_CONFLICT_REASON));
+        assert_eq!(
+            2,
+            replaced
+                .occurrences
+                .iter()
+                .filter(|occurrence| {
+                    occurrence.category == "custom_keyword"
+                        && occurrence.proposed_action == "mask"
+                        && occurrence.state == "confirmed"
+                })
+                .count()
+        );
+        assert_eq!(
+            0,
+            replaced
+                .review_items
+                .iter()
+                .filter(|review| {
+                    review.status == "pending"
+                        && dispositions.iter().any(|(_, _, _, occurrence_id)| {
+                            review.target_id.as_deref() == Some(occurrence_id.as_str())
+                        })
+                })
+                .count()
+        );
+    }
+
+    #[test]
+    fn reanalysis_does_not_trust_candidate_resolved_dispositions() {
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let mut prior_trusted =
+            trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        let prior_segment_id = prior_trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("prior segment")
+            .to_string();
+        let prior_occurrence = trusted_occurrence(
+            &original,
+            1,
+            &prior_segment_id,
+            &[rect(1.0, 1.0, 9.0, 9.0)],
+            "NAME",
+            "person_name",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            "common_detector",
+            "review",
+            "review_required",
+            "common_detector",
+        );
+        let prior_review = trusted_occurrence_review(
+            "review_prior_candidate_trust_0001",
+            1,
+            "name",
+            prior_occurrence["occurrence_id"]
+                .as_str()
+                .expect("prior occurrence"),
+        );
+        prior_trusted["occurrences"] = serde_json::json!([prior_occurrence]);
+        prior_trusted["review_items"] = serde_json::json!([prior_review]);
+        let prior = sessions
+            .create_from_trusted(&original, "mixed", options.clone(), &prior_trusted)
+            .expect("prior review manifest");
+        sessions
+            .bind_private_context(
+                &prior.run_id,
+                std::path::PathBuf::from("/nonexistent/candidate-trust.pdf"),
+                options.clone(),
+            )
+            .expect("private context");
+
+        let mut candidate = trusted_reanalysis_manifest(&original, &options, 2, "confirmed", None);
+        let candidate_segment_id = candidate["segments"][0]["segment_id"]
+            .as_str()
+            .expect("candidate segment")
+            .to_string();
+        let candidate_occurrence = trusted_occurrence(
+            &original,
+            2,
+            &candidate_segment_id,
+            &[rect(1.0, 1.0, 9.0, 9.0)],
+            "NAME",
+            "person_name",
+            &"c".repeat(64),
+            &"b".repeat(64),
+            "common_detector",
+            "exclude",
+            "confirmed",
+            "common_detector",
+        );
+        let candidate_review = trusted_occurrence_review(
+            "review_candidate_tampered_0001",
+            2,
+            "name",
+            candidate_occurrence["occurrence_id"]
+                .as_str()
+                .expect("candidate occurrence"),
+        );
+        candidate["occurrences"] = serde_json::json!([candidate_occurrence]);
+        candidate["review_items"] = serde_json::json!([candidate_review]);
+        candidate["review_items"][0]["status"] = serde_json::Value::String("resolved".to_string());
+
+        let replaced = sessions
+            .replace_from_trusted_analysis(
+                AnalyzeMaskingRunReanalysis {
+                    run_id: prior.run_id.clone(),
+                    analysis_revision: prior.analysis_revision,
+                    manifest_hash: prior.manifest_hash.clone(),
+                },
+                &original,
+                "mixed",
+                options,
+                &candidate,
+            )
+            .expect("candidate disposition should be normalized");
+
+        assert_eq!("review", replaced.occurrences[0].proposed_action);
+        assert_eq!("review_required", replaced.occurrences[0].state);
+        assert_eq!(1, replaced.review_items.len());
+        assert_eq!("pending", replaced.review_items[0].status);
+        assert_eq!(
+            Some(replaced.occurrences[0].occurrence_id.as_str()),
+            replaced.review_items[0].target_id.as_deref()
+        );
+    }
+
+    #[test]
+    fn reanalysis_remaps_linked_and_protected_manual_masks_without_restoring_stale_actions() {
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let mut prior_trusted =
+            trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        let prior_segment_id = prior_trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("prior segment")
+            .to_string();
+        let prior_target = trusted_occurrence(
+            &original,
+            1,
+            &prior_segment_id,
+            &[rect(1.0, 1.0, 11.0, 11.0)],
+            "NAME",
+            "person_name",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            "common_detector",
+            "mask",
+            "confirmed",
+            "common_detector",
+        );
+        let prior_protected = trusted_occurrence(
+            &original,
+            1,
+            &prior_segment_id,
+            &[rect(20.0, 1.0, 30.0, 11.0)],
+            "LABEL",
+            "institution",
+            &"c".repeat(64),
+            &"d".repeat(64),
+            "common_detector",
+            "mask",
+            "confirmed",
+            "common_detector",
+        );
+        prior_trusted["occurrences"] =
+            serde_json::json!([prior_target.clone(), prior_protected.clone()]);
+        let prior = sessions
+            .create_from_trusted(&original, "mixed", options.clone(), &prior_trusted)
+            .expect("prior mask manifest");
+        sessions
+            .bind_private_context(
+                &prior.run_id,
+                std::path::PathBuf::from("/nonexistent/manual-remap.pdf"),
+                options.clone(),
+            )
+            .expect("private context");
+
+        let after_mask = sessions
+            .apply_manual_action(ManualActionV1Request {
+                run_id: prior.run_id.clone(),
+                analysis_revision: prior.analysis_revision,
+                manifest_hash: prior.manifest_hash.clone(),
+                page: 0,
+                rects: vec![rect(1.0, 1.0, 11.0, 11.0)],
+                mode: "mask".to_string(),
+                source_kind: "text_pdf".to_string(),
+                linked_occurrence_id: Some(
+                    prior_target["occurrence_id"]
+                        .as_str()
+                        .expect("prior target id")
+                        .to_string(),
+                ),
+                target_region_id: None,
+                expected_text_hash: None,
+                protected_neighbor_refs: vec![rect(20.0, 1.0, 30.0, 11.0)],
+                restore_capability: None,
+            })
+            .expect("linked manual mask");
+        let target_after_mask = after_mask
+            .occurrences
+            .iter()
+            .find(|occurrence| occurrence.category == "person_name")
+            .expect("target after manual mask")
+            .clone();
+        let restore_capability = sessions
+            .issue_restore_capability(
+                RestoreCapabilityRequest {
+                    run_id: after_mask.run_id.clone(),
+                    analysis_revision: after_mask.analysis_revision,
+                    manifest_hash: after_mask.manifest_hash.clone(),
+                    occurrence_id: target_after_mask.occurrence_id.clone(),
+                    rects: target_after_mask.rects.clone(),
+                    expected_text_hash: target_after_mask.expected_text_hash.clone(),
+                },
+                "native_trusted_ui",
+            )
+            .expect("restore capability")
+            .capability;
+        let after_restore = sessions
+            .apply_manual_action(ManualActionV1Request {
+                run_id: after_mask.run_id.clone(),
+                analysis_revision: after_mask.analysis_revision,
+                manifest_hash: after_mask.manifest_hash.clone(),
+                page: target_after_mask.page,
+                rects: target_after_mask.rects.clone(),
+                mode: "restore".to_string(),
+                source_kind: "text_pdf".to_string(),
+                linked_occurrence_id: Some(target_after_mask.occurrence_id.clone()),
+                target_region_id: None,
+                expected_text_hash: Some(target_after_mask.expected_text_hash.clone()),
+                protected_neighbor_refs: Vec::new(),
+                restore_capability: Some(restore_capability),
+            })
+            .expect("authorized restore");
+        assert_eq!(2, after_restore.manual_actions.len());
+
+        let mut successor_trusted =
+            trusted_reanalysis_manifest(&original, &options, 4, "confirmed", None);
+        let successor_segment_id = successor_trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("successor segment")
+            .to_string();
+        let successor_target = trusted_occurrence(
+            &original,
+            4,
+            &successor_segment_id,
+            &[rect(1.5, 1.0, 11.0, 11.0)],
+            "NAME",
+            "person_name",
+            &"e".repeat(64),
+            &target_after_mask.expected_text_hash,
+            "common_detector",
+            "mask",
+            "confirmed",
+            "common_detector",
+        );
+        let successor_protected = trusted_occurrence(
+            &original,
+            4,
+            &successor_segment_id,
+            &[rect(20.2, 1.0, 30.0, 11.0)],
+            "LABEL",
+            "institution",
+            &"f".repeat(64),
+            &"d".repeat(64),
+            "common_detector",
+            "mask",
+            "confirmed",
+            "common_detector",
+        );
+        successor_trusted["occurrences"] =
+            serde_json::json!([successor_target, successor_protected]);
+        let replaced = sessions
+            .replace_from_trusted_analysis(
+                AnalyzeMaskingRunReanalysis {
+                    run_id: after_restore.run_id.clone(),
+                    analysis_revision: after_restore.analysis_revision,
+                    manifest_hash: after_restore.manifest_hash.clone(),
+                },
+                &original,
+                "mixed",
+                options,
+                &successor_trusted,
+            )
+            .expect("manual mask carry");
+
+        assert_eq!(1, replaced.manual_actions.len());
+        let carried = &replaced.manual_actions[0];
+        assert_eq!("mask", carried.mode);
+        assert_eq!("text_pdf", carried.source_kind);
+        assert!(carried.restore_authorization_hash.is_none());
+        let carried_target = replaced
+            .occurrences
+            .iter()
+            .find(|occurrence| occurrence.category == "person_name")
+            .expect("carried target occurrence");
+        let carried_protected = replaced
+            .occurrences
+            .iter()
+            .find(|occurrence| occurrence.category == "institution")
+            .expect("carried protected occurrence");
+        assert_eq!(
+            Some(carried_target.occurrence_id.as_str()),
+            carried.linked_occurrence_id.as_deref()
+        );
+        assert_eq!(carried_target.rects, carried.rects);
+        assert_eq!(
+            vec![rect(20.2, 1.0, 30.0, 11.0)],
+            carried.protected_neighbor_refs
+        );
+        assert_eq!(carried_protected.rects, carried.protected_neighbor_refs);
+        assert_eq!(
+            0,
+            replaced
+                .manual_actions
+                .iter()
+                .filter(|action| action.mode == "restore")
+                .count()
+        );
+    }
+
+    #[test]
+    fn changed_reanalysis_text_stays_pending_with_lineage() {
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let mut prior_trusted =
+            trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        let prior_segment_id = prior_trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("prior segment")
+            .to_string();
+        let prior_occurrence = trusted_occurrence(
+            &original,
+            1,
+            &prior_segment_id,
+            &[rect(1.0, 1.0, 2.0, 2.0)],
+            "NAME",
+            "person_name",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            "common_detector",
+            "mask",
+            "confirmed",
+            "common_detector",
+        );
+        prior_trusted["occurrences"] = serde_json::json!([prior_occurrence]);
+        let prior = sessions
+            .create_from_trusted(&original, "mixed", options.clone(), &prior_trusted)
+            .expect("prior manifest");
+
+        let mut successor_trusted =
+            trusted_reanalysis_manifest(&original, &options, 2, "confirmed", None);
+        let successor_segment_id = successor_trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("successor segment")
+            .to_string();
+        let successor_occurrence = trusted_occurrence(
+            &original,
+            2,
+            &successor_segment_id,
+            &[rect(1.01, 1.01, 2.01, 2.01)],
+            "NAME",
+            "person_name",
+            &"c".repeat(64),
+            &"d".repeat(64),
+            "common_detector",
+            "mask",
+            "confirmed",
+            "common_detector",
+        );
+        let successor_review = trusted_occurrence_review(
+            "review_changed_successor_0001",
+            2,
+            "name",
+            successor_occurrence["occurrence_id"]
+                .as_str()
+                .expect("successor occurrence"),
+        );
+        successor_trusted["occurrences"] = serde_json::json!([successor_occurrence]);
+        successor_trusted["review_items"] = serde_json::json!([successor_review]);
+        let successor = sessions
+            .create_from_trusted(&original, "mixed", options, &successor_trusted)
+            .expect("successor manifest");
+
+        let map = occurrence_successor_map(&prior, &successor);
+        assert!(map.by_prior_id.is_empty());
+        let mut pending_successor = successor;
+        record_unmatched_reanalysis_decision(&prior.occurrences[0], &mut pending_successor, &map)
+            .expect("missing decision lineage");
+
+        let occurrence = &pending_successor.occurrences[0];
+        assert_eq!("review", occurrence.proposed_action);
+        assert_eq!("review_required", occurrence.state);
+        let review = pending_successor
+            .review_items
+            .iter()
+            .find(|review| review.target_id.as_deref() == Some(occurrence.occurrence_id.as_str()))
+            .expect("pending changed-text review");
+        assert_eq!("pending", review.status);
+        assert!(review
+            .reason_codes
+            .iter()
+            .any(|reason| reason == REANALYSIS_DECISION_NOT_CARRIED_REASON));
+        assert!(review
+            .reason_codes
+            .iter()
+            .any(|reason| reason == REANALYSIS_MATCH_MISSING_REASON));
+    }
+
+    #[test]
+    fn reanalysis_does_not_automatically_carry_restore_actions() {
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let mut prior_trusted =
+            trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        let prior_segment_id = prior_trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("prior segment")
+            .to_string();
+        let prior_occurrence = trusted_occurrence(
+            &original,
+            1,
+            &prior_segment_id,
+            &[rect(1.0, 1.0, 2.0, 2.0)],
+            "NAME",
+            "person_name",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            "common_detector",
+            "mask",
+            "confirmed",
+            "common_detector",
+        );
+        prior_trusted["occurrences"] = serde_json::json!([prior_occurrence]);
+        let mut prior = sessions
+            .create_from_trusted(&original, "mixed", options.clone(), &prior_trusted)
+            .expect("prior manifest");
+        let target = prior.occurrences[0].clone();
+        let mut restore = ManualAction {
+            action_id: String::new(),
+            analysis_revision: prior.analysis_revision,
+            page: target.page,
+            rects: target.rects.clone(),
+            mode: "restore".to_string(),
+            source_kind: "text_pdf".to_string(),
+            linked_occurrence_id: Some(target.occurrence_id.clone()),
+            expected_text_hash: Some(target.expected_text_hash.clone()),
+            protected_neighbor_refs: vec![],
+            restore_authorization_hash: Some("c".repeat(64)),
+        };
+        restore.action_id =
+            manual_action_fingerprint(&prior.run_id, &prior.original_document_hash, &restore);
+        prior.manual_actions.push(restore);
+        refresh_manifest_hash_with_key(&mut prior, &sessions.manifest_hmac_key)
+            .expect("prior restore manifest MAC");
+        sessions
+            .state
+            .lock()
+            .expect("session lock")
+            .sessions
+            .get_mut(&prior.run_id)
+            .expect("stored prior session")
+            .manifest = prior.clone();
+
+        let successor = trusted_reanalysis_manifest(&original, &options, 2, "confirmed", None);
+        let replaced = sessions
+            .replace_from_trusted_analysis(
+                AnalyzeMaskingRunReanalysis {
+                    run_id: prior.run_id.clone(),
+                    analysis_revision: prior.analysis_revision,
+                    manifest_hash: prior.manifest_hash,
+                },
+                &original,
+                "mixed",
+                options,
+                &successor,
+            )
+            .expect("restore action should be discarded for reanalysis");
+        assert!(replaced.manual_actions.is_empty());
+    }
+
+    #[test]
+    fn reanalysis_occurrence_matching_rejects_hash_drift_and_ambiguous_geometry() {
+        let make_occurrence = |rects: Vec<Rect>, expected_text_hash: &str| AnalysisOccurrence {
+            occurrence_id: "occ_aaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            segment_id: "seg_aaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            region_id: None,
+            analysis_revision: 1,
+            page: 0,
+            rects,
+            tag: "NAME".to_string(),
+            category: "person_name".to_string(),
+            value_hash: "b".repeat(64),
+            expected_text_hash: expected_text_hash.to_string(),
+            source: "common_detector".to_string(),
+            policy: POLICY_VERSION.to_string(),
+            proposed_action: "review".to_string(),
+            state: "review_required".to_string(),
+            provenance: "common_detector".to_string(),
+        };
+        let prior = make_occurrence(vec![rect(1.0, 1.0, 9.0, 9.0)], &"a".repeat(64));
+        let slightly_shifted = make_occurrence(vec![rect(1.01, 1.01, 9.01, 9.01)], &"a".repeat(64));
+        let shifted_by_point_two = make_occurrence(vec![rect(1.2, 1.2, 9.2, 9.2)], &"a".repeat(64));
+        let shifted_by_point_five =
+            make_occurrence(vec![rect(1.5, 1.5, 9.5, 9.5)], &"a".repeat(64));
+        let moved = make_occurrence(vec![rect(1.51, 1.51, 9.51, 9.51)], &"a".repeat(64));
+        let changed_text = make_occurrence(vec![rect(1.01, 1.01, 9.01, 9.01)], &"c".repeat(64));
+        assert!(occurrences_are_reanalysis_compatible(
+            &prior,
+            &slightly_shifted
+        ));
+        assert!(occurrences_are_reanalysis_compatible(
+            &prior,
+            &shifted_by_point_two
+        ));
+        assert!(occurrences_are_reanalysis_compatible(
+            &prior,
+            &shifted_by_point_five
+        ));
+        assert!(!occurrences_are_reanalysis_compatible(&prior, &moved));
+        assert!(!occurrences_are_reanalysis_compatible(
+            &prior,
+            &changed_text
+        ));
+        assert!(!rects_are_reanalysis_equivalent(
+            &rect(1.0, 1.0, 2.0, 2.0),
+            &rect(1.2, 1.0, 2.2, 2.0),
+        ));
+        assert!(!rects_are_reanalysis_equivalent(
+            &rect(1.0, 1.0, 9.0, 9.0),
+            &rect(1.51, 1.0, 9.0, 9.0),
+        ));
+        assert!(!rect_lists_are_reanalysis_equivalent(
+            &[rect(1.0, 1.0, 5.0, 5.0)],
+            &[rect(1.01, 1.01, 5.01, 5.01), rect(1.02, 1.02, 5.02, 5.02),],
+        ));
+
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let mut trusted = trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        let segment_id = trusted["segments"][0]["segment_id"]
+            .as_str()
+            .expect("matching segment")
+            .to_string();
+        let occurrence = trusted_occurrence(
+            &original,
+            1,
+            &segment_id,
+            &[rect(10.0, 10.0, 20.0, 20.0)],
+            "NAME",
+            "person_name",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            "common_detector",
+            "review",
+            "review_required",
+            "common_detector",
+        );
+        let review = trusted_occurrence_review(
+            "review_matching_occurrence_0001",
+            1,
+            "name",
+            occurrence["occurrence_id"]
+                .as_str()
+                .expect("matching occurrence"),
+        );
+        trusted["occurrences"] = serde_json::json!([occurrence]);
+        trusted["review_items"] = serde_json::json!([review]);
+        let prior_manifest = sessions
+            .create_from_trusted(&original, "mixed", options, &trusted)
+            .expect("matching prior manifest");
+        let mut successor_manifest = prior_manifest.clone();
+        successor_manifest.analysis_revision = 2;
+        successor_manifest.occurrences = (0..2)
+            .map(|index| {
+                let mut successor = prior_manifest.occurrences[0].clone();
+                successor.analysis_revision = 2;
+                successor.value_hash = format!("{:x}", index + 3).repeat(64);
+                successor.occurrence_id = format!("successor_matching_{index:016}");
+                successor
+            })
+            .collect();
+        assert!(occurrences_are_reanalysis_compatible(
+            &prior_manifest.occurrences[0],
+            &successor_manifest.occurrences[0]
+        ));
+        assert!(occurrences_are_reanalysis_compatible(
+            &prior_manifest.occurrences[0],
+            &successor_manifest.occurrences[1]
+        ));
+        let ambiguous_map = occurrence_successor_map(&prior_manifest, &successor_manifest);
+        assert!(ambiguous_map.by_prior_id.is_empty());
+        assert_eq!(
+            2,
+            ambiguous_map
+                .matches_by_prior_id
+                .get(&prior_manifest.occurrences[0].occurrence_id)
+                .expect("ambiguous occurrence entry")
+                .len()
+        );
+        let mut pending_successors = successor_manifest.clone();
+        pending_successors.review_items.clear();
+        record_unmatched_reanalysis_decision(
+            &prior_manifest.occurrences[0],
+            &mut pending_successors,
+            &ambiguous_map,
+        )
+        .expect("ambiguous decision lineage");
+        assert_eq!(
+            2,
+            pending_successors
+                .review_items
+                .iter()
+                .filter(|review| review.status == "pending"
+                    && review
+                        .reason_codes
+                        .iter()
+                        .any(|reason| reason == REANALYSIS_MATCH_AMBIGUOUS_REASON))
+                .count()
+        );
+
+        let mut prior_with_manual = prior_manifest.clone();
+        prior_with_manual.manual_actions = vec![ManualAction {
+            action_id: "manual_protected_duplicate_0001".to_string(),
+            analysis_revision: 1,
+            page: 0,
+            rects: vec![rect(30.0, 10.0, 40.0, 20.0)],
+            mode: "mask".to_string(),
+            source_kind: "text_pdf".to_string(),
+            linked_occurrence_id: None,
+            expected_text_hash: None,
+            protected_neighbor_refs: vec![rect(10.0, 10.0, 20.0, 20.0)],
+            restore_authorization_hash: None,
+        }];
+        let mut manual_candidate = successor_manifest;
+        manual_candidate.review_items.clear();
+        let carried =
+            carry_manual_mask_actions(&prior_with_manual, &mut manual_candidate, &ambiguous_map)
+                .expect("duplicate protected neighbors are reviewable");
+        assert!(carried.is_empty());
+        assert!(manual_candidate.review_items.iter().any(|review| {
+            review.status == "pending"
+                && review
+                    .reason_codes
+                    .iter()
+                    .any(|reason| reason == REANALYSIS_MANUAL_CARRY_REVIEW_REASON)
+        }));
+    }
+
+    #[test]
+    fn trusted_reanalysis_rejects_raster_coordinate_evidence() {
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let mut trusted = trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        trusted["coordinate_space"] = serde_json::Value::String("raster_pixels".to_string());
+        assert_eq!(
+            safe_error("TRUSTED_MANIFEST_INVALID"),
+            sessions
+                .create_from_trusted(&original, "mixed", options, &trusted)
+                .expect_err("raster coordinates cannot be compared as PDF points")
+        );
+    }
+
+    #[test]
+    fn reanalysis_rejects_a_tampered_prior_manifest_mac() {
+        let sessions = MaskingRunSessions::default();
+        let original = one_page_pdf();
+        let options = public_options();
+        let trusted = trusted_reanalysis_manifest(&original, &options, 1, "confirmed", None);
+        let manifest = sessions
+            .create_from_trusted(&original, "mixed", options.clone(), &trusted)
+            .expect("initial trusted manifest");
+        let input_path = std::path::PathBuf::from("/nonexistent/tampered.pdf");
+        sessions
+            .bind_private_context(&manifest.run_id, input_path.clone(), options)
+            .expect("private context");
+        sessions
+            .state
+            .lock()
+            .expect("session lock")
+            .sessions
+            .get_mut(&manifest.run_id)
+            .expect("stored session")
+            .manifest
+            .options_hash = "f".repeat(64);
+        assert_eq!(
+            safe_error("STALE_ANALYSIS"),
+            sessions
+                .analysis_reanalysis_context(
+                    &AnalyzeMaskingRunReanalysis {
+                        run_id: manifest.run_id.clone(),
+                        analysis_revision: manifest.analysis_revision,
+                        manifest_hash: manifest.manifest_hash,
+                    },
+                    &input_path,
+                    &original,
+                    "mixed",
+                )
+                .expect_err("tampered prior MAC must fail closed")
+        );
+    }
+
+    #[test]
     fn unbound_scan_restore_is_rejected_without_native_authorization() {
         let sessions = MaskingRunSessions::default();
         let manifest = manifest_with_common_only_review();
@@ -4566,7 +6514,9 @@ mod tests {
     #[test]
     fn acknowledgement_confirms_common_only_segment_without_enabling_profile_rules() {
         let sessions = MaskingRunSessions::default();
-        let manifest = manifest_with_common_only_review();
+        let mut manifest = manifest_with_common_only_review();
+        refresh_manifest_hash_with_key(&mut manifest, &sessions.manifest_hmac_key)
+            .expect("session manifest MAC");
         sessions.state.lock().unwrap().sessions.insert(
             manifest.run_id.clone(),
             SessionRecord {

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from contracts.models import AnalysisManifestV1, ManualActionV1, ResolveMaskingReviewRequest
 from document_routing import BoundaryCorrection
 from golden_manifest_invariants import GoldenInvariantError, assert_golden_invariants
+import path_guard
 from scripts.anonymize_manifest_fixture import (
     AnonymizationContractError,
     anonymize_values,
@@ -79,6 +80,17 @@ def assert_json_semantically_equal(actual: Any, expected: Any) -> None:
         assert actual == pytest.approx(expected, rel=0, abs=1e-12)
         return
     assert actual == expected
+
+
+def test_path_security_golden_invariant_returns_canonical_io_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    supplied = allowed / "nested" / "output.pdf"
+    monkeypatch.setenv(path_guard.ALLOWED_DIRS_ENV, str(allowed))
+
+    canonical = path_guard.require_allowed_path(supplied, label="output")
+
+    assert canonical == supplied.resolve()
 
 
 def test_fixture_inventory_contains_all_fourteen_real_corpus_seeds() -> None:

@@ -1514,7 +1514,8 @@ fn expected_finalized_counts(
         .filter(|occurrence| {
             manifest.manual_actions.iter().any(|action| {
                 action.linked_occurrence_id.as_deref() == Some(occurrence.occurrence_id.as_str())
-                    || (action.page == occurrence.page
+                    || (occurrence.category != "custom_keyword"
+                        && action.page == occurrence.page
                         && action.protected_neighbor_refs == occurrence.rects)
             })
         })
@@ -2991,6 +2992,7 @@ mod tests {
     #[test]
     fn expected_finalized_mask_count_matches_ts_canonical_formula() {
         let occurrence = |occurrence_id: &str,
+                          category: &str,
                           proposed_action: &str,
                           state: &str,
                           rects: Vec<masking_run_session::Rect>| {
@@ -3002,7 +3004,7 @@ mod tests {
                 page: 0,
                 rects,
                 tag: "person".to_string(),
-                category: "name".to_string(),
+                category: category.to_string(),
                 value_hash: "a".repeat(64),
                 expected_text_hash: "b".repeat(64),
                 source: "ocr".to_string(),
@@ -3048,6 +3050,7 @@ mod tests {
             occurrences: vec![
                 occurrence(
                     "mask-final",
+                    "name",
                     "mask",
                     "confirmed",
                     vec![masking_run_session::Rect {
@@ -3059,6 +3062,7 @@ mod tests {
                 ),
                 occurrence(
                     "mask-replaced",
+                    "name",
                     "mask",
                     "user_confirmed",
                     vec![masking_run_session::Rect {
@@ -3070,6 +3074,7 @@ mod tests {
                 ),
                 occurrence(
                     "mask-protected",
+                    "name",
                     "mask",
                     "confirmed",
                     vec![masking_run_session::Rect {
@@ -3079,7 +3084,19 @@ mod tests {
                         y1: 6.0,
                     }],
                 ),
-                occurrence("review", "review", "confirmed", Vec::new()),
+                occurrence(
+                    "custom-keyword",
+                    "custom_keyword",
+                    "mask",
+                    "confirmed",
+                    vec![masking_run_session::Rect {
+                        x0: 5.0,
+                        y0: 5.0,
+                        x1: 6.0,
+                        y1: 6.0,
+                    }],
+                ),
+                occurrence("review", "name", "review", "confirmed", Vec::new()),
             ],
             review_items: Vec::new(),
             manual_actions: vec![
@@ -3115,7 +3132,7 @@ mod tests {
             ],
         };
 
-        assert_eq!(expected_finalized_mask_count(&manifest), Ok(3));
+        assert_eq!(expected_finalized_mask_count(&manifest), Ok(4));
     }
 
     fn captured_output_for_classifier(

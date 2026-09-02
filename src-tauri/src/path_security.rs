@@ -428,18 +428,32 @@ pub(crate) fn canonicalize_existing_file(path: &Path, label: &str) -> Result<Pat
 }
 
 pub(crate) fn canonicalize_existing_dir(path: &Path) -> Result<PathBuf, String> {
+    canonicalize_existing_dir_with_policy(path, true)
+}
+
+fn canonicalize_existing_dir_with_policy(
+    path: &Path,
+    reject_final_symlink: bool,
+) -> Result<PathBuf, String> {
     if path.as_os_str().is_empty() {
         return Err("폴더 경로가 비어 있습니다.".to_string());
     }
     let meta = std::fs::symlink_metadata(path).map_err(|e| format!("폴더 확인 실패: {e}"))?;
-    if meta.file_type().is_symlink() {
+    if reject_final_symlink && meta.file_type().is_symlink() {
         return Err("심볼릭 링크 폴더는 사용할 수 없습니다.".to_string());
     }
-    if !meta.is_dir() {
+    if !meta.is_dir() && !(meta.file_type().is_symlink() && !reject_final_symlink) {
         return Err("폴더 경로가 아닙니다.".to_string());
     }
     path.canonicalize()
         .map_err(|e| format!("폴더 경로 정규화 실패: {e}"))
+}
+
+fn canonicalize_existing_parent_dir(path: &Path) -> Result<PathBuf, String> {
+    // The directory is an ancestor of the file being addressed, not the
+    // caller's final path component. Resolve it before all I/O so a junction
+    // or symlink in this component cannot remain as a writable raw alias.
+    canonicalize_existing_dir_with_policy(path, false)
 }
 
 pub(crate) fn has_extension(path: &Path, allowed: &[&str]) -> bool {
@@ -525,7 +539,7 @@ fn canonicalize_save_target(path: &Path) -> Result<PathBuf, String> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| "저장 대상의 상위 폴더를 확인할 수 없습니다.".to_string())?;
-    let canonical_parent = canonicalize_existing_dir(parent)?;
+    let canonical_parent = canonicalize_existing_parent_dir(parent)?;
     let target = canonical_parent.join(file_name);
 
     match std::fs::symlink_metadata(&target) {
@@ -999,7 +1013,8 @@ where
     M: FnMut(&Path, &Path) -> io::Result<()>,
 {
     let parent = target.parent().ok_or(SaveError::OutputDirRejected)?;
-    let output_dir = canonicalize_existing_dir(parent).map_err(|_| SaveError::OutputDirRejected)?;
+    let output_dir =
+        canonicalize_existing_parent_dir(parent).map_err(|_| SaveError::OutputDirRejected)?;
     let file_name = target
         .file_name()
         .and_then(|name| name.to_str())
@@ -1237,6 +1252,64 @@ mod tests {
             Some("doc_final_masked_42_1.pdf")
         );
         assert_eq!(fs::read(&external).expect("external bytes"), b"sentinel");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_copy_new_resolves_ancestor_alias_before_writing() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_security_root("safe_copy_ancestor_alias");
+        let source = root.join("source.pdf");
+        let physical = root.join("physical");
+        let nested = physical.join("nested");
+        let alias = root.join("alias");
+        fs::create_dir_all(&nested).expect("nested output dir");
+        symlink(&physical, &alias).expect("ancestor alias");
+        fs::write(&source, b"new-content").expect("source");
+
+        let copied = safe_copy_new_at(
+            &source,
+            &alias.join("nested"),
+            "doc",
+            "final_masked",
+            "pdf",
+            42,
+        )
+        .expect("an in-scope ancestor alias should be resolved");
+
+        let canonical_nested = nested.canonicalize().expect("canonical nested output dir");
+        assert!(copied.starts_with(&canonical_nested));
+        assert_eq!(
+            fs::read(canonical_nested.join(copied.file_name().unwrap())).unwrap(),
+            b"new-content"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_overwrite_resolves_symlinked_parent_before_writing() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_security_root("exact_overwrite_parent_alias");
+        let source = root.join("source.pdf");
+        let physical = root.join("physical");
+        let alias = root.join("alias");
+        fs::create_dir_all(&physical).expect("physical output dir");
+        symlink(&physical, &alias).expect("parent alias");
+        fs::write(&source, b"new snapshot").expect("source");
+
+        let transaction = stage_copy_overwrite_exact(&source, &alias.join("selected.pdf"), false)
+            .expect("an in-scope parent alias should be resolved");
+        let published = transaction.commit().expect("publish");
+
+        assert!(published.starts_with(&physical.canonicalize().unwrap()));
+        assert_eq!(
+            fs::read(physical.join("selected.pdf")).unwrap(),
+            b"new snapshot"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

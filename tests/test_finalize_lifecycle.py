@@ -146,8 +146,11 @@ class TrustedFinalizeLifecycleContracts(unittest.TestCase):
         self.assertEqual(2, result["applied_mask_count"])
         self.assertEqual(b"manual-masked", staging.read_bytes())
         self.assertEqual(hashlib.sha256(staging.read_bytes()).hexdigest(), result["staging_hash"])
-        self.assertEqual(str(staging), manual_producer.call_args.args[0])
-        self.assertEqual(str(Path(f"{staging}.manual.pdf")), manual_producer.call_args.args[1])
+        self.assertEqual(str(staging.resolve()), manual_producer.call_args.args[0])
+        self.assertEqual(
+            str(Path(f"{staging}.manual.pdf").resolve()),
+            manual_producer.call_args.args[1],
+        )
         self.assertEqual(self.original_bytes, self.original.read_bytes())
         producer.assert_called_once()
         manual_producer.assert_called_once()
@@ -261,6 +264,92 @@ class TrustedFinalizeLifecycleContracts(unittest.TestCase):
         self.assertEqual(
             [(target_id, "exclude"), (neighbor_id, "exclude")],
             [(item.occurrence_id, item.action) for item in rendered_occurrences],
+        )
+
+    def test_custom_keyword_at_protected_neighbor_remains_a_mask(self) -> None:
+        manifest = self._manifest()
+        target_rect = {"x0": 40, "y0": 35, "x1": 140, "y1": 65}
+        neighbor_rect = {"x0": 150, "y0": 35, "x1": 165, "y1": 65}
+        manifest["occurrences"] = [
+            {
+                "occurrenceId": "occ_aaaaaaaaaaaaaaaaaaaaaaaa",
+                "analysisRevision": 3,
+                "page": 0,
+                "rects": [target_rect],
+                "proposedAction": "mask",
+                "state": "confirmed",
+                "provenance": "trusted-analysis",
+                "expectedTextHash": "a" * 64,
+            },
+            {
+                "occurrenceId": "occ_bbbbbbbbbbbbbbbbbbbbbbbb",
+                "analysisRevision": 3,
+                "page": 0,
+                "rects": [neighbor_rect],
+                "proposedAction": "mask",
+                "state": "confirmed",
+                "provenance": "trusted-analysis",
+                "expectedTextHash": "b" * 64,
+            },
+            {
+                "occurrenceId": "occ_cccccccccccccccccccccccc",
+                "analysisRevision": 3,
+                "page": 0,
+                "rects": [neighbor_rect],
+                "proposedAction": "mask",
+                "state": "confirmed",
+                "category": "custom_keyword",
+                "provenance": "custom_keyword",
+                "expectedTextHash": "c" * 64,
+            },
+        ]
+        manifest["manualActions"] = [{
+            "actionId": "manual-1",
+            "analysisRevision": 3,
+            "page": 0,
+            "rects": [target_rect],
+            "mode": "mask",
+            "sourceKind": "text_pdf",
+            "linkedOccurrenceId": "occ_aaaaaaaaaaaaaaaaaaaaaaaa",
+            "expectedTextHash": "a" * 64,
+            "protectedNeighborRefs": [neighbor_rect],
+        }]
+        staging = self.staging_root / "keyword-protected-neighbor.pdf"
+
+        def produce(_source: str, destination: str, *_args, **kwargs) -> dict[str, object]:
+            actions = kwargs["occurrence_inputs"]
+            Path(destination).write_bytes(b"occurrence-stage")
+            return {
+                "status": "applied",
+                "occurrences_applied": sum(item.action == "mask" for item in actions),
+                "verification": {"verified": True},
+            }
+
+        def apply(_source: str, destination: str, *_args, **_kwargs) -> dict[str, object]:
+            Path(destination).write_bytes(b"manual-stage")
+            return {
+                "status": "applied",
+                "actions_applied": 1,
+                "verification": {"verified": True},
+            }
+
+        with (
+            patch("document_masker_ocr_gui.redact_pdf_native", side_effect=produce) as producer,
+            patch("document_masker_ocr_gui.apply_manual_actions_v1", side_effect=apply),
+        ):
+            result = trusted_finalize_manifest(
+                str(self.original), manifest, self._finalize_options(), str(staging)
+            )
+
+        self.assertEqual(2, result["occurrence_count"])
+        rendered_occurrences = producer.call_args.kwargs["occurrence_inputs"]
+        self.assertEqual(
+            {
+                "occ_aaaaaaaaaaaaaaaaaaaaaaaa": "exclude",
+                "occ_bbbbbbbbbbbbbbbbbbbbbbbb": "exclude",
+                "occ_cccccccccccccccccccccccc": "mask",
+            },
+            {item.occurrence_id: item.action for item in rendered_occurrences},
         )
 
     def test_run_and_options_authority_mismatches_block_before_producer_work(self) -> None:

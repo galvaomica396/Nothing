@@ -119,10 +119,10 @@ def apply_manual_boxes(
         raise FileNotFoundError("MANUAL_ORIGINAL_NOT_FOUND")
     if not outdir:
         raise ValueError("출력 폴더 경로가 비어 있습니다.")
-    require_allowed_path(in_pdf, label="input")
+    in_pdf = str(require_allowed_path(in_pdf, label="input"))
     if original_pdf:
-        require_allowed_path(original_pdf, label="original")
-    require_allowed_path(outdir, label="outdir")
+        original_pdf = str(require_allowed_path(original_pdf, label="original"))
+    outdir = str(require_allowed_path(outdir, label="outdir"))
     os.makedirs(outdir, exist_ok=True)
 
     out_pdf = safe_output_path(in_pdf, outdir, original_pdf)

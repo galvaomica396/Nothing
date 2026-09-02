@@ -105,6 +105,36 @@ class PathGuardUnitTests(unittest.TestCase):
             )
             self.assertTrue(path_guard.is_path_allowed(str(Path(env_dir) / "x.pdf"), default_roots=[default_dir]))
 
+    @unittest.skipUnless(os.name != "nt", "POSIX symlink coverage is unavailable on Windows")
+    def test_ancestor_symlink_is_allowed_when_resolved_path_stays_inside_root(self) -> None:
+        with tempfile.TemporaryDirectory() as allowed:
+            root = Path(allowed)
+            os.environ["MASK_TOOL_ALLOWED_DIRS"] = allowed
+            physical = root / "physical"
+            physical.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(physical, target_is_directory=True)
+            supplied = alias / "output.pdf"
+
+            resolved = path_guard.require_allowed_path(supplied, label="output")
+
+            self.assertEqual((physical / "output.pdf").resolve(), resolved)
+            self.assertTrue(path_guard.is_path_allowed(supplied))
+
+    @unittest.skipUnless(os.name != "nt", "POSIX symlink coverage is unavailable on Windows")
+    def test_final_symlink_is_rejected_even_when_target_stays_inside_root(self) -> None:
+        with tempfile.TemporaryDirectory() as allowed:
+            root = Path(allowed)
+            os.environ["MASK_TOOL_ALLOWED_DIRS"] = allowed
+            target = root / "physical.pdf"
+            target.touch()
+            alias = root / "alias.pdf"
+            alias.symlink_to(target)
+
+            self.assertFalse(path_guard.is_path_allowed(alias))
+            with self.assertRaises(PermissionError):
+                path_guard.require_allowed_path(alias, label="input")
+
 
 class PathGuardCliTests(unittest.TestCase):
     def test_all_entrypoints_reject_every_protected_path_role_without_artifacts(self) -> None:
@@ -250,6 +280,52 @@ class PathGuardCliTests(unittest.TestCase):
                             "MASKING_PIPELINE_PATH_SYMLINK_REJECTED",
                             json.loads(proc.stderr)["error"]["code"],
                         )
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction coverage is unavailable on this platform")
+    def test_all_entrypoints_allow_windows_junction_ancestor_inside_allowlist(self) -> None:
+        boxes = json.dumps([{"page": 0, "x0": 28, "y0": 38, "x1": 190, "y1": 62, "mode": "mask"}])
+        entrypoints = {
+            "manual": lambda input_pdf, original_pdf, outdir: [
+                str(MANUAL_SCRIPT), "--input", str(input_pdf), "--original", str(original_pdf),
+                "--outdir", str(outdir), "--boxes", boxes,
+            ],
+            "engine": lambda input_pdf, original_pdf, outdir: [
+                str(ENGINE_ENTRY), "--manual-boxes", "--input", str(input_pdf),
+                "--original", str(original_pdf), "--outdir", str(outdir), "--boxes", boxes,
+            ],
+            "pipeline": lambda input_pdf, original_pdf, outdir: [
+                str(PIPELINE_SCRIPT), "--repo-root", str(REPO_ROOT), "--mode", "finalize",
+                "--input", str(input_pdf), "--original", str(original_pdf),
+                "--outdir", str(outdir), "--opts", "{}",
+            ],
+        }
+        for entrypoint, command in entrypoints.items():
+            for role in ("input", "original", "outdir"):
+                with self.subTest(entrypoint=entrypoint, role=role), tempfile.TemporaryDirectory() as allowed:
+                    allowed_root = Path(allowed)
+                    physical_root = allowed_root / "physical"
+                    physical_root.mkdir()
+                    inside_pdf = physical_root / "inside.pdf"
+                    write_pdf(inside_pdf)
+                    junction = allowed_root / "redirected"
+                    junction_result = subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(junction), str(physical_root)],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(0, junction_result.returncode, junction_result.stderr)
+                    paths = {
+                        "input": inside_pdf,
+                        "original": inside_pdf,
+                        "outdir": physical_root,
+                    }
+                    paths[role] = junction / inside_pdf.name if role != "outdir" else junction
+
+                    proc = run(
+                        command(paths["input"], paths["original"], paths["outdir"]),
+                        env_allowed=allowed,
+                    )
+
+                    self.assertEqual(0, proc.returncode, proc.stderr)
 
     def test_manual_boxes_allows_input_inside_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as allowed:

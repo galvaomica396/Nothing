@@ -98,19 +98,6 @@ def load_gui_module(repo_root: Path):
     except (ImportError, ModuleNotFoundError) as exc:
         raise ValueError("ENGINE_MODULE_UNAVAILABLE") from exc
     return mod
-def _reject_symlink_components(path: Path) -> None:
-    candidate = path.expanduser()
-    for component in (candidate.parent, *candidate.parent.parents):
-        try:
-            if component.is_symlink() or (
-                os.name == "nt"
-                and getattr(component, "is_junction", lambda: False)()
-            ):
-                raise ValueError("PATH_SYMLINK_REJECTED")
-        except OSError as error:
-            raise ValueError("PATH_SYMLINK_REJECTED") from error
-
-
 def _same_path(left: Path, right: Path) -> bool:
     """Compare already-resolved paths with the host filesystem semantics."""
     return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
@@ -120,22 +107,22 @@ def resolve_guarded_path(value: str, *, code: str, require_file: bool = False, r
     from path_guard import require_allowed_path
 
     supplied = Path(value).expanduser()
-    _reject_symlink_components(supplied)
-    if supplied.is_symlink():
-        raise ValueError(code)
     if require_file and not supplied.is_file():
         raise ValueError(code)
     if require_directory and not supplied.is_dir():
         raise ValueError(code)
-    resolved = supplied.resolve(strict=True)
     try:
-        require_allowed_path(resolved, label=code)
+        resolved = require_allowed_path(supplied, label=code)
     except PermissionError as error:
         # This entry point has historically exposed one stable path-security
         # failure code. Keep that contract independent of whether the host's
         # temporary directory happens to contain a symlink (macOS commonly
         # does; Windows commonly does not).
         raise ValueError("PATH_SYMLINK_REJECTED") from error
+    if require_file and not resolved.is_file():
+        raise ValueError(code)
+    if require_directory and not resolved.is_dir():
+        raise ValueError(code)
     return resolved
 
 
@@ -152,7 +139,6 @@ def safe_staging_destination(
     manifest_path: Path, staging_output: str, *source_paths: Path | None
 ) -> StagingReservation:
     supplied = Path(staging_output).expanduser()
-    _reject_symlink_components(supplied)
     if supplied.exists() or supplied.is_symlink() or supplied.suffix.lower() != ".pdf":
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
     try:
@@ -167,7 +153,10 @@ def safe_staging_destination(
         or stat.S_IMODE(parent_stat.st_mode) & 0o077
     ):
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
-    destination = supplied.resolve(strict=False)
+    # Use the canonical parent for every later operation. In particular, do
+    # not retain ``supplied``: a junction can be replaced after this check,
+    # while the canonical parent remains the checked physical directory.
+    destination = parent / supplied.name
     if any(source is not None and _same_path(source, destination) for source in source_paths):
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
 
@@ -183,7 +172,7 @@ def safe_staging_destination(
         raise ValueError("STAGING_RESERVATION_FAILED") from None
     try:
         descriptor = os.open(
-            supplied, os.O_CREAT | os.O_EXCL | os.O_WRONLY | nofollow, 0o600
+            destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY | nofollow, 0o600
         )
         try:
             staging_stat = os.fstat(descriptor)
@@ -205,7 +194,7 @@ def safe_staging_destination(
             raise ValueError("STAGING_RESERVATION_FAILED") from None
         raise ValueError("STAGING_RESERVATION_FAILED") from None
     return StagingReservation(
-        supplied, staging_stat.st_ino, staging_stat.st_dev, lock_path, lock_descriptor
+        destination, staging_stat.st_ino, staging_stat.st_dev, lock_path, lock_descriptor
     )
 
 

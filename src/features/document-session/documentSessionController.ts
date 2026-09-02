@@ -66,6 +66,8 @@ export type DocumentSessionState = Pick<
   | "latestReportPath"
   | "latestReport"
   | "activeRunKind"
+  | "publicRunIdentity"
+  | "publicReportBindingReason"
   | "restoreRevalidationFailed"
   | "baseMaskingProgress"
   | "mode"
@@ -193,6 +195,8 @@ export function createDocumentSessionController(deps: DocumentSessionDeps): Docu
     state.latestReportPath = "";
     state.latestReport = null;
     state.activeRunKind = "none";
+    state.publicRunIdentity = null;
+    state.publicReportBindingReason = null;
     state.restoreRevalidationFailed = false;
     deps.setBaseMaskingProgress({
       status: hydratedPreview ? "complete" : "idle",
@@ -243,6 +247,8 @@ export function createDocumentSessionController(deps: DocumentSessionDeps): Docu
     state.latestReportPath = "";
     state.latestReport = null;
     state.activeRunKind = "none";
+    state.publicRunIdentity = null;
+    state.publicReportBindingReason = null;
     state.restoreRevalidationFailed = false;
     state.mode = "mask";
     state.batchItems = [];

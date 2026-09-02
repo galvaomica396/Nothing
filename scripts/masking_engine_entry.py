@@ -220,11 +220,11 @@ def run_mask(args: argparse.Namespace) -> int:
     # allowlist fails closed through ``require_allowed_path``.
     from path_guard import require_allowed_path
 
-    require_allowed_path(infile, label="input")
+    infile = str(require_allowed_path(infile, label="input"))
     if original:
-        require_allowed_path(original, label="original")
+        original = str(require_allowed_path(original, label="original"))
     if outdir:
-        require_allowed_path(outdir, label="outdir")
+        outdir = str(require_allowed_path(outdir, label="outdir"))
 
     engine = import_engine(repo_root)
     capture = BoundedCapture()

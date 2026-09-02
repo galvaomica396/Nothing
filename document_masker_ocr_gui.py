@@ -3742,6 +3742,7 @@ def _manual_excluded_occurrence_ids(manifest: dict[str, Any]) -> set[str]:
         for occurrence in manifest["occurrences"]
         for action in manifest["manualActions"]
         if occurrence["page"] == action["page"]
+        and occurrence.get("category") != "custom_keyword"
         and occurrence["rects"] == action["protectedNeighborRefs"]
     }
     return linked_ids | protected_ids
@@ -4224,6 +4225,7 @@ def _validate_trusted_finalize_manifest(manifest: Any, original: str, opts: dict
     for occurrence in occurrences:
         if (
             occurrence.get("proposedAction") != "mask"
+            or occurrence.get("category") == "custom_keyword"
             or occurrence["occurrenceId"] in manual_excluded_occurrence_ids
         ):
             continue
@@ -4273,12 +4275,20 @@ def trusted_finalize_manifest(
         and staging_path.is_file()
         and staging_path.stat().st_size == 0
     )
-    render_output = f"{staging_output}.render.pdf" if reserved_staging else staging_output
+    if (
+        (staging_path.exists() and not reserved_staging)
+        or staging_path.is_symlink()
+        or Path(original).is_symlink()
+    ):
+        raise ValueError("TRUSTED_FINALIZE_INVALID")
     try:
-        if Path(original).resolve() == Path(staging_output).resolve():
+        original = str(Path(original).resolve(strict=True))
+        staging_output = str(staging_path.resolve(strict=reserved_staging))
+        if Path(original) == Path(staging_output):
             raise ValueError("TRUSTED_FINALIZE_ALIAS_BLOCKED")
-    except OSError:
+    except (OSError, RuntimeError):
         raise ValueError("TRUSTED_FINALIZE_INVALID") from None
+    render_output = f"{staging_output}.render.pdf" if reserved_staging else staging_output
     try:
         revision, original_bytes = _validate_trusted_finalize_manifest(manifest, original, opts)
         descriptor, snapshot_path = tempfile.mkstemp(prefix="trusted_finalize_", suffix=Path(original).suffix)

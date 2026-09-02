@@ -55,21 +55,53 @@ def _canonical_path(path: str | os.PathLike[str]) -> Path:
     return Path(os.path.normcase(os.fspath(resolved)))
 
 
+def _reject_final_symlink(path: str | os.PathLike[str]) -> None:
+    """Reject only the supplied path's final symlink component.
+
+    Resolved parent aliases are safe to use because callers receive the
+    canonical path below and must use that path for subsequent I/O. Rejecting
+    every symlink in ``path.parents`` incorrectly blocks ordinary Windows
+    junctions such as redirected user folders.
+    """
+    candidate = Path(path).expanduser()
+    try:
+        if candidate.is_symlink():
+            raise PermissionError(f"path is a symlink: {path}")
+    except OSError as error:
+        raise PermissionError(f"path cannot be inspected: {path}") from error
+
+
+def _guarded_canonical_path(
+    path: str | os.PathLike[str],
+    *,
+    default_roots: Iterable[str] | None,
+    env_var: str,
+) -> Path:
+    _reject_final_symlink(path)
+    target = _canonical_path(path)
+    roots = resolve_allowed_roots(default_roots, env_var)
+    if any(target == root or root in target.parents for root in roots):
+        return target
+    raise PermissionError(f"path is outside {env_var}: {path}")
+
+
 def is_path_allowed(
     path: str | os.PathLike[str],
     default_roots: Iterable[str] | None = None,
     env_var: str = ALLOWED_DIRS_ENV,
 ) -> bool:
     """Return ``True`` only for a path inside an allowed root."""
-    roots = resolve_allowed_roots(default_roots, env_var)
     try:
-        target = _canonical_path(path)
+        _guarded_canonical_path(
+            path,
+            default_roots=default_roots,
+            env_var=env_var,
+        )
     except (OSError, RuntimeError):
         return False
-    for root in roots:
-        if target == root or root in target.parents:
-            return True
-    return False
+    except PermissionError:
+        return False
+    return True
 
 
 def require_allowed_path(
@@ -78,8 +110,13 @@ def require_allowed_path(
     label: str = "path",
     default_roots: Iterable[str] | None = None,
     env_var: str = ALLOWED_DIRS_ENV,
-) -> str:
-    """Return ``str(path)`` when allowed, else raise ``PermissionError``."""
-    if not is_path_allowed(path, default_roots=default_roots, env_var=env_var):
-        raise PermissionError(f"{label} is outside {env_var}: {path}")
-    return str(path)
+) -> Path:
+    """Return the canonical path when allowed, else raise ``PermissionError``."""
+    try:
+        return _guarded_canonical_path(
+            path,
+            default_roots=default_roots,
+            env_var=env_var,
+        )
+    except (OSError, RuntimeError, PermissionError) as error:
+        raise PermissionError(f"{label} is outside {env_var}: {path}") from error

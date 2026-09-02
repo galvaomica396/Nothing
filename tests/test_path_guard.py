@@ -62,6 +62,9 @@ def run(
         env["MASK_TOOL_ALLOWED_DIRS"] = env_allowed
     if debug_trace:
         env["MASK_TOOL_DEBUG_TRACE"] = "1"
+    # The finalize pipeline requires a session hash key; junction coverage
+    # exercises path admission, not session provenance.
+    env.setdefault("MASKING_SESSION_HASH_KEY_HEX", "a" * 64)
     return subprocess.run(
         [sys.executable, *script_args],
         capture_output=True,

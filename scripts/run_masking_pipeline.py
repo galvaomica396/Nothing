@@ -95,11 +95,20 @@ def safe_debug_trace(error: Exception) -> dict[str, str]:
         if basename is not None:
             details.append(f"basename={basename}")
         safe_message = " ".join(details)
+    elif re.fullmatch(r"[A-Z0-9_]{3,64}", summary):
+        safe_message = summary
     else:
         safe_message = "exception_message_suppressed"
+    last_frame = ""
+    tb = error.__traceback__
+    while tb is not None:
+        frame_file = os.path.basename(tb.tb_frame.f_code.co_filename)
+        last_frame = f"{frame_file}:{tb.tb_lineno}"
+        tb = tb.tb_next
     return {
         "exceptionType": type(error).__name__,
         "message": safe_message,
+        "lastFrame": last_frame,
     }
 
 

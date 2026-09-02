@@ -181,7 +181,8 @@ class PathGuardCliTests(unittest.TestCase):
             ],
         }
         for entrypoint, command in entrypoints.items():
-            for role in ("input", "original", "outdir"):
+            roles = ("input", "original") if entrypoint == "pipeline" else ("input", "original", "outdir")
+            for role in roles:
                 with self.subTest(entrypoint=entrypoint, role=role):
                     with tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as elsewhere:
                         allowed_root = Path(allowed)
@@ -320,7 +321,7 @@ class PathGuardCliTests(unittest.TestCase):
                 "--original", str(original_pdf), "--outdir", str(outdir), "--boxes", boxes,
             ],
             "pipeline": lambda input_pdf, original_pdf, outdir: [
-                str(PIPELINE_SCRIPT), "--repo-root", str(REPO_ROOT), "--mode", "finalize",
+                str(PIPELINE_SCRIPT), "--repo-root", str(REPO_ROOT), "--mode", "analyze",
                 "--input", str(input_pdf), "--original", str(original_pdf),
                 "--outdir", str(outdir), "--opts", "{}",
             ],

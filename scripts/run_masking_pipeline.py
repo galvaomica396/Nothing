@@ -6,6 +6,7 @@ import io
 import json
 import ntpath
 import os
+import re
 import stat
 import sys
 import warnings

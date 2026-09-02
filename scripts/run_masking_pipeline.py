@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import ntpath
 import os
 import stat
 import sys
@@ -61,6 +62,47 @@ def stable_failure_code(error: Exception) -> str:
         return str(error)
     return "INTERNAL_FAILURE"
 
+
+def _safe_exception_basename(error: Exception) -> str | None:
+    filename = getattr(error, "filename", None)
+    if not isinstance(filename, (str, bytes, os.PathLike)):
+        return None
+    try:
+        value = os.fsdecode(filename).rstrip("\\/")
+    except (TypeError, ValueError):
+        return None
+    basename = ntpath.basename(value)
+    if not basename or basename in {".", ".."}:
+        return None
+    return basename
+
+
+def safe_debug_trace(error: Exception) -> dict[str, str]:
+    """Return a bounded, non-document-bearing diagnostic for opt-in tracing."""
+    try:
+        summary = str(error).strip()
+    except Exception:
+        summary = ""
+    if summary in _STABLE_FAILURE_CODES:
+        safe_message = summary
+    elif isinstance(error, OSError):
+        details = [type(error).__name__]
+        if getattr(error, "errno", None) is not None:
+            details.append(f"errno={error.errno}")
+        if getattr(error, "winerror", None) is not None:
+            details.append(f"winerror={error.winerror}")
+        basename = _safe_exception_basename(error)
+        if basename is not None:
+            details.append(f"basename={basename}")
+        safe_message = " ".join(details)
+    else:
+        safe_message = "exception_message_suppressed"
+    return {
+        "exceptionType": type(error).__name__,
+        "message": safe_message,
+    }
+
+
 def trusted_finalize_request() -> dict:
     raw = sys.stdin.buffer.read(MAX_TRUSTED_REQUEST_BYTES + 1)
     if len(raw) > MAX_TRUSTED_REQUEST_BYTES:
@@ -98,11 +140,6 @@ def load_gui_module(repo_root: Path):
     except (ImportError, ModuleNotFoundError) as exc:
         raise ValueError("ENGINE_MODULE_UNAVAILABLE") from exc
     return mod
-def _same_path(left: Path, right: Path) -> bool:
-    """Compare already-resolved paths with the host filesystem semantics."""
-    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
-
-
 def resolve_guarded_path(value: str, *, code: str, require_file: bool = False, require_directory: bool = False) -> Path:
     from path_guard import require_allowed_path
 
@@ -138,6 +175,8 @@ class StagingReservation:
 def safe_staging_destination(
     manifest_path: Path, staging_output: str, *source_paths: Path | None
 ) -> StagingReservation:
+    from path_guard import same_path
+
     supplied = Path(staging_output).expanduser()
     if supplied.exists() or supplied.is_symlink() or supplied.suffix.lower() != ".pdf":
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
@@ -146,7 +185,7 @@ def safe_staging_destination(
         parent_stat = parent.stat()
     except OSError:
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED") from None
-    if not _same_path(parent, manifest_path.parent) or not parent.is_dir():
+    if not same_path(parent, manifest_path.parent) or not parent.is_dir():
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
     if os.name != "nt" and (
         parent_stat.st_uid != os.getuid()
@@ -157,7 +196,7 @@ def safe_staging_destination(
     # not retain ``supplied``: a junction can be replaced after this check,
     # while the canonical parent remains the checked physical directory.
     destination = parent / supplied.name
-    if any(source is not None and _same_path(source, destination) for source in source_paths):
+    if any(source is not None and same_path(source, destination) for source in source_paths):
         raise ValueError("TRUSTED_FINALIZE_DESTINATION_REJECTED")
 
     lock_path = parent / f".{supplied.name}.reservation"
@@ -507,6 +546,11 @@ if __name__ == "__main__":
                     "rawTextReturned": False,
                     "error": {
                         "code": f"MASKING_PIPELINE_{stable_code}",
+                        **(
+                            {"debug": safe_debug_trace(error)}
+                            if os.environ.get("MASK_TOOL_DEBUG_TRACE") == "1"
+                            else {}
+                        ),
                         **(
                             {"diagnostics": diagnostics}
                             if (diagnostics := safe_failure_diagnostics(error))

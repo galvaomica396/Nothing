@@ -46,6 +46,7 @@ class TrustedFinalizeWrapperTests(unittest.TestCase):
             }
             environment = os.environ.copy()
             environment["MASK_TOOL_ALLOWED_DIRS"] = str(root)
+            environment.pop("MASK_TOOL_DEBUG_TRACE", None)
             environment["PYTHONPATH"] = os.pathsep.join(
                 filter(None, (str(REPO_ROOT), environment.get("PYTHONPATH", "")))
             )
@@ -79,3 +80,59 @@ class TrustedFinalizeWrapperTests(unittest.TestCase):
             },
             json.loads(completed.stdout),
         )
+
+    def test_trusted_finalize_debug_trace_is_opt_in_and_redacts_message(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary:
+            root = Path(temporary)
+            original = root / "private-original.pdf"
+            manifest = root / "immutable-manifest.json"
+            staging_output = root / "finalized.pdf"
+            original.write_bytes(b"source")
+            manifest.write_text("{}", encoding="utf-8")
+            (root / "document_masker_ocr_gui.py").write_text(
+                "def normalize_opts(options):\n"
+                "    return options\n\n"
+                "def trusted_finalize_manifest(original, manifest, options, staging_output):\n"
+                "    raise RuntimeError('RAW_DOCUMENT_TEXT')\n",
+                encoding="utf-8",
+            )
+            request = {
+                "input": str(original),
+                "original": str(original),
+                "manifest": str(manifest),
+                "staging_output": str(staging_output),
+                "options": {"display_mode": "black", "profile": "mixed"},
+            }
+            environment = os.environ.copy()
+            environment["MASK_TOOL_ALLOWED_DIRS"] = str(root)
+            environment["MASK_TOOL_DEBUG_TRACE"] = "1"
+            environment["PYTHONPATH"] = os.pathsep.join(
+                filter(None, (str(REPO_ROOT), environment.get("PYTHONPATH", "")))
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(PIPELINE_SCRIPT),
+                    "--repo-root",
+                    str(root),
+                    "--mode",
+                    "trusted-finalize",
+                    "--request-stdin",
+                ],
+                input=json.dumps(request),
+                capture_output=True,
+                text=True,
+                cwd=REPO_ROOT,
+                env=environment,
+                check=False,
+            )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertEqual("", completed.stdout)
+        payload = json.loads(completed.stderr)
+        self.assertEqual("MASKING_PIPELINE_INTERNAL_FAILURE", payload["error"]["code"])
+        self.assertEqual("RuntimeError", payload["error"]["debug"]["exceptionType"])
+        self.assertEqual("exception_message_suppressed", payload["error"]["debug"]["message"])
+        self.assertNotIn("RAW_DOCUMENT_TEXT", completed.stderr)
+        self.assertNotIn(str(root), completed.stderr)

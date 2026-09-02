@@ -48,11 +48,27 @@ def resolve_allowed_roots(
 def _canonical_path(path: str | os.PathLike[str]) -> Path:
     """Resolve a path using the host filesystem's comparison semantics."""
     resolved = Path(path).expanduser().resolve()
-    # normcase is a no-op on POSIX and performs both separator and case
-    # normalization on Windows.  The latter matters because Windows paths
-    # are case-insensitive even when the spelling supplied by two callers
-    # differs.
+    # Keep the host's canonical spelling for subsequent I/O. Windows may
+    # require the verbatim prefix for long paths; equality uses
+    # ``_comparison_path`` below instead of changing that spelling.
     return Path(os.path.normcase(os.fspath(resolved)))
+
+
+def _comparison_path(path: str | os.PathLike[str]) -> Path:
+    """Normalize a path for equality checks without retaining Win32 prefixes."""
+    value = os.fspath(path)
+    if os.name == "nt":
+        value = os.path.normcase(value)
+        if value.startswith("\\\\?\\unc\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+    return Path(value)
+
+
+def same_path(left: str | os.PathLike[str], right: str | os.PathLike[str]) -> bool:
+    """Compare paths after applying the host's case and verbatim-prefix rules."""
+    return _comparison_path(left) == _comparison_path(right)
 
 
 def _reject_final_symlink(path: str | os.PathLike[str]) -> None:
@@ -80,7 +96,12 @@ def _guarded_canonical_path(
     _reject_final_symlink(path)
     target = _canonical_path(path)
     roots = resolve_allowed_roots(default_roots, env_var)
-    if any(target == root or root in target.parents for root in roots):
+    comparison_target = _comparison_path(target)
+    if any(
+        comparison_target == _comparison_path(root)
+        or _comparison_path(root) in comparison_target.parents
+        for root in roots
+    ):
         return target
     raise PermissionError(f"path is outside {env_var}: {path}")
 

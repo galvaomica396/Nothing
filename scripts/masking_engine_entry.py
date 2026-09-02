@@ -357,6 +357,8 @@ def main() -> int:
         except Exception as error:
             stable_code = run_masking_pipeline.stable_failure_code(error)
             failure = {"code": f"MASKING_PIPELINE_{stable_code}"}
+            if os.environ.get("MASK_TOOL_DEBUG_TRACE") == "1":
+                failure["debug"] = run_masking_pipeline.safe_debug_trace(error)
             diagnostics = safe_failure_diagnostics(error)
             if diagnostics:
                 failure["diagnostics"] = diagnostics

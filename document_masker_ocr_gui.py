@@ -31,6 +31,8 @@ from pathlib import Path
 from contextvars import ContextVar
 from typing import Any
 
+from path_guard import same_path
+
 DEFAULT_MASKING_OPTIONS = {
     "rrn": True,
     "phone": True,
@@ -4284,7 +4286,7 @@ def trusted_finalize_manifest(
     try:
         original = str(Path(original).resolve(strict=True))
         staging_output = str(staging_path.resolve(strict=reserved_staging))
-        if Path(original) == Path(staging_output):
+        if same_path(original, staging_output):
             raise ValueError("TRUSTED_FINALIZE_ALIAS_BLOCKED")
     except (OSError, RuntimeError):
         raise ValueError("TRUSTED_FINALIZE_INVALID") from None

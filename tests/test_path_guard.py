@@ -49,11 +49,19 @@ def source_snapshot() -> dict[str, str]:
 
 
 
-def run(script_args: list[str], env_allowed: str | None) -> subprocess.CompletedProcess:
+def run(
+    script_args: list[str],
+    env_allowed: str | None,
+    *,
+    debug_trace: bool = False,
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.pop("MASK_TOOL_ALLOWED_DIRS", None)
+    env.pop("MASK_TOOL_DEBUG_TRACE", None)
     if env_allowed is not None:
         env["MASK_TOOL_ALLOWED_DIRS"] = env_allowed
+    if debug_trace:
+        env["MASK_TOOL_DEBUG_TRACE"] = "1"
     return subprocess.run(
         [sys.executable, *script_args],
         capture_output=True,
@@ -104,6 +112,21 @@ class PathGuardUnitTests(unittest.TestCase):
                 path_guard.is_path_allowed(str(Path(default_dir) / "x.pdf"), default_roots=[default_dir])
             )
             self.assertTrue(path_guard.is_path_allowed(str(Path(env_dir) / "x.pdf"), default_roots=[default_dir]))
+
+    @unittest.skipUnless(os.name == "nt", "Windows path spelling coverage is unavailable on this platform")
+    def test_verbatim_and_normal_windows_paths_compare_equal(self) -> None:
+        self.assertTrue(
+            path_guard.same_path(
+                r"\\?\C:\Allowed\Document.pdf",
+                r"c:\allowed\document.pdf",
+            )
+        )
+        self.assertTrue(
+            path_guard.same_path(
+                r"\\?\UNC\server\share\Document.pdf",
+                r"\\server\share\document.pdf",
+            )
+        )
 
     @unittest.skipUnless(os.name != "nt", "POSIX symlink coverage is unavailable on Windows")
     def test_ancestor_symlink_is_allowed_when_resolved_path_stays_inside_root(self) -> None:
@@ -323,9 +346,10 @@ class PathGuardCliTests(unittest.TestCase):
                     proc = run(
                         command(paths["input"], paths["original"], paths["outdir"]),
                         env_allowed=allowed,
+                        debug_trace=entrypoint == "pipeline",
                     )
 
-                    self.assertEqual(0, proc.returncode, proc.stderr)
+                    self.assertEqual(0, proc.returncode, f"stderr:\n{proc.stderr}")
 
     def test_manual_boxes_allows_input_inside_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as allowed:

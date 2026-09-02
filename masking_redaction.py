@@ -28,6 +28,7 @@ from pdf_redaction_rendering import (
     normalize_display_mode,
     normalize_redaction_tag,
 )
+from path_guard import same_path
 from privacy_transformers import TransformState, pseudonym_value
 from masking_rules import (
     RedactionMatch,
@@ -124,7 +125,7 @@ def _assert_fresh_staging_output(
     destination = parent / output.name
     for candidate in (source, *(Path(path) for path in protected_paths if path)):
         try:
-            if candidate.resolve(strict=True) == destination:
+            if same_path(candidate.resolve(strict=True), destination):
                 raise ValueError("STAGING_DESTINATION_REJECTED")
         except (FileNotFoundError, OSError, RuntimeError):
             continue

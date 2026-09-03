@@ -85,12 +85,14 @@ def assert_json_semantically_equal(actual: Any, expected: Any) -> None:
 def test_path_security_golden_invariant_returns_canonical_io_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     allowed = tmp_path / "allowed"
     allowed.mkdir()
-    supplied = allowed / "nested" / "output.pdf"
+    supplied = allowed / "MiXeD" / "Output.PDF"
     monkeypatch.setenv(path_guard.ALLOWED_DIRS_ENV, str(allowed))
+    monkeypatch.setattr(path_guard.os.path, "normcase", lambda value: value.lower())
 
     canonical = path_guard.require_allowed_path(supplied, label="output")
 
     assert canonical == supplied.resolve()
+    assert canonical.name == "Output.PDF"
 
 
 def test_fixture_inventory_contains_all_fourteen_real_corpus_seeds() -> None:

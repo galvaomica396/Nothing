@@ -4270,6 +4270,7 @@ def trusted_finalize_manifest(
 ) -> dict[str, Any]:
     """Geometry-only finalizer for the immutable Rust-owned manifest."""
     snapshot_path: str | None = None
+    workspace_path: Path | None = None
     staging_path = Path(staging_output)
     reserved_staging = (
         staging_path.exists()
@@ -4290,12 +4291,32 @@ def trusted_finalize_manifest(
             raise ValueError("TRUSTED_FINALIZE_ALIAS_BLOCKED")
     except (OSError, RuntimeError):
         raise ValueError("TRUSTED_FINALIZE_INVALID") from None
-    render_output = f"{staging_output}.render.pdf" if reserved_staging else staging_output
     try:
         revision, original_bytes = _validate_trusted_finalize_manifest(manifest, original, opts)
         descriptor, snapshot_path = tempfile.mkstemp(prefix="trusted_finalize_", suffix=Path(original).suffix)
         os.close(descriptor)
         Path(snapshot_path).write_bytes(original_bytes)
+        # PyMuPDF is a C consumer and does not reliably accept Windows
+        # verbatim/user paths even though Python and Rust do. Keep the
+        # canonical physical destination for final OS I/O, but perform every
+        # PDF render in a short private local workspace first.
+        workspace_path = Path(tempfile.mkdtemp(prefix="nf_"))
+        render_output = str(workspace_path / "render.pdf")
+        manual_output = str(workspace_path / "manual.pdf")
+
+        def publish_rendered_output(source_path: str) -> None:
+            try:
+                if reserved_staging:
+                    # Preserve the Rust/Python reservation inode. The final
+                    # promotion owns atomic replacement after this process.
+                    shutil.copyfile(source_path, staging_output)
+                else:
+                    # os.replace is ordinary filesystem I/O and accepts the
+                    # canonical verbatim destination that PyMuPDF cannot.
+                    os.replace(source_path, staging_output)
+            except OSError:
+                raise ValueError("TRUSTED_FINALIZE_PROMOTION_FAILED") from None
+
         manual_excluded_occurrence_ids = _manual_excluded_occurrence_ids(manifest)
         occurrence_inputs = tuple(
             OccurrenceRedactionInput(
@@ -4345,10 +4366,14 @@ def trusted_finalize_manifest(
             except Exception:
                 raise ValueError("TRUSTED_FINALIZE_REDACTION_EXECUTION_FAILED") from None
         else:
-            shutil.copyfile(snapshot_path, staging_output)
-            if Path(staging_output).read_bytes() != original_bytes:
-                raise ValueError("TRUSTED_FINALIZE_CLEAN_COPY_MISMATCH")
-            render_output = staging_output
+            if manual_actions:
+                shutil.copyfile(snapshot_path, render_output)
+                if Path(render_output).read_bytes() != original_bytes:
+                    raise ValueError("TRUSTED_FINALIZE_CLEAN_COPY_MISMATCH")
+            else:
+                shutil.copyfile(snapshot_path, staging_output)
+                if Path(staging_output).read_bytes() != original_bytes:
+                    raise ValueError("TRUSTED_FINALIZE_CLEAN_COPY_MISMATCH")
             result = {
                 "status": "applied",
                 "output_file": staging_output,
@@ -4387,7 +4412,6 @@ def trusted_finalize_manifest(
                 replace(action, document_sha256=manual_source_hash)
                 for action in manual_actions
             )
-            manual_output = f"{staging_output}.manual.pdf"
             scan_verifier = (
                 ScanManualRasterVerifier({
                     page: tuple(
@@ -4425,13 +4449,7 @@ def trusted_finalize_manifest(
                 raise TrustedFinalizeManualResultError(
                     _trusted_manual_result_diagnostics(manual_result)
                 )
-            try:
-                if reserved_staging:
-                    shutil.copyfile(manual_output, staging_output)
-                else:
-                    os.replace(manual_output, staging_output)
-            except OSError:
-                raise ValueError("TRUSTED_FINALIZE_PROMOTION_FAILED") from None
+            publish_rendered_output(manual_output)
             manual_masks_applied = manual_result.get("mask_actions_applied")
             manual_restores_applied = manual_result.get("restore_actions_applied")
             if manual_masks_applied is None and manual_restores_applied is None:
@@ -4454,13 +4472,10 @@ def trusted_finalize_manifest(
                     scan_manual_verification = scan_verifier.summary()
                 except ValueError:
                     raise ValueError("TRUSTED_FINALIZE_MANUAL_RESULT_FAILED") from None
-        elif reserved_staging and occurrence_inputs:
-            try:
-                shutil.copyfile(render_output, staging_output)
-            except OSError:
-                raise ValueError("TRUSTED_FINALIZE_PROMOTION_FAILED") from None
+        elif occurrence_inputs:
+            publish_rendered_output(render_output)
 
-        for temporary_output in (f"{staging_output}.manual.pdf", f"{staging_output}.render.pdf"):
+        for temporary_output in (manual_output, render_output):
             try:
                 Path(temporary_output).unlink(missing_ok=True)
             except OSError:
@@ -4545,6 +4560,11 @@ def trusted_finalize_manifest(
         if snapshot_path is not None:
             try:
                 Path(snapshot_path).unlink(missing_ok=True)
+            except OSError:
+                raise ValueError("TRUSTED_FINALIZE_CLEANUP_FAILED") from None
+        if workspace_path is not None:
+            try:
+                shutil.rmtree(workspace_path)
             except OSError:
                 raise ValueError("TRUSTED_FINALIZE_CLEANUP_FAILED") from None
 

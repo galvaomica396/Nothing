@@ -46,12 +46,14 @@ def resolve_allowed_roots(
 
 
 def _canonical_path(path: str | os.PathLike[str]) -> Path:
-    """Resolve a path using the host filesystem's comparison semantics."""
-    resolved = Path(path).expanduser().resolve()
-    # Keep the host's canonical spelling for subsequent I/O. Windows may
-    # require the verbatim prefix for long paths; equality uses
-    # ``_comparison_path`` below instead of changing that spelling.
-    return Path(os.path.normcase(os.fspath(resolved)))
+    """Resolve a physical path while preserving its spelling for I/O.
+
+    Windows' case-folding and verbatim-prefix rules are comparison concerns,
+    not safe replacements for the path passed to filesystem APIs. In
+    particular, retaining the resolved verbatim path keeps long-path I/O
+    working; callers that need a comparison key must use ``_comparison_path``.
+    """
+    return Path(path).expanduser().resolve()
 
 
 def _comparison_path(path: str | os.PathLike[str]) -> Path:

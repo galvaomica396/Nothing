@@ -146,11 +146,14 @@ class TrustedFinalizeLifecycleContracts(unittest.TestCase):
         self.assertEqual(2, result["applied_mask_count"])
         self.assertEqual(b"manual-masked", staging.read_bytes())
         self.assertEqual(hashlib.sha256(staging.read_bytes()).hexdigest(), result["staging_hash"])
-        self.assertEqual(str(staging.resolve()), manual_producer.call_args.args[0])
-        self.assertEqual(
-            str(Path(f"{staging}.manual.pdf").resolve()),
-            manual_producer.call_args.args[1],
-        )
+        render_source = Path(manual_producer.call_args.args[0])
+        manual_destination = Path(manual_producer.call_args.args[1])
+        self.assertEqual("render.pdf", render_source.name)
+        self.assertEqual("manual.pdf", manual_destination.name)
+        self.assertNotEqual(staging.parent.resolve(), render_source.parent.resolve())
+        self.assertNotEqual(staging.parent.resolve(), manual_destination.parent.resolve())
+        self.assertFalse(render_source.exists())
+        self.assertFalse(manual_destination.exists())
         self.assertEqual(self.original_bytes, self.original.read_bytes())
         producer.assert_called_once()
         manual_producer.assert_called_once()

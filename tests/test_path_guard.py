@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import fitz
 
@@ -101,6 +102,18 @@ class PathGuardUnitTests(unittest.TestCase):
             self.assertFalse(path_guard.is_path_allowed(outside))
             with self.assertRaisesRegex(PermissionError, "MASK_TOOL_ALLOWED_DIRS"):
                 path_guard.require_allowed_path(outside, label="input")
+
+    def test_canonical_io_path_preserves_spelling_separate_from_comparison_key(self) -> None:
+        with tempfile.TemporaryDirectory() as allowed:
+            root = Path(allowed)
+            supplied = root / "MiXeD" / "Output.PDF"
+            supplied.parent.mkdir()
+            os.environ["MASK_TOOL_ALLOWED_DIRS"] = str(root)
+            with patch.object(path_guard.os.path, "normcase", lambda value: value.lower()):
+                canonical = path_guard.require_allowed_path(supplied, label="output")
+
+            self.assertEqual(supplied.resolve(), canonical)
+            self.assertEqual("Output.PDF", canonical.name)
 
     def test_default_roots_used_only_when_env_unset(self) -> None:
         os.environ.pop("MASK_TOOL_ALLOWED_DIRS", None)
